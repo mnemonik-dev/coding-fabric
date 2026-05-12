@@ -45,4 +45,3 @@
             (tailscale_ip_cmd is not skipped)
         fail_msg: "tailscale_ip fact must be registered for downstream role compatibility"
       check_mode: false
-      ignore_errors: true

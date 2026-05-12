@@ -1,0 +1,4 @@
+---
+# ssh-hardening role defaults
+# This role hardens SSH after Tailscale is running to avoid lockouts.
+# No configuration overrides needed unless customizing hardening behavior.

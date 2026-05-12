@@ -51,21 +51,42 @@
     state: started
   register: tailscale_service
 
-- name: Authenticate with Tailscale
-  become: true
-  ansible.builtin.command:
-    cmd: >
-      tailscale up
-      --authkey={{ tailscale_authkey }}
-      --hostname={{ fabric_hostname }}
-      {% if tailscale_accept_routes %}--accept-routes{% endif %}
-      --ssh
-  register: tailscale_up_result
-  retries: 3
-  delay: 10
-  until: tailscale_up_result is succeeded
-  changed_when: tailscale_up_result.rc == 0 and 'already' not in tailscale_up_result.stdout | lower
-  no_log: true
+- name: Authenticate with Tailscale (with secure authkey file)
+  block:
+    - name: Write authkey to secure tmpfile
+      become: true
+      ansible.builtin.copy:
+        content: "{{ tailscale_authkey }}"
+        dest: /run/tailscale-authkey.txt
+        mode: '0600'
+        owner: root
+        group: root
+      register: authkey_tmpfile
+      no_log: true
+
+    - name: Authenticate with Tailscale
+      become: true
+      ansible.builtin.command:
+        cmd: >
+          tailscale up
+          --auth-key=file:/run/tailscale-authkey.txt
+          --hostname={{ fabric_hostname }}
+          {{ '--accept-routes' if tailscale_accept_routes else '' }}
+          --ssh
+      register: tailscale_up_result
+      retries: 3
+      delay: 10
+      until: tailscale_up_result is succeeded
+      changed_when: tailscale_up_result.rc == 0 and 'already' not in tailscale_up_result.stdout | lower
+      no_log: true
+
+  always:
+    - name: Remove authkey tmpfile securely
+      become: true
+      ansible.builtin.file:
+        path: /run/tailscale-authkey.txt
+        state: absent
+      no_log: true
 
 - name: Wait for Tailscale interface to be ready
   ansible.builtin.pause:

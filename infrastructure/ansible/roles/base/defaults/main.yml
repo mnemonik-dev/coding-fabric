@@ -6,6 +6,6 @@ fabric_hostname: mnemonic-fabric
 # SECURITY TRADEOFF: NOPASSWD: ALL is acceptable for initial bootstrap but should be
 # hardened to explicit commands in production. This will be refined in later tasks
 # when specific Ansible-managed commands are identified.
-# FUTURE-WORK: Task 07 should scope to specific commands (systemctl, apt-get, ufw, etc.)
-# See https://github.com/mnemonik/coding-fabric/issues/FUTURE-WORK-base-sudoers-scope
+# FUTURE-WORK: Task 07 (infrastructure-security-hardening) should scope to specific commands
+# (systemctl, apt-get, ufw, systemd-analyze, journalctl, etc.). See tasks/07.md.
 base_operator_user: op

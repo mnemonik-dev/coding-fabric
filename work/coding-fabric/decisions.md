@@ -292,6 +292,17 @@ Summary: Removed 47 lines of seed script generation (replaced with 8-line marker
 
 ---
 
+**Round 3 — fix:** commit `47b490d`
+
+Findings addressed (2 critical residuals, 1 minor):
+- [critical] Admin password seeding broken — removed `VAULTWARDEN_INITIAL_ADMIN_PASSWORD` from pre-flight assert; documented that first user account registration happens interactively via web UI at https://{{ vaultwarden_tailnet_domain }}/admin (upstream Vaultwarden design, not role-seeded). Replaced marker file touch with debug message guiding operator. Removed password variable from defaults comment.
+- [critical] Docker apt key path mismatch — replaced deprecated `ansible.builtin.apt_key` (writes to legacy /etc/apt/trusted.gpg.d/) with explicit `ansible.builtin.file` + `ansible.builtin.get_url` (downloads key to /etc/apt/keyrings/docker.asc). Verified that `signed-by=/etc/apt/keyrings/docker.asc` now matches the key's destination path. Uses .asc (ASCII-armored) format natively accepted by apt (no dearmor step needed).
+- [minor] Molecule placeholder secrets below 32-char threshold — increased `vaultwarden_admin_token` placeholder from 28 chars to 40 chars; removed `vaultwarden_initial_admin_password` from verify.yml vars (now asserted-out, not needed). Idempotency check now passes the 32-char threshold.
+
+Summary: Redesigned admin bootstrap from auto-seeding (broken) to manual interactive registration via web UI (upstream pattern). Fixed Docker GPG key installation to use modern /etc/apt/keyrings path. Molecule tests now use correct secret sizes.
+
+---
+
 ## Task 04 — Ansible role `kaneo`
 
 **Status:** complete | **Commit:** pending | **Agent:** ansible-kaneo (ansible-automation)
