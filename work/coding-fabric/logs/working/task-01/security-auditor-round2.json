@@ -1,0 +1,101 @@
+{
+  "task": "01",
+  "reviewer": "security-auditor",
+  "round": 2,
+  "commit_reviewed": "1f2f2ac",
+  "overall_verdict": "approved",
+  "round1_findings_addressed": [
+    {
+      "round1_index": 0,
+      "summary": "medium: firewall race window (separate hcloud_firewall_attachment)",
+      "status": "fixed",
+      "evidence": "main.tf:116 — `firewall_ids = [hcloud_firewall.fabric.id]` is now inline on hcloud_server.fabric. The firewall is attached atomically at server creation; no public exposure window between boot and firewall attach. The separate hcloud_firewall_attachment resource is retained but explicitly documented as an idempotent state-reconciliation safety net (it cannot re-open the race because the inline attachment is authoritative)."
+    },
+    {
+      "round1_index": 1,
+      "summary": "low: operator_ssh_pubkey YAML-injection vector / no validation",
+      "status": "fixed",
+      "evidence": "variables.tf:22-25 — regex validation `^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp(256|384|521)) [A-Za-z0-9+/=]+( [^\\n\\r]*)?$` anchored with ^...$ and an explicit `[^\\n\\r]` class in the optional comment portion, which blocks the newline-based YAML injection vector. A second validation block caps length at 1024 chars to reject pasted private keys / cert blobs. error_message does NOT echo the variable value (no information leakage in CI logs)."
+    },
+    {
+      "round1_index": 2,
+      "summary": "low: open egress (TCP/UDP/ICMP to 0.0.0.0/0)",
+      "status": "fixed",
+      "evidence": "main.tf:38-41 — added an explicit comment block documenting that egress is intentionally open at the cloud-firewall L3 layer and pointing forward to Task 02 Ansible base role (ufw/nftables) for per-protocol egress hardening. Recommendation in round 1 was 'document the decision'; that is satisfied. Behaviour unchanged (still open); residual risk acknowledged."
+    },
+    {
+      "round1_index": 3,
+      "summary": "low: cloud-init `op` user in `docker` group + NOPASSWD sudo",
+      "status": "fixed",
+      "evidence": "main.tf:134 — `groups: [sudo]`; `docker` removed. An explicit comment (main.tf:127-129) states Task 02 Ansible base role adds op to docker after Docker is installed. This eliminates the cloud-init warning and the pre-Docker-install correctness wart, and preserves the option to use Tailscale + Ansible-managed group membership as the sole authentication path."
+    },
+    {
+      "round1_index": 4,
+      "summary": "info: provider token duplicated as var.hcloud_token and HCLOUD_TOKEN env",
+      "status": "not-addressed",
+      "evidence": "main.tf:8 — provider block still sets `token = var.hcloud_token`; test script still exports both `HCLOUD_TOKEN` and `TF_VAR_hcloud_token`. This is hygiene, not a vulnerability; round-1 status was info. No regression."
+    },
+    {
+      "round1_index": 5,
+      "summary": "info: local terraform.tfstate may contain sensitive attributes",
+      "status": "fixed",
+      "evidence": "versions.tf:17-21 — added explicit WARNING comment block recommending full-disk encryption and prohibiting cloud-sync of the directory until Task 24 remote-state lands. Documentation-only fix per round-1 recommendation."
+    },
+    {
+      "round1_index": 6,
+      "summary": "info: volume not LUKS-encrypted at rest",
+      "status": "not-addressed",
+      "evidence": "Out of scope for Tofu module — no LUKS knob exists in hcloud provider. Carried forward to Task 02 base role as previously surfaced. No regression."
+    },
+    {
+      "round1_index": 7,
+      "summary": "info: prevent_destroy = false explicit on server and volume",
+      "status": "not-addressed",
+      "evidence": "main.tf:177, 227 — still false. The lifecycle comment is enlarged and now explicitly ties the flip-to-true to 'after Task 06 (Restic backups) is verified'. Process risk only; no regression."
+    }
+  ],
+  "findings": [
+    {
+      "severity": "info",
+      "area": "cloud-init",
+      "file": "infrastructure/tofu/hetzner/main.tf",
+      "line": 178,
+      "issue": "New `lifecycle.ignore_changes = [user_data, labels]` block means that once the server is created, changing `operator_ssh_pubkey` and re-running `tofu apply` produces NO diff — the cloud-init user_data is treated as create-time-only. This is correct (cloud-init only runs on first boot anyway, and the comment explicitly hands key rotation off to Task 02 Ansible). Security implication: if an operator mistakenly believes a key rotation occurred via tofu, the previous key remains authorized on the running VM. Mitigation already in code: the comment block at main.tf:162-166 explicitly documents this and points to Ansible. No code change needed; flagging for the team-lead checklist.",
+      "fix_recommendation": "No change required for Task 01. When the Task 02 Ansible role lands, ensure the operator-facing runbook explicitly says: 'do not rotate operator_ssh_pubkey via tofu; use the Ansible base role's authorized_keys task.' Optional defense-in-depth: add a `precondition` block on hcloud_server.fabric that fails apply if a non-default value of operator_ssh_pubkey changes after creation."
+    },
+    {
+      "severity": "info",
+      "area": "cloud-init",
+      "file": "infrastructure/tofu/hetzner/variables.tf",
+      "line": 23,
+      "issue": "The pubkey regex covers ssh-rsa, ssh-ed25519, and ecdsa-sha2-nistp256/384/521 — but it does NOT accept `sk-ssh-ed25519@openssh.com` or `sk-ecdsa-sha2-nistp256@openssh.com` (FIDO2-backed hardware keys, e.g. YubiKey). For a security-conscious operator, hardware-bound keys are a strictly stronger credential than a software ed25519 key. The current regex would reject the safer option and force the operator to use a software-resident key. This is a usability-side regression of the validation, not a security flaw — flagging because the team may want to widen the allowlist before Task 02 lands and operators start cutting hardware keys.",
+      "fix_recommendation": "Optional widen the regex alternation: `^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\\.com|sk-ecdsa-sha2-nistp256@openssh\\.com) [A-Za-z0-9+/=]+( [^\\n\\r]*)?$`. Leave as-is if the team has explicitly chosen software keys only."
+    },
+    {
+      "severity": "info",
+      "area": "secrets",
+      "file": "infrastructure/tofu/hetzner/main.tf",
+      "line": 8,
+      "issue": "Carry-over from round 1: provider block still sets `token = var.hcloud_token` AND the test script still exports `HCLOUD_TOKEN` env var. Two surfaces where the token can leak (process env + Tofu input state). Round-1 status was info; no regression.",
+      "fix_recommendation": "Pick one canonical source for the Hetzner token and document it. No code change required for Task 01 merge."
+    },
+    {
+      "severity": "info",
+      "area": "other",
+      "file": "infrastructure/tofu/hetzner/main.tf",
+      "line": 116,
+      "issue": "The retained `hcloud_firewall_attachment.fabric` resource is now redundant with the inline `firewall_ids` on `hcloud_server.fabric`. Both are idempotent and the round-1 fix recommendation explicitly allowed keeping it as a safety net. There is no security regression — the inline attachment is authoritative and the attachment resource cannot re-open a race. Theoretical edge case: if the inline `firewall_ids` argument is ever removed in a future refactor without also remembering to keep the attachment resource, the race window returns. The clear inline comment on main.tf:86-92 reduces this risk to acceptable.",
+      "fix_recommendation": "Optional simplification in a future task: drop hcloud_firewall_attachment.fabric entirely and rely solely on the inline firewall_ids. No change required for Task 01."
+    }
+  ],
+  "positive_notes": [
+    "Round 1 medium-blocker (firewall race) is closed cleanly with the canonical inline-firewall_ids pattern.",
+    "Round 1 low YAML-injection finding is closed with two validation blocks (regex + length), and the error_message does NOT echo the variable — no information leakage in CI logs.",
+    "Round 1 low docker-group finding is closed; cloud-init no longer emits a warning on first boot.",
+    "New lifecycle block adds `create_before_destroy = true` for the server and volume attachment, which keeps the inline firewall_ids semantics correct under server-type replacement (new server has firewall attached before old is destroyed).",
+    "Test script now uses mktemp + trap-cleanup for the plan artifact, preventing sensitive user_data from persisting in the module directory between runs.",
+    "Documentation-only round-1 items (versions.tf warning, egress justification comment) are all addressed.",
+    "No new public-internet-facing attack surface introduced; firewall posture remains UDP/41641 inbound only, default-deny otherwise."
+  ],
+  "scope_observations": "All round-1 medium and low findings are closed or explicitly deferred per the round-1 recommendation. The four new info-level findings are all hygiene/usability items with no security blocker. The `ignore_changes = [user_data]` decision needs to be reflected in the operator runbook for Task 02 so that key rotation does not silently fail through a 'tofu apply' that produces no diff. Recommend MERGE."
+}

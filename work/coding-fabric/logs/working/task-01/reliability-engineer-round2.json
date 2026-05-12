@@ -1,0 +1,113 @@
+{
+  "task": "01",
+  "reviewer": "reliability-engineer",
+  "round": 2,
+  "commit_reviewed": "1f2f2ac",
+  "overall_verdict": "approved",
+  "round1_findings_addressed": [
+    {
+      "round1_finding_index": 0,
+      "summary": "HIGH: ignore_changes = [user_data] missing — key rotation destroys server",
+      "status": "fixed",
+      "evidence": "main.tf line 178: `ignore_changes = [user_data, labels]` present in the single merged lifecycle block on hcloud_server.fabric. Detailed comment at lines 162-166 explains bootstrap vs ongoing key management split."
+    },
+    {
+      "round1_finding_index": 1,
+      "summary": "HIGH: server_type resize silently destroys VM, no create_before_destroy, no warning",
+      "status": "fixed",
+      "evidence": "main.tf line 179: `create_before_destroy = true` present. SERVER TYPE CHANGE WARNING block comment at lines 94-105 is explicit: 'triggers a server DESTROY + RECREATE', 'root disk is WIPED', data volume survives, operator checklist (a)/(b)/(c) provided."
+    },
+    {
+      "round1_finding_index": 2,
+      "summary": "MEDIUM: automount ambiguity on hcloud_volume vs hcloud_volume_attachment",
+      "status": "partial",
+      "evidence": "Comment clarification was added to both blocks (lines 213-215 and 240). Both still set automount = true. The round-1 recommendation was to remove automount from hcloud_volume and keep it only on the attachment. The code chose to keep both and document the distinction instead. The Hetzner provider behaviour is correctly described (volume-level applies on initial creation, attachment is canonical for reattach), so the functional risk is low and the documentation adequately explains the design intent. Treating as partial because the original recommendation to remove the volume-level field was not followed, though the documentation approach is a reasonable alternative."
+    },
+    {
+      "round1_finding_index": 3,
+      "summary": "MEDIUM: no ignore_changes on labels for firewall or server",
+      "status": "fixed",
+      "evidence": "hcloud_firewall.fabric now has lifecycle { ignore_changes = [labels] } at lines 73-75. hcloud_server.fabric has labels included in the merged ignore_changes = [user_data, labels] at line 178."
+    },
+    {
+      "round1_finding_index": 4,
+      "summary": "MEDIUM: race window between server creation and firewall attachment",
+      "status": "fixed",
+      "evidence": "hcloud_server.fabric now includes firewall_ids = [hcloud_firewall.fabric.id] at line 116, atomically attaching the firewall at server creation time. FIREWALL NOTE block comment at lines 86-92 explains the design and the residual role of hcloud_firewall_attachment as a state-reconciliation net."
+    },
+    {
+      "round1_finding_index": 5,
+      "summary": "MEDIUM: lockfile .terraform.lock.hcl not committed, CI non-determinism",
+      "status": "partial",
+      "evidence": "versions.tf now contains a LOCKFILE REQUIREMENT section (lines 24-42) with clear operator instructions and the exact provider lock command for both platforms. The lockfile itself is still not present in the repository (not committed in 1f2f2ac). Documentation addresses the gap; the lockfile still needs to be committed. Marking partial: the instruction is clear and actionable, but the determinism gap is not closed until the lockfile is actually committed."
+    },
+    {
+      "round1_finding_index": 6,
+      "summary": "MEDIUM: test script step count inconsistency (announced 3 steps, executed 4)",
+      "status": "fixed",
+      "evidence": "test_tofu_plan.sh header updated to 'What this script checks (4 steps)'. Step announcements now read 1/4, 2/4. Step 3/4 (fmt) and Step 4/4 (plan) were already correct. All step numbers are consistent."
+    },
+    {
+      "round1_finding_index": 7,
+      "summary": "MEDIUM: plan artifact written to module directory, potential sensitive leakage",
+      "status": "fixed",
+      "evidence": "test_tofu_plan.sh now uses PLAN_FILE=$(mktemp) with trap 'rm -f ${PLAN_FILE}' EXIT. Plan -out points to PLAN_FILE. The module directory stays clean. The stale info line was removed."
+    },
+    {
+      "round1_finding_index": 8,
+      "summary": "LOW: server_name and firewall_id outputs not mentioned in tech-spec",
+      "status": "not-addressed",
+      "evidence": "outputs.tf was not modified in 1f2f2ac. The round-1 recommendation was advisory (no action required for correctness). The outputs remain as-is. Acceptable deferral."
+    },
+    {
+      "round1_finding_index": 9,
+      "summary": "LOW: no create_before_destroy on hcloud_volume_attachment",
+      "status": "fixed",
+      "evidence": "hcloud_volume_attachment.fabric_data now has lifecycle { create_before_destroy = true } at lines 253-255, with a comment explaining the reattach ordering guarantee."
+    },
+    {
+      "round1_finding_index": 10,
+      "summary": "LOW: .gitignore only covers hetzner/ subdirectory",
+      "status": "not-addressed",
+      "evidence": "No changes to .gitignore structure in 1f2f2ac. The round-1 recommendation was low severity and advisory. Acceptable deferral."
+    },
+    {
+      "round1_finding_index": 11,
+      "summary": "INFO: prevent_destroy = false has no future-task hook",
+      "status": "fixed",
+      "evidence": "lifecycle comment now explicitly references 'Task 06 (Restic backups) is verified' as the trigger to set prevent_destroy = true (lines 157-160). The same reference appears in hcloud_volume.fabric_data lifecycle comment (lines 223-225)."
+    },
+    {
+      "round1_finding_index": 12,
+      "summary": "INFO: DERP relay comment was technically imprecise",
+      "status": "fixed",
+      "evidence": "Firewall block comment updated to the exact recommended wording at lines 13-16: 'DERP relay fallback uses DERP servers as intermediaries (outbound from this server), so no additional inbound rule is needed for DERP.'"
+    }
+  ],
+  "findings": [
+    {
+      "severity": "low",
+      "area": "lifecycle-conflict-risk",
+      "file": "infrastructure/tofu/hetzner/main.tf",
+      "line": 176,
+      "issue": "create_before_destroy = true on hcloud_server.fabric and hcloud_volume_attachment.fabric_data is correct in isolation, but Hetzner does not permit a volume to be attached to two servers simultaneously. During a server replacement, Tofu will attempt to create the new attachment before destroying the old attachment. If Hetzner enforces single-server-per-volume, the new attachment creation will fail with a 409 conflict, leaving the replacement stuck. This is a provider-level constraint that create_before_destroy cannot work around.",
+      "fix_recommendation": "Add a comment to hcloud_volume_attachment.fabric_data lifecycle block noting this Hetzner single-attach constraint. In practice, during a server replace the old attachment is implicitly released when the old server is destroyed — but the ordering with create_before_destroy may trigger the conflict before that happens. Operators should be aware they may need to manually detach the volume before a server type change and reattach afterward if Tofu errors on the concurrent attach attempt."
+    },
+    {
+      "severity": "low",
+      "area": "lockfile",
+      "file": "infrastructure/tofu/hetzner/versions.tf",
+      "line": 24,
+      "issue": "The LOCKFILE REQUIREMENT comment correctly instructs the operator to commit .terraform.lock.hcl, but the lockfile is still absent from the repository. CI reproducibility is not yet achieved; it depends on the operator following through on the documented checklist step.",
+      "fix_recommendation": "Run `tofu -chdir=infrastructure/tofu/hetzner providers lock -platform=linux_amd64 -platform=darwin_amd64` and commit the resulting .terraform.lock.hcl before merging to main."
+    }
+  ],
+  "positive_notes": [
+    "All three high-priority items from Round 1 are cleanly addressed: single merged lifecycle block with ignore_changes=[user_data,labels] and create_before_destroy=true, explicit SERVER TYPE CHANGE WARNING with operator checklist, and atomic firewall attachment via firewall_ids.",
+    "HCL2 single-lifecycle-block requirement is satisfied: one lifecycle block per resource throughout the file. No duplicate block syntax errors.",
+    "operator_ssh_pubkey validation in variables.tf is a meaningful security improvement: regex format check + 1024-char length guard prevents YAML injection via key rotation misuse.",
+    "PLAN_FILE=$(mktemp) with trap cleanup is correct and keeps CI workspaces clean. This was the right fix for the plan artifact leakage concern.",
+    "The egress-open/ingress-closed firewall design rationale comment (lines 38-41) correctly documents the layered security model: cloud firewall for L3, VM ufw/nftables for per-protocol egress hardening."
+  ],
+  "scope_observations": "The automount partial finding is the only item where the recommended implementation diverged from the fix recommendation. The documentation-only approach adopted is defensible given that both values are true and the behaviour is correctly documented. The remaining not-addressed items (outputs.tf comment, root-level .gitignore) were explicitly advisory in Round 1 and remain acceptable deferrals. The new low finding on create_before_destroy + Hetzner single-attach constraint is a forward-looking risk note, not a blocking issue for the current bootstrap phase where the server has no live data."
+}
