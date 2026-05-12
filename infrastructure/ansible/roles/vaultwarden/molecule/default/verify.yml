@@ -74,8 +74,7 @@
       ansible.builtin.include_role:
         name: vaultwarden
       vars:
-        vaultwarden_initial_admin_password: "test-admin-password-12345"
-        vaultwarden_admin_token: "test-admin-token-abcdef123456"
+        vaultwarden_admin_token: "test-admin-token-abcdef123456789012345678901"
 
     - name: Verify no changes on second run
       ansible.builtin.assert:

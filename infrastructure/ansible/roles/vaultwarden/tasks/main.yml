@@ -4,9 +4,7 @@
     that:
       - vaultwarden_admin_token is defined
       - vaultwarden_admin_token | length >= 32
-      - vaultwarden_initial_admin_password is defined
-      - vaultwarden_initial_admin_password | length >= 12
-    fail_msg: 'vaultwarden role requires VAULTWARDEN_ADMIN_TOKEN and VAULTWARDEN_INITIAL_ADMIN_PASSWORD from sops. See README.md.'
+    fail_msg: 'vaultwarden role requires VAULTWARDEN_ADMIN_TOKEN from sops. See README.md.'
     quiet: true
   no_log: true
 
@@ -27,17 +25,25 @@
       changed_when: false
       failed_when: false
 
-    - name: Add Docker GPG key
-      ansible.builtin.apt_key:
+    - name: Ensure /etc/apt/keyrings/ exists
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+      when: docker_version.rc != 0
+
+    - name: Download Docker GPG key (ASCII-armored)
+      ansible.builtin.get_url:
         url: https://download.docker.com/linux/ubuntu/gpg
-        id: 9DC858229FC7DD38854AE2D88D81803C0EBFCD88
-        state: present
+        dest: /etc/apt/keyrings/docker.asc
+        mode: '0644'
       when: docker_version.rc != 0
 
     - name: Add Docker apt repository
       ansible.builtin.apt_repository:
-        repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
         state: present
+        filename: docker
       when: docker_version.rc != 0
 
     - name: Install Docker and Docker Compose plugin
@@ -144,14 +150,15 @@
     msg: "Vaultwarden health check failed after 60 seconds. Check docker logs: docker compose -f /opt/vaultwarden/docker-compose.yml logs"
   when: health_result.failed
 
-- name: Mark admin as seeded (first run only)
-  become: true
-  become_user: op
-  ansible.builtin.file:
-    path: /opt/vaultwarden/.admin-seeded
-    state: touch
-    mode: '0600'
-  when: vaultwarden_initial_admin_password is defined and vaultwarden_initial_admin_password | length > 0
+- name: Operator note - register first admin user via web UI
+  ansible.builtin.debug:
+    msg: >-
+      Vaultwarden is now running. To register your first user account:
+      1. Visit https://{{ vaultwarden_tailnet_domain }}/admin
+      2. Log in with ADMIN_TOKEN (from sops)
+      3. Click "Create Admin" to register the initial user
+      4. Set your master password and complete registration
+      This is the upstream Vaultwarden design: admin password is set interactively on first login, not seeded.
 
 - name: Verify Vaultwarden and Caddy containers are running
   ansible.builtin.shell: |

@@ -21,13 +21,14 @@ vaultwarden_https_port: 8443
 # CRITICAL: These secrets MUST be provided by the playbook via sops decryption
 # They are NOT defined here; role will fail clearly if missing.
 # Playbook should decrypt from infrastructure/secrets/secrets.sops.yml and pass:
-# - vaultwarden_initial_admin_password
-# - vaultwarden_admin_token
+# - vaultwarden_admin_token (>=32 chars, for /admin API access)
 #
 # Example from sops (encrypted at rest in git):
-#   VAULTWARDEN_INITIAL_ADMIN_PASSWORD: "..."
 #   VAULTWARDEN_ADMIN_TOKEN: "..."
 #
+# NOTE: First user account password is set interactively via the web UI after deploy,
+# not via sops. Visit https://{{ vaultwarden_tailnet_domain }}/admin, authenticate
+# with the admin_token, and create the initial user account.
 # The playbook (Task 24 deploy.yml) decrypts these before invoking this role.
 
 # Vaultwarden configuration
