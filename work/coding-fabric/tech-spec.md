@@ -14,7 +14,7 @@ attestation: 9253b6c0-78ea-4127-9397-8b7875f791b3
 solana_tx: 2bFxD4pWQZw87xnQcqVPqgTgfJ7VyLmTNiXbE8zCVpKPC61svZNcwYnTeNMiU3NtWheNdPV5fffHcF6iZkykBebf
 arweave_tx: 7wd7o88htpgkubidTv5iYi4CDE8xQaY9cnX6Qwa6EfK1
 related_features:
-  - mnemonic-tg-bridge (Rust port of pavel-molyanov/telegram-ai-agent — separate feature)
+  - mnemonic-tg-bridge — upstream PR for `cwd:"DYNAMIC"` sentinel in pavel-molyanov/telegram-ai-agent (Python; size S; status approved)
 ---
 
 # Tech Spec — Coding Fabric (v0.2.0, IaC + CI delivery)
@@ -30,9 +30,12 @@ through the fabric itself (recursive self-hosting) — CI is only the cold-start
 Two other changes:
 
 - `telegram-ai-agent` (Python, `git@github.com:pavel-molyanov/telegram-ai-agent.git`)
-  becomes a 7th protocol repo `mnemonic-tg-bridge` rewritten in Rust — tracked as a
-  **separate feature** with its own user-spec. This tech-spec consumes its compiled
-  artefact via an Ansible role only.
+  is **consumed as-is** from upstream. The only addition is a small generic feature
+  (`cwd: "DYNAMIC"` sentinel with HTTP resolver) submitted to upstream as a PR —
+  tracked as **separate feature `mnemonic-tg-bridge`**, size S. The Rust rewrite
+  considered earlier is cancelled. coding-fabric T09 Ansible role installs the bot
+  with `uv sync` from a pinned upstream commit that contains the feature (or from
+  the `mnemonic-org/telegram-ai-agent` fork as fallback).
 - Networking layer shifts from self-hosted WireGuard to **Tailscale** (operator
   ergonomics: phone-side onboarding is dramatically simpler; mesh model handles
   multi-device later without re-architecture).
@@ -73,7 +76,7 @@ peer model from v0.1.1.
 +----------------------------------------------------------------+
 |  Runtime plane (on Hetzner VM)                                  |
 |  - Tailscale (replaces WireGuard) — only path to admin surfaces |
-|  - Vaultwarden, Kaneo, Telegram bot, mnemonic-tg-bridge         |
+|  - Vaultwarden, Kaneo, Telegram bot, telegram-ai-agent          |
 |  - ruflo, molyanov, mnemonic-mcp                                |
 |  - workspace-manager (Python FastAPI, NEW)                      |
 |  - fabric-watchdog (Python systemd-timer, NEW)                  |
@@ -122,11 +125,11 @@ peer model from v0.1.1.
 | 8 | `molyanov` | Install molyanov-ai-dev, install PK guard pre-write hook |
 | 9 | `mnemonic-mcp` | Install local Mnemonic MCP server, systemd unit, 5 trigger-point hook scripts |
 | 10 | `fabric-services` | Deploy compiled artefacts from `fabric/`: workspace-manager, sanitizer, watchdog, safe-mode, swarm-bridge, validator wrappers; install systemd units and timers |
-| 11 | `mnemonic-tg-bridge` | (consumes external `mnemonic-tg-bridge` Rust artefact) — installs the compiled bridge binary, systemd unit, per-topic configs with `cwd: "DYNAMIC"` |
+| 11 | `telegram-ai-agent` | `git clone` + `uv sync` upstream pavel-molyanov/telegram-ai-agent at a pinned commit (the one that contains the `cwd:"DYNAMIC"` PR — or `mnemonic-org/telegram-ai-agent` fork as fallback). Install systemd unit, render per-topic configs with `cwd: "DYNAMIC"`, set env var `TELEGRAM_AI_AGENT_CWD_RESOLVER_URL=http://{{ tailscale_ip }}:8080` (workspace-manager). |
 
-(11 roles total. Role `mnemonic-tg-bridge` consumes an artefact produced by the
-separate feature; until that feature lands, role uses a stub that errors-out cleanly
-with an actionable message.)
+(11 roles total. Role `telegram-ai-agent` pins a specific upstream commit. Until the
+upstream PR from feature `mnemonic-tg-bridge` is merged, role pins to the fork; once
+merged, role pins to a tagged upstream release.)
 
 ### 2.4 Per-topic configuration matrix
 
@@ -157,7 +160,7 @@ GET    /health                introspection
 
 Capacity cap = 10, shared sccache, per-worktree `.env` materialised from Vaultwarden,
 deleted on DELETE. Service binds to tailnet IP only (Ansible-templated from OpenTofu
-output). `mnemonic-tg-bridge` resolves `cwd: "DYNAMIC"` against this API.
+output). `telegram-ai-agent` (with the `cwd:"DYNAMIC"` patch from feature `mnemonic-tg-bridge`) resolves the sentinel against this API at engine spawn.
 
 ### 2.6 Mnemonic attestation DAG
 
@@ -200,7 +203,7 @@ infrastructure/
       ruflo/                        # Task 10
       molyanov/                     # Task 11
       mnemonic-mcp/                 # Task 12
-      mnemonic-tg-bridge/           # Task 09 (consumes external)
+      telegram-ai-agent/            # Task 09 (installs upstream pavel-molyanov + DYNAMIC patch)
       fabric-services/              # Tasks 08, 14, 15, 18, 19 deploy
   secrets/
     secrets.sops.yml                # age-encrypted, committed
@@ -232,7 +235,7 @@ infrastructure/
   mnemonic-mcp.service
   fabric-watchdog.timer
   fabric-watchdog.service
-  mnemonic-tg-bridge.service
+  telegram-ai-agent.service
 ```
 
 ## 3. Decisions
@@ -249,7 +252,7 @@ or added in v0.2.0 marked `[v0.2.0]`.
 | D5 | GitHub Actions for CI/cold-start deploy `[v0.2.0]` | Already where the source lives; secrets store native; manual `workflow_dispatch` covers ad-hoc redeploy | AC1, AC33 |
 | D6 | secrets via sops + age, committed to repo `[v0.2.0]` | Encrypted-at-rest in git; only the age private key is in GH Actions secret; operator can decrypt locally for ops | AC38 |
 | D7 | First deploy via CI; subsequent via fabric `[v0.2.0]` | Bootstrap-then-self-host. CI is cold-start path only. Recursive self-hosting (T19 smoke-gate) handles steady state | AC33–AC37 |
-| D8 | mnemonic-tg-bridge as separate feature/repo (Rust rewrite of pavel-molyanov/telegram-ai-agent) `[v0.2.0]` | Significant scope (Rust greenfield); parallel feature life-cycle; stub Ansible role until artefact lands | AC6, AC8 |
+| D8 | `telegram-ai-agent` consumed as-is from upstream `pavel-molyanov/telegram-ai-agent`; only delta is a small upstream PR adding optional `cwd:"DYNAMIC"` HTTP resolver. Feature tracked as separate user-spec `mnemonic-tg-bridge` (size S). Fallback path: fork to `mnemonic-org/telegram-ai-agent` if PR stalls > 30 days. `[v0.2.0, revised]` | Reuse > rewrite when upstream is active (43 stars, maintained, MIT, recent push); generic feature is upstream-acceptable; preserves AC6 (per-message worktree isolation) without Rust greenfield cost. | AC6, AC8 |
 | D9 | workspace-manager unchanged (FastAPI, Python, 127.0.0.1:8080 bound to tailnet) `[refined]` | API contract stable; binding changes from public-VPN-only to tailnet-IP-only | AC4–AC7 |
 | D10 | Capacity cap 10, disk thresholds 75/85/90% on 50 GB budget | spec.md "heavy" | AC5, AC32 |
 | D11 | Engine choice per topic: Claude Code default, Codex for demo-client | spec.md §12 | AC8 |
@@ -316,10 +319,10 @@ each individual `tasks/NN.md` file.
 - Skill: `fastapi-expert`; Reviewers: `security-auditor`, `reliability-engineer`, `code-reviewer`
 - Files: `fabric/workspace-manager/`
 
-**T09 — Ansible role `mnemonic-tg-bridge` (consumes external Rust artefact)**
+**T09 — Ansible role `telegram-ai-agent` (installs upstream pavel-molyanov bot with `cwd:"DYNAMIC"` patch)**
 - Skill: `ansible-automation`; Reviewers: `code-reviewer`, `reliability-engineer`
-- Files: `infrastructure/ansible/roles/mnemonic-tg-bridge/`
-- Note: role accepts URL/version of the compiled bridge as variable; stub mode errors-out if not provided
+- Files: `infrastructure/ansible/roles/telegram-ai-agent/`
+- Note: role pins to upstream commit/tag containing the `cwd:"DYNAMIC"` feature (from feature `mnemonic-tg-bridge`). Until that PR merges upstream, role pins to fork `mnemonic-org/telegram-ai-agent`. Pin is a variable; switch is one-line.
 
 ### Wave 3 — Substrate + methodology + attestation (Ansible)
 
@@ -458,7 +461,7 @@ satisfied. Two infrastructure-layer choices may warrant your sign-off:
 | TR1 | OpenTofu state corruption blocks redeploy | State file is small + age-encrypted; restore from previous GH Actions artifact; idempotent re-apply |
 | TR2 | Tailscale auth-key leak grants tailnet access | Key is single-use, short-TTL; rotated each redeploy; alerted via tailnet admin events |
 | TR3 | sops age-key in GH secret is the master key | One-key-to-rule-them-all risk acknowledged; rotation playbook documented; protected by GitHub MFA |
-| TR4 | mnemonic-tg-bridge feature delays this feature | Ansible role `mnemonic-tg-bridge` runs as stub until artefact lands; everything else deploys; bridge is the last piece to wire |
+| TR4 | mnemonic-tg-bridge upstream PR stalls or is rejected | 30-day timeout triggers fork to `mnemonic-org/telegram-ai-agent`; coding-fabric T09 Ansible role pins to fork until PR merges upstream; functional equivalence preserved either way |
 | TR5 | Ansible role version drift on long-running cluster | Roles pinned to git tags per D30; CI pins to tag |
 | TR6 | Hetzner CCX33 undersized for parallel workloads | Watchdog disk/CPU alerts fire; upsize is a one-line OpenTofu change + `tofu apply` |
 | TR7 | Recursive self-hosting bricks fabric | T19 smoke-gate + last-known-good + safe-mode playbook (Ansible-idempotent rollback) |
@@ -473,4 +476,4 @@ Inherited from spec.md §13 plus:
 - public demo of the loop
 - OpenClaw-equivalent PM agent
 - VM HA / multi-region
-- mnemonic-tg-bridge (Rust) implementation — separate feature, this tech-spec consumes the artefact only
+- mnemonic-tg-bridge implementation (upstream PR for `cwd:"DYNAMIC"` sentinel) — separate feature, this tech-spec consumes the merged upstream commit / fork commit only

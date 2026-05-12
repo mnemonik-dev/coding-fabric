@@ -1,0 +1,146 @@
+---
+metadata:
+  feature_name: mnemonic-tg-bridge
+  work_type: feature
+  size: S  # collapsed from L after user decision "reuse upstream as-is, B-PR strategy"
+  started: 2026-05-12
+  last_updated: 2026-05-12
+  status: completed
+  completed_via: user decision to reuse upstream + submit single-feature PR
+  current_cycle: 1
+  current_question_num: 4  # answered via decision, not full interview
+  source_python_repo: git@github.com:pavel-molyanov/telegram-ai-agent.git
+  source_commit_observed: main (pushed 2026-05-11)
+  decision_log: |
+    Cycle 1 batch 1 was prepared (4 meta-questions about feature-parity scope, compat,
+    tmux, bot-MCP). User responded with "lets reuse source repo. do no rewrite" + chose
+    strategy B-PR (keep AC6, submit upstream PR with DYNAMIC sentinel patch). Interview
+    skipped beyond this point because the answer collapsed all subsequent feature-parity
+    questions into "n/a — we don't port, we patch upstream".
+  source_findings: |
+    - Python 3.12+ using uv; aiogram-based bot
+    - Two execution-mode axis per topic: tmux (persistent dev session) OR subprocess (one-off)
+    - Three stream modes: verbose / live / minimal
+    - /tui live screenshot of agent's terminal with button-driven Enter/Esc/arrows/digits
+    - Bundled MCP server (mcp-servers/bot/) so agent can post messages/images/docs back to Telegram (two-way)
+    - Voice transcription via Deepgram
+    - Photo + document + forward batching
+    - Reply-based session resume + /resume command + picker_store
+    - Per-user auth allowlist by Telegram user ID
+    - Modal detection: tmux watchdog surfaces interactive prompts
+    - Topic-config schema: chat_id, thread_id, cwd, mode, engine, exec_mode, stream_mode, mcp_config, model
+    - Bundled skills: bot-setup, topic-setup, project-knowledge (in .claude/skills/)
+    - Systemd template at docs/systemd/
+    - CI at .github/workflows/ci.yml
+  note: |
+    Original stub at user-spec.md assumed a thin transport bridge with ~10 questions and size M.
+    After reading source: scope is L (full agent control plane). Interview will validate
+    feature-parity slicing decision before drilling into per-feature questions.
+
+phase1_feature_overview:
+  problem_statement:
+    score: 60
+    value: |
+      Replace Python telegram-ai-agent with a Rust binary as the 7th protocol repo.
+      Reasons: language alignment with rest of protocol (Rust), single-binary deploy,
+      lower runtime footprint, stronger Rust type-system guarantees.
+      Open: actual feature-parity scope (full 1:1 port vs subset).
+    gaps: ["feature-parity scope undecided"]
+    status: gap
+  user_value:
+    score: 40
+    value: |
+      Operator gets same UX from Telegram. Maintenance burden of two Python stacks
+      reduced. Stack alignment with mnemonic-core/mcp/wasm.
+      Open: is feature-parity required, or is "good enough for coding-fabric" the bar?
+    gaps: ["definition of done"]
+    status: gap
+  primary_user:
+    score: 90
+    value: "Single operator (same as coding-fabric). Acts only via Telegram."
+    gaps: []
+    status: complete
+  scope_boundaries:
+    score: 30
+    value: |
+      In scope: cwd:DYNAMIC sentinel + workspace-manager integration + engine spawn.
+      Open: tmux mode? subprocess mode? /tui? voice? bot-MCP-server? media batching?
+      session resume? modal detection? operator-config compatibility?
+    gaps: ["feature surface", "compat policy", "TUI inclusion", "voice inclusion", "bot-MCP inclusion"]
+    status: gap
+  size_estimate:
+    score: 70
+    value: "L — re-revised after source read. M only if scope drastically pruned."
+    gaps: []
+    status: complete
+  testing_strategy:
+    score: 30
+    value: |
+      Unit + integration must cover engine spawn lifecycle, cwd resolution, capacity 409,
+      sanitizer. E2E: at least one topic-end-to-end run on a real bot.
+      Open: do we port Python integration tests, or write fresh?
+    gaps: ["test port vs fresh"]
+    status: gap
+
+phase2_user_experience:
+  primary_flow:
+    score: 0
+    value: ""
+    gaps: ["main flow not described yet"]
+    status: gap
+  secondary_flows:
+    score: 0
+    value: ""
+    gaps: []
+    status: gap
+  manual_user_actions:
+    score: 20
+    value: "Same as Python: @BotFather one-time, then config per-topic via existing skills or new equivalents."
+    gaps: ["whether bundled skills are ported"]
+    status: gap
+  deploy_approach:
+    score: 70
+    value: |
+      Cross-compiled binary released as GitHub Release asset. coding-fabric T09 Ansible
+      role pulls binary URL pinned in defaults. Tag-on-release CI.
+    gaps: []
+    status: complete
+  post_deploy_verification:
+    score: 30
+    value: |
+      Smoke check: send `pwd` to a topic, engine spawns and responds. Bot health endpoint.
+    gaps: ["which interactions count as smoke vs full e2e"]
+    status: gap
+
+phase3_integration:
+  components:
+    score: 50
+    value: |
+      Consumes workspace-manager (T08). Consumed by Ansible role T09. Communicates with
+      Telegram Bot API via teloxide-or-grammers crate.
+    gaps: ["crate choice", "engine spawn library"]
+    status: gap
+  integration_points:
+    score: 60
+    value: |
+      - workspace-manager: POST /worktree on engine start, DELETE on engine end
+      - sanitizer: every log site (or include sanitizer logic in-bridge?)
+      - mnemonic-mcp: bridge could trigger task-complete hook (or that stays in molyanov skills?)
+    gaps: ["sanitizer in-bridge vs external", "mnemonic hook location"]
+    status: gap
+  cohabitation_constraints:
+    score: 80
+    value: |
+      Per-topic config inherits ruflo flags (autopilot/aidefence/rag-memory + MEMORY_NAMESPACE)
+      from the §2.4 matrix in coding-fabric tech-spec.
+    gaps: []
+    status: complete
+  secrets_and_trust:
+    score: 70
+    value: |
+      Bot token from sops via systemd LoadCredential. Telegram user allowlist hard-coded
+      via config or sops. No direct Vaultwarden access from bridge.
+    gaps: ["auth allowlist source"]
+    status: gap
+
+conversation_history: []
