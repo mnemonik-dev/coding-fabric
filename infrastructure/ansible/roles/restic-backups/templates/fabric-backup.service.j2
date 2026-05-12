@@ -1,0 +1,25 @@
+[Unit]
+Description=Fabric nightly backup to off-site repository (Hetzner Storage Box or S3)
+Documentation=https://restic.readthedocs.io/
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/fabric-backup.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fabric-backup
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/home/op/.fabric /opt/vaultwarden /opt/kaneo /home/op/code/mnemonic-masters /tmp /var/log
+ReadWritePaths=/etc/restic
+
+# Do not restart on transient network errors; timer will reschedule
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

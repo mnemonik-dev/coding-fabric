@@ -1,0 +1,48 @@
+---
+dependency:
+  name: galaxy
+
+driver:
+  name: docker
+
+platforms:
+  - name: restic-test
+    image: "ubuntu:24.04"
+    pre_build_image: true
+    privileged: false
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:ro
+    command: /lib/systemd/systemd-cgroups-agent
+    cgroupns_mode: host
+    systemd: replace
+    init: true
+
+provisioner:
+  name: ansible
+  playbooks:
+    converge: ${MOLECULE_PLAYBOOK:-converge.yml}
+  inventory:
+    host_vars:
+      all:
+        restic_repository: "sftp://mock-storage-box/restic"
+        restic_password: "test-password-do-not-use-in-production"
+        telegram_bot_token: "test-bot-token"
+        telegram_ops_chat_id: "test-chat-id"
+        restic_paths:
+          - /home/testuser/data/
+        restic_keep_daily: 7
+        restic_keep_weekly: 4
+        restic_keep_monthly: 6
+
+verifier:
+  name: ansible
+  playbooks:
+    verify: ${MOLECULE_VERIFY_PLAYBOOK:-verify.yml}
+
+scenario:
+  name: default
+  description: Test restic-backups role with systemd timer
+  converge_sequence:
+    - converge
+  verify_sequence:
+    - verify

@@ -1,0 +1,75 @@
+#!/bin/bash
+set -euo pipefail
+
+# Backup verification script for mnemonic-loop coding-fabric
+# Restores the latest snapshot to a staging directory and asserts
+# that a known marker file's checksum matches expected value
+# Exit 0 on success, non-zero on any failure
+
+source /etc/restic/repo.env
+
+MARKER_FILE="{{ restic_verification_marker_file }}"
+MARKER_SHA256_EXPECTED="53cffbb8a79a5265e9ed9c8d10b6cfe32d0b1be6c68a71b4ffc8f49c1a43c47e"
+RESTORE_DIR_BASE="{{ restic_verification_restore_dir_base }}"
+RESTORE_DATE=$(date +%Y%m%d_%H%M%S)
+RESTORE_DIR="${RESTORE_DIR_BASE}/restore-test-${RESTORE_DATE}"
+
+cleanup() {
+  if [[ -d "${RESTORE_DIR}" ]]; then
+    rm -rf "${RESTORE_DIR}"
+  fi
+}
+
+trap 'cleanup' EXIT
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting backup verification"
+
+if [[ ! -f "${MARKER_FILE}" ]]; then
+  echo "ERROR: Marker file not found at ${MARKER_FILE}" >&2
+  echo "Backup verification skipped on first-ever run (marker will be created after first backup)" >&2
+  exit 0  # Allow first run to succeed
+fi
+
+echo "Creating restore staging directory: ${RESTORE_DIR}"
+mkdir -p "${RESTORE_DIR}"
+
+echo "Fetching latest snapshot..."
+LATEST_SNAPSHOT=$(restic snapshots --latest=1 --json 2>/dev/null | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+if [[ -z "${LATEST_SNAPSHOT}" ]]; then
+  echo "ERROR: No snapshots found in repository" >&2
+  exit 1
+fi
+
+echo "Latest snapshot: ${LATEST_SNAPSHOT}"
+echo "Restoring to ${RESTORE_DIR}..."
+
+if ! restic restore "${LATEST_SNAPSHOT}" --target "${RESTORE_DIR}" > /dev/null 2>&1; then
+  echo "ERROR: Failed to restore snapshot ${LATEST_SNAPSHOT}" >&2
+  exit 1
+fi
+
+echo "Restore completed. Verifying marker file content..."
+
+# Extract relative path from MARKER_FILE for restored content
+MARKER_RELATIVE=$(echo "${MARKER_FILE}" | sed 's|^/||')
+RESTORED_MARKER="${RESTORE_DIR}/${MARKER_RELATIVE}"
+
+if [[ ! -f "${RESTORED_MARKER}" ]]; then
+  echo "ERROR: Marker file not found in restored snapshot at ${RESTORED_MARKER}" >&2
+  exit 1
+fi
+
+# Compute and verify checksum
+MARKER_SHA256_ACTUAL=$(sha256sum "${RESTORED_MARKER}" | awk '{print $1}')
+
+if [[ "${MARKER_SHA256_ACTUAL}" != "${MARKER_SHA256_EXPECTED}" ]]; then
+  echo "ERROR: Marker file checksum mismatch!" >&2
+  echo "  Expected: ${MARKER_SHA256_EXPECTED}" >&2
+  echo "  Actual:   ${MARKER_SHA256_ACTUAL}" >&2
+  exit 1
+fi
+
+echo "Marker file checksum verified: ${MARKER_SHA256_ACTUAL}"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Backup verification succeeded"
+exit 0

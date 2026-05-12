@@ -1,0 +1,103 @@
+#!/bin/bash
+set -euo pipefail
+
+# Restic backup script for mnemonic-loop coding-fabric
+# Backs up critical paths to off-site repository (Hetzner Storage Box or S3)
+# with retention policy enforcement via restic forget --prune
+# On failure, posts alert to Telegram ops topic
+
+# Load restic credentials and Telegram settings
+source /etc/restic/repo.env
+
+# Configuration
+BACKUP_PATHS=(
+{%- for path in restic_paths %}
+  "{{ path }}"
+{%- endfor %}
+)
+
+EXCLUDE_PATTERNS=(
+{%- for pattern in restic_excludes %}
+  "--exclude={{ pattern }}"
+{%- endfor %}
+)
+
+RETRY_COUNT={{ restic_backup_retry_count }}
+RETRY_DELAY={{ restic_backup_retry_delay }}
+
+# Retention policy
+KEEP_DAILY={{ restic_keep_daily }}
+KEEP_WEEKLY={{ restic_keep_weekly }}
+KEEP_MONTHLY={{ restic_keep_monthly }}
+
+# Temporary log file
+LOG_FILE="/tmp/restic-backup-$(date +%s).log"
+
+# Error handler: post failure alert to Telegram
+post_failure_alert() {
+  local exit_code="$1"
+  local error_msg="${2:-unknown error}"
+  local hostname=$(hostname)
+  local timestamp=$(date -Iseconds)
+
+  local message="BACKUP FAILED on ${hostname}
+Timestamp: ${timestamp}
+Exit code: ${exit_code}
+Error: ${error_msg}
+Log: https://ops-dashboard/logs/fabric-backup
+
+Last 20 lines of backup log:
+---
+$(tail -20 "${LOG_FILE}" 2>/dev/null || echo 'log file not available')
+---"
+
+  if [[ -n "${TELEGRAM_BOT_TOKEN:-}" ]] && [[ -n "${TELEGRAM_OPS_CHAT_ID:-}" ]]; then
+    curl -s -X POST \
+      "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+      -H "Content-Type: application/json" \
+      -d "{
+        \"chat_id\": \"${TELEGRAM_OPS_CHAT_ID}\",
+        \"text\": \"${message}\",
+        \"parse_mode\": \"Markdown\"
+      }" > /dev/null 2>&1 || true
+  fi
+
+  exit "${exit_code}"
+}
+
+trap 'post_failure_alert $? "Script interrupted or failed"' ERR
+trap 'rm -f "${LOG_FILE}"' EXIT
+
+log_message() {
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "${LOG_FILE}"
+}
+
+log_message "Starting backup to ${RESTIC_REPOSITORY}"
+
+# Perform backup with retries
+attempt=1
+while [[ $attempt -le $RETRY_COUNT ]]; do
+  if restic backup "${BACKUP_PATHS[@]}" "${EXCLUDE_PATTERNS[@]}" >> "${LOG_FILE}" 2>&1; then
+    log_message "Backup completed successfully (attempt $attempt/$RETRY_COUNT)"
+    break
+  else
+    if [[ $attempt -lt $RETRY_COUNT ]]; then
+      log_message "Backup attempt $attempt failed, retrying in ${RETRY_DELAY}s..."
+      sleep "${RETRY_DELAY}"
+    else
+      post_failure_alert 1 "Backup failed after $RETRY_COUNT attempts"
+    fi
+  fi
+  ((attempt++))
+done
+
+log_message "Applying retention policy: keep-daily=$KEEP_DAILY, keep-weekly=$KEEP_WEEKLY, keep-monthly=$KEEP_MONTHLY"
+
+if restic forget --keep-daily "$KEEP_DAILY" --keep-weekly "$KEEP_WEEKLY" --keep-monthly "$KEEP_MONTHLY" --prune >> "${LOG_FILE}" 2>&1; then
+  log_message "Retention policy applied and pruned"
+else
+  log_message "WARNING: Retention policy application failed (backup kept, but cleanup incomplete)"
+fi
+
+log_message "Backup cycle completed successfully"
+exit 0

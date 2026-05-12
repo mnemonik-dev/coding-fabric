@@ -1,0 +1,54 @@
+---
+# Restic installation settings
+restic_apt_version: "0.16"
+restic_minimum_version: "0.15.0"
+restic_github_version: "0.16.0"
+restic_github_sha256: "49b5c9b55f2f3bde9dfc47195d40f6af3d1f2dfa833fcc38f5da9d40bcc3b78f"
+
+# Backup paths — customize per environment
+# Default paths for mnemonic-loop coding-fabric
+restic_paths:
+  - /home/op/.fabric/
+  - /opt/vaultwarden/
+  - /opt/kaneo/
+  - /home/op/code/mnemonic-masters/
+
+# Exclude patterns (applied to all backup paths)
+restic_excludes:
+  - "*.pyc"
+  - "__pycache__"
+  - "node_modules"
+  - ".terraform/"
+  - "*.tfstate"
+  - "*.tfstate.*"
+  - ".git/objects/"
+  - ".cache/"
+  - ".local/share/nix"
+
+# Retention policy (garbage collection after backup)
+restic_keep_daily: 7
+restic_keep_weekly: 4
+restic_keep_monthly: 6
+
+# Retry settings for network failures
+restic_backup_retry_count: 3
+restic_backup_retry_delay: 30
+
+# Backup verification settings
+restic_verification_marker_file: /home/op/.fabric/backup-marker.txt
+restic_verification_restore_dir_base: /tmp
+
+# Timer schedule (systemd OnCalendar format)
+# 02:30 UTC every day with up to 30 minutes random delay
+restic_backup_schedule_oncalendar: "*-*-* 02:30:00"
+restic_backup_randomized_delay_min: 30
+
+# Sops secret keys (customized via secrets.sops.yml)
+# WARNING: Loss of restic_password = permanent data loss. Store in password manager + sops.
+# These are sourced from /etc/restic/repo.env at runtime
+restic_repository: ""  # e.g., sftp:user@u1234.your-storagebox.de:/restic or s3:s3.amazonaws.com/bucket
+restic_password: ""
+restic_s3_access_key: ""  # Optional, only for S3 backends
+restic_s3_secret_key: ""  # Optional, only for S3 backends
+telegram_bot_token: ""
+telegram_ops_chat_id: ""

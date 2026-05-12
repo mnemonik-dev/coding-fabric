@@ -1,0 +1,92 @@
+---
+- name: Verify
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Check that restic binary is installed
+      ansible.builtin.stat:
+        path: /usr/local/bin/restic
+      register: restic_binary
+      failed_when: not restic_binary.stat.exists
+
+    - name: Verify restic version
+      ansible.builtin.command:
+        cmd: /usr/local/bin/restic version
+      register: restic_version_out
+      failed_when: "'restic' not in restic_version_out.stdout"
+      changed_when: false
+
+    - name: Check that /etc/restic directory exists with correct permissions
+      ansible.builtin.stat:
+        path: /etc/restic
+      register: restic_dir
+      failed_when: >
+        not restic_dir.stat.exists or
+        restic_dir.stat.mode != '0700' or
+        restic_dir.stat.pw_name != 'root'
+
+    - name: Check that /etc/restic/repo.env exists with correct permissions
+      ansible.builtin.stat:
+        path: /etc/restic/repo.env
+      register: restic_env_file
+      failed_when: >
+        not restic_env_file.stat.exists or
+        restic_env_file.stat.mode != '0600'
+
+    - name: Check that fabric-backup.sh exists and is executable
+      ansible.builtin.stat:
+        path: /usr/local/bin/fabric-backup.sh
+      register: backup_script
+      failed_when: >
+        not backup_script.stat.exists or
+        not backup_script.stat.executable
+
+    - name: Check that backup-verify.sh exists and is executable
+      ansible.builtin.stat:
+        path: /usr/local/bin/backup-verify.sh
+      register: verify_script
+      failed_when: >
+        not verify_script.stat.exists or
+        not verify_script.stat.executable
+
+    - name: Validate fabric-backup.sh bash syntax
+      ansible.builtin.command:
+        cmd: /bin/bash -n /usr/local/bin/fabric-backup.sh
+      changed_when: false
+
+    - name: Validate backup-verify.sh bash syntax
+      ansible.builtin.command:
+        cmd: /bin/bash -n /usr/local/bin/backup-verify.sh
+      changed_when: false
+
+    - name: Check that systemd service file exists
+      ansible.builtin.stat:
+        path: /etc/systemd/system/fabric-backup.service
+      register: service_file
+      failed_when: not service_file.stat.exists
+
+    - name: Check that systemd timer file exists
+      ansible.builtin.stat:
+        path: /etc/systemd/system/fabric-backup.timer
+      register: timer_file
+      failed_when: not timer_file.stat.exists
+
+    - name: Verify timer is enabled
+      ansible.builtin.systemd_service:
+        name: fabric-backup.timer
+        enabled: true
+      register: timer_status
+      failed_when: not timer_status.enabled
+
+    - name: Verify timer unit exists in systemd
+      ansible.builtin.command:
+        cmd: systemctl list-timers fabric-backup.timer
+      register: timer_list
+      changed_when: false
+      failed_when: "'fabric-backup.timer' not in timer_list.stdout"
+
+    - name: Check service file syntax
+      ansible.builtin.command:
+        cmd: systemd-analyze verify /etc/systemd/system/fabric-backup.service
+      changed_when: false
+      failed_when: false

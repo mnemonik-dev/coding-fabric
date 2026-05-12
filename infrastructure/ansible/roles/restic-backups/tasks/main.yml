@@ -1,0 +1,145 @@
+---
+- name: Install restic backup tool
+  block:
+    - name: Check available restic version in apt
+      ansible.builtin.command:
+        cmd: apt-cache policy restic
+      register: apt_restic_check
+      changed_when: false
+      failed_when: false
+
+    - name: Parse apt restic version
+      ansible.builtin.set_fact:
+        apt_restic_version: "{{ apt_restic_check.stdout | regex_search('Candidate: ([0-9.]+)', '\\1') | first | default('0.0.0') }}"
+
+    - name: Install restic from apt if version >= minimum required
+      ansible.builtin.apt:
+        name: "restic={{ restic_apt_version }}*"
+        state: present
+        update_cache: true
+      when: apt_restic_version is version(restic_minimum_version, '>=')
+
+    - name: Download and install restic from GitHub release if apt version too old
+      block:
+        - name: Create temporary directory for restic download
+          ansible.builtin.tempfile:
+            state: directory
+            suffix: _restic
+          register: restic_tmp_dir
+
+        - name: Download restic binary from GitHub release
+          ansible.builtin.get_url:
+            url: "https://github.com/restic/restic/releases/download/v{{ restic_github_version }}/restic_{{ restic_github_version }}_linux_amd64.bz2"
+            dest: "{{ restic_tmp_dir.path }}/restic.bz2"
+            checksum: "sha256:{{ restic_github_sha256 }}"
+            mode: "0644"
+
+        - name: Extract restic binary
+          ansible.builtin.shell:
+            cmd: "bunzip2 -d -c {{ restic_tmp_dir.path }}/restic.bz2 > {{ restic_tmp_dir.path }}/restic && chmod 0755 {{ restic_tmp_dir.path }}/restic"
+          changed_when: true
+
+        - name: Move restic to /usr/local/bin
+          ansible.builtin.copy:
+            src: "{{ restic_tmp_dir.path }}/restic"
+            dest: /usr/local/bin/restic
+            mode: "0755"
+            owner: root
+            group: root
+            remote_src: true
+
+        - name: Clean up temporary directory
+          ansible.builtin.file:
+            path: "{{ restic_tmp_dir.path }}"
+            state: absent
+
+      when: apt_restic_version is version(restic_minimum_version, '<')
+
+- name: Create restic configuration directory
+  ansible.builtin.file:
+    path: /etc/restic
+    state: directory
+    mode: "0700"
+    owner: root
+    group: root
+
+- name: Render restic environment file from sops secrets
+  ansible.builtin.template:
+    src: restic.env.j2
+    dest: /etc/restic/repo.env
+    mode: "0600"
+    owner: root
+    group: root
+    validate: "/bin/bash -n %s"
+  no_log: true
+  notify: Reload systemd daemon
+
+- name: Check if restic repository is initialized
+  ansible.builtin.command:
+    cmd: "/usr/local/bin/restic list snapshots"
+  environment:
+    RESTIC_REPOSITORY: "{{ restic_repository }}"
+    RESTIC_PASSWORD: "{{ restic_password }}"
+  register: restic_snapshots_check
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: Initialize restic repository on first run
+  ansible.builtin.command:
+    cmd: "/usr/local/bin/restic init"
+  environment:
+    RESTIC_REPOSITORY: "{{ restic_repository }}"
+    RESTIC_PASSWORD: "{{ restic_password }}"
+  when: restic_snapshots_check.rc != 0
+  no_log: true
+
+- name: Create fabric backup script
+  ansible.builtin.template:
+    src: fabric-backup.sh.j2
+    dest: /usr/local/bin/fabric-backup.sh
+    mode: "0755"
+    owner: root
+    group: root
+    validate: "/bin/bash -n %s"
+
+- name: Create backup verification script
+  ansible.builtin.template:
+    src: backup-verify.sh.j2
+    dest: /usr/local/bin/backup-verify.sh
+    mode: "0755"
+    owner: root
+    group: root
+    validate: "/bin/bash -n %s"
+
+- name: Create systemd service file for backup
+  ansible.builtin.template:
+    src: fabric-backup.service.j2
+    dest: /etc/systemd/system/fabric-backup.service
+    mode: "0644"
+    owner: root
+    group: root
+  notify: Reload systemd daemon
+
+- name: Create systemd timer file for scheduled backups
+  ansible.builtin.template:
+    src: fabric-backup.timer.j2
+    dest: /etc/systemd/system/fabric-backup.timer
+    mode: "0644"
+    owner: root
+    group: root
+  notify: Reload systemd daemon
+
+- name: Enable and start the backup timer
+  ansible.builtin.systemd_service:
+    name: fabric-backup.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Verify backup timer is scheduled
+  ansible.builtin.command:
+    cmd: systemctl list-timers fabric-backup.timer
+  register: timer_status
+  changed_when: false
+  failed_when: "'fabric-backup.timer' not in timer_status.stdout"

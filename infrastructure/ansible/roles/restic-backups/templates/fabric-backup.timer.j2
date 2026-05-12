@@ -1,0 +1,14 @@
+[Unit]
+Description=Trigger nightly fabric backup
+Documentation=https://restic.readthedocs.io/
+Requires=fabric-backup.service
+
+[Timer]
+OnCalendar={{ restic_backup_schedule_oncalendar }}
+OnBootSec=5min
+RandomizedDelaySec={{ restic_backup_randomized_delay_min }}min
+Persistent=true
+Unit=fabric-backup.service
+
+[Install]
+WantedBy=timers.target

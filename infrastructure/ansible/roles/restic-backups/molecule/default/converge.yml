@@ -1,0 +1,45 @@
+---
+- name: Converge
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+      changed_when: false
+
+    - name: Install minimal dependencies
+      ansible.builtin.apt:
+        name:
+          - curl
+          - ca-certificates
+          - systemd
+        state: present
+
+    - name: Create test backup paths
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - /home/testuser/data
+        - /opt/vaultwarden
+        - /opt/kaneo
+        - /home/testuser/code/mnemonic-masters
+
+    - name: Create marker file for verification
+      ansible.builtin.copy:
+        content: "mnemonic-protocol-backup-marker"
+        dest: /home/testuser/data/backup-marker.txt
+        mode: "0644"
+
+    - name: Include restic-backups role
+      ansible.builtin.include_role:
+        name: restic-backups
+      vars:
+        restic_paths:
+          - /home/testuser/data
+          - /opt/vaultwarden
+          - /opt/kaneo
+          - /home/testuser/code/mnemonic-masters
+        restic_verification_marker_file: /home/testuser/data/backup-marker.txt
