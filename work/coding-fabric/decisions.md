@@ -1317,3 +1317,102 @@ Standard Ansible role installed at `infrastructure/ansible/roles/mnemonic-mcp/` 
 **Anchors:** user-spec AC11-AC16, tech-spec §2.3 role 9, §2.6 D14
 
 ---
+
+## Task 11 — Ansible role `molyanov`
+
+**Status:** complete | **Commit:** 22df86e | **Agent:** ansible-molyanov (ansible-automation)
+
+**Summary:** Created Ansible role `infrastructure/ansible/roles/molyanov/` that installs molyanov-ai-dev slash commands and Project Knowledge guard hook. Role anchors AC28 (PK canonical, ruflo cannot overwrite) and tech-spec D18. Installs skills bundle, renders global config, deploys two pre-write hooks (pk-guard and ops-notify), and configures ruflo integration via cross-role hooks.d loading.
+
+**Key design: PK Guard Scope**
+
+The `pk-guard.sh` hook fires **only when `RUFLO_SESSION` env var is set (non-empty)**:
+- Does not fire on operator's manual edits (`git add`, `vim`)
+- Does not fire on read-only operations (`git diff`, `cat`)
+- Fires only within ruflo-invoked write contexts (Task 10 integration)
+
+When `RUFLO_SESSION=<task-id>` and a write targets `.claude/skills/project-knowledge/references/*`:
+1. **Reject**: Exit code 1 (blocks the write)
+2. **Log**: Message to systemd journal via `logger -t molyanov-pk-guard` (sanitized by Task 07 filter)
+3. **Alert**: POST to Telegram ops-topic (requires `TELEGRAM_BOT_TOKEN` and `TELEGRAM_OPS_TOPIC` env vars)
+
+Bypass procedure (emergency only, logged): `env -i RUFLO_SESSION= <command>` sets RUFLO_SESSION to empty, disabling the guard for that invocation.
+
+**Responsibilities:**
+
+1. Clone molyanov-ai-dev skills bundle to `~/.claude/skills/molyanov-ai-dev` at v0.1.0
+2. Render `~/.fabric/molyanov/global.yml` with command metadata, integration config, bypass procedures
+3. Install `~/.fabric/molyanov/hooks/pk-guard.sh` (mode 0755) — 28 lines of pure bash
+4. Install `~/.fabric/molyanov/hooks/ops-notify.sh` (mode 0755) — wrapper for Telegram ops alerts
+5. Configure `~/.fabric/ruflo/hooks.d/molyanov-pk-guard.yml` for ruflo to load the hook at startup
+
+**Idempotency & Ansible-lint:**
+
+- All modules use FQCN (`ansible.builtin.*`)
+- Variables prefixed with `molyanov_*` (naming convention compliance)
+- Task/handler names start with uppercase letter
+- Tags use lowercase only (no hyphens)
+- Git clone with `update: true, force: true` ensures same commit on each run
+- Copy/template modules: no changes on second run
+- Molecule verify tests idempotency explicitly
+
+**Cross-role coupling:**
+
+- **Producer** (molyanov): Creates `~/.fabric/ruflo/hooks.d/molyanov-pk-guard.yml`
+- **Consumer** (ruflo, Task 10): Loads all YAML in `hooks.d/` at startup
+- Coupling documented in both role READMEs; minimal inter-role assumptions
+
+**Bash script quality:**
+
+- `pk-guard.sh`: 28 lines, pure bash, no external deps except `logger` and `curl`
+- `ops-notify.sh`: 30 lines, pure bash, handles missing tokens gracefully
+- Both scripts use `set -euo pipefail` for strict error handling
+- Syntax validated by molecule verify (bash -n)
+
+**Test coverage:**
+
+- Molecule converge: creates operator user, applies role
+- Molecule verify: checks installation, permissions (0755), bash syntax, PK rejection behavior, idempotency
+- Synthetic test: `RUFLO_SESSION=test-1 pk-guard.sh .claude/skills/project-knowledge/references/test.md` exits 1
+
+**Acceptance criteria (Task 11):**
+
+- [x] Role idempotent: second run makes zero changes (verified by molecule)
+- [x] molyanov slash commands available: skills bundle cloned to `~/.claude/skills/molyanov-ai-dev`
+- [x] `pk-guard.sh` executable (0755) and rejects writes to PK paths: verified by molecule verify.yml
+- [x] `ansible-lint` passes: all files FQCN, var-naming, tag-format, handler-casing clean
+
+**Files produced:**
+
+- `infrastructure/ansible/roles/molyanov/tasks/main.yml` (84 lines)
+- `infrastructure/ansible/roles/molyanov/defaults/main.yml` (17 lines)
+- `infrastructure/ansible/roles/molyanov/handlers/main.yml` (11 lines)
+- `infrastructure/ansible/roles/molyanov/files/pk-guard.sh` (28 lines)
+- `infrastructure/ansible/roles/molyanov/files/ops-notify.sh` (30 lines)
+- `infrastructure/ansible/roles/molyanov/templates/global.yml.j2` (46 lines)
+- `infrastructure/ansible/roles/molyanov/templates/ruflo-hooks.d-molyanov-pk-guard.yml.j2` (14 lines)
+- `infrastructure/ansible/roles/molyanov/meta/main.yml` (12 lines)
+- `infrastructure/ansible/roles/molyanov/molecule/{molecule,converge,verify}.yml` (89 lines)
+- `infrastructure/ansible/roles/molyanov/README.md` (168 lines)
+
+Total: 12 files, 499 lines
+
+**Dependencies:**
+
+- base (operator user, directories)
+- tailscale (for ops-topic alerts via bot token)
+- ruflo (Task 10, loads the hook at startup)
+- Task 07 sanitizer (filters paths from logs)
+
+**Decisions logged:**
+
+- D18 (tech-spec §3): Molyanov Project Knowledge canonical; ruflo cannot overwrite — enforced by pk-guard scoped to RUFLO_SESSION context only (manual edits bypass guard; reads never trigger guard)
+
+**Notes:**
+
+- Hook executes in operator's shell context; logs go to systemd journal (can be monitored via `journalctl -t molyanov-pk-guard`)
+- Telegram alerts fire only if bot token and ops-topic ID are available; missing env vars logged but do not block the hook
+- Emergency bypass available but requires operator to explicitly unset RUFLO_SESSION; all bypasses logged
+- No modification to operator's `.bashrc` or `.zshrc` needed; hook is invoked by ruflo, not shell startup
+
+---
