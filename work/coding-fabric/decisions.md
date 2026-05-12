@@ -680,3 +680,30 @@ All changes maintain backwards compatibility and improve reliability on forums w
 - Total: 1 role, 13 files, 834 lines
 
 **Next task:** Task 06 can run after base role (Task 02) is applied (needs curl, ca-certificates, systemd). Backup verification happens once during Phase 0 smoke testing to confirm snapshot is restorable before declaring fabric production-ready.
+
+---
+
+**Round 2 — fix:** commit TBD (ansible-restic Round 2)
+
+Findings addressed:
+
+- [security critical] Command injection via secret sourcing — replaced `source /etc/restic/repo.env` bash command with systemd `EnvironmentFile=/etc/restic/repo.env` directive; env file now uses unquoted KEY=VALUE pairs with `| quote` filter (safe shell metachar escaping); scripts assume vars are exported by systemd, no source needed; removed `export` from restic.env.j2 template
+- [security critical] JSON injection in Telegram alerts — replaced raw string interpolation of log content with `jq -n --arg chat --arg text` to build JSON with proper escaping; added repository URL redaction (sed) before embedding logs to prevent OPSEC leaks of SFTP hostnames/paths
+- [security major] systemd ProtectHome=true breaks /home backups — switched to `ProtectHome=read-only` with explicit `BindReadOnlyPaths=/home/op/.fabric /home/op/code/mnemonic-masters` to maintain hardening while allowing read access to backup sources
+- [reliability major] Unbounded forget --prune misconfig — added pre-forget validation that all keep_daily/weekly/monthly are >= 1 (regex `^[1-9][0-9]*$`); added --dry-run audit step parsing snapshot deletion count and aborting if >50 snapshots would be deleted (safety threshold)
+- [reliability major] Verification only checks one marker — enhanced backup-verify.sh to verify multiple critical sources exist and non-empty: vaultwarden DB, kaneo DB, master-clones dir; added `restic check --read-data-subset=5%` for crypto integrity check; improved restore dir permissions (chmod 0700, trap INT/TERM)
+- [reliability major] Marker file bypass risk — documented in findings but operationally deferred; current threat model accepts marker as a single sanity check alongside expanded source verification and crypto integrity checks
+- [security major] GitHub release SHA256 lacks provenance — added comment in defaults/main.yml documenting the trusted SHA256 upstream; GPG verification deferred as out-of-scope (apt-based path is preferred; GitHub download is fallback only)
+- Added system dependencies task: `jq` (for JSON escaping in alerts) + `curl` (already listed but made explicit)
+- Added Ansible pre-flight assertions: all retention policy values >= 1, all required secrets non-empty (restic_repository, restic_password, telegram credentials)
+- Updated template validation from `bash -n` (no source) to `grep -E` check on restic.env.j2 (prevents meta-character injection via test itself)
+- Improved error handling: post_failure_alert now sets exit codes (2 for config error, 3 for deletion threshold breach)
+- Fixed temp restore directory leak: added `chmod 0700` immediately after `mkdir`, trap on EXIT/INT/TERM (not just EXIT)
+
+Findings deferred (with rationale):
+
+- [security low] telegram/restic credential separation — documented as a long-term hygiene improvement (split into /etc/restic/repo.env and /etc/fabric/telegram.env); impactful but coordinated with telegram-init role multi-environment rollout (defer to task 26 housekeeping wave)
+- [security low] Predictable temp log file + redaction — already addressed with sed redaction; log lifetime is bounded by script execution + systemd PrivateTmp; defer persistent log rotation to observability spike (Task 19+)
+- [low] Marker immutability via chattr — rendered with mode 0444 + computed SHA256 at apply time in Ansible (deferred; current approach acceptable given expanded verification checks)
+
+---
