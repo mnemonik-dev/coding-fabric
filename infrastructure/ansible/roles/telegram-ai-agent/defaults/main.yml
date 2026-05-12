@@ -2,7 +2,10 @@
 # Upstream pin configuration
 # Defaults to mnemonic-org fork during PR-pending phase; switch to upstream after PR merge
 telegram_ai_agent_repo: "https://github.com/mnemonic-org/telegram-ai-agent.git"
-telegram_ai_agent_pin: "main"  # Commit SHA or tag; replace with upstream tag after PR merge
+# OPERATOR ACTION: Replace v0.0.0-mnemonic.1 with actual commit SHA from mnemonic-org/telegram-ai-agent
+# containing cwd:DYNAMIC patch from feature mnemonic-tg-bridge before first deploy.
+# Failing fast on placeholder is better than silent drift.
+telegram_ai_agent_pin: "v0.0.0-mnemonic.1"
 
 # Installation paths
 telegram_ai_agent_home: "/opt/telegram-ai-agent"

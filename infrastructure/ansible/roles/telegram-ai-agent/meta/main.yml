@@ -13,3 +13,4 @@ dependencies:
   - role: base
   - role: telegram-init
   - role: tailscale
+  - role: workspace-manager

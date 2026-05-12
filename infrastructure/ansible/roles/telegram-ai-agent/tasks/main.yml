@@ -10,6 +10,29 @@
           FATAL: tailscale_ip not set. This role requires tailscale to be deployed first (T02).
           See: work/mnemonic-tg-bridge/user-spec.md §3 (mnemonic-tg-bridge feature requirements)
 
+    - name: Verify workspace-manager (T08) is reachable on tailnet
+      ansible.builtin.uri:
+        url: "http://{{ tailscale_ip }}:8080/health"
+        method: GET
+        status_code: 200
+        timeout: 10
+      register: t08_health
+      failed_when: t08_health.status != 200
+      ignore_errors: no
+
+    - name: FAIL if workspace-manager not reachable
+      ansible.builtin.fail:
+        msg: |
+          FATAL: workspace-manager (T08) not reachable at http://{{ tailscale_ip }}:8080/health
+          This role requires T08 to be deployed and running for DYNAMIC cwd resolution.
+
+          Steps to resolve:
+          1. Verify workspace-manager role (T08) is deployed and running
+          2. Verify tailscale IP ({{ tailscale_ip }}) is accessible on fabric tailnet
+          3. Check: journalctl -u workspace-manager -n 20
+          4. Retry after T08 is healthy
+      when: t08_health.status is defined and t08_health.status != 200
+
 - name: Install uv package manager
   tags: [telegram-ai-agent, uv]
   block:
@@ -23,9 +46,10 @@
     - name: Download and verify uv installer
       ansible.builtin.shell: |
         set -e
-        curl -LsSf https://astral.sh/uv/install.sh | sh
+        curl -LsSf https://astral.sh/uv/install.sh | sh -s {{ telegram_ai_agent_uv_version }}
       environment:
         UV_INSTALL_DIR: "/usr/local"
+        UV_VERSION: "{{ telegram_ai_agent_uv_version }}"
       register: uv_install_result
       changed_when: "'uv' in uv_install_result.stdout or 'uv' in uv_install_result.stderr"
       when: uv_version_check.rc != 0 or telegram_ai_agent_uv_version not in uv_version_check.stdout | default("")
@@ -65,58 +89,76 @@
       delay: 2
       when: not repo_stat.stat.exists
 
-    - name: Fetch and checkout pinned commit (if already cloned)
-      ansible.builtin.shell: |
-        cd "{{ telegram_ai_agent_home }}"
-        git fetch --all
-        git checkout "{{ telegram_ai_agent_pin }}"
-      changed_when: '"HEAD detached" in git_fetch.stdout or "Switched" in git_fetch.stdout'
+    - name: Fetch all branches and tags from remote
+      ansible.builtin.command:
+        cmd: git fetch --all
+        chdir: "{{ telegram_ai_agent_home }}"
       register: git_fetch
+      changed_when: false
+      when: repo_stat.stat.exists
+
+    - name: Checkout pinned commit
+      ansible.builtin.command:
+        cmd: git checkout "{{ telegram_ai_agent_pin }}"
+        chdir: "{{ telegram_ai_agent_home }}"
+      register: git_checkout
+      changed_when: '"HEAD detached" in git_checkout.stdout or "Switched" in git_checkout.stdout'
       when: repo_stat.stat.exists
 
     - name: Verify correct commit is checked out
-      ansible.builtin.shell: |
-        cd "{{ telegram_ai_agent_home }}"
-        git rev-parse --short HEAD
-      register: current_commit
+      ansible.builtin.command:
+        cmd: git rev-parse HEAD
+        chdir: "{{ telegram_ai_agent_home }}"
+      register: current_sha
       changed_when: false
+      when: repo_stat.stat.exists
+
+    - name: Assert pinned commit matches checkout
+      ansible.builtin.assert:
+        that:
+          - current_sha.stdout | trim == telegram_ai_agent_pin or telegram_ai_agent_pin in current_sha.stdout
+        fail_msg: |
+          Checked out commit does not match pinned version.
+          Expected: {{ telegram_ai_agent_pin }}
+          Got: {{ current_sha.stdout | trim }}
+      when: repo_stat.stat.exists
 
     - name: Debug commit checkout
       ansible.builtin.debug:
-        msg: "Current commit: {{ current_commit.stdout }}"
+        msg: "Current commit: {{ current_sha.stdout | trim }}"
+      when: repo_stat.stat.exists
 
 - name: Pre-flight check for DYNAMIC feature
   tags: [telegram-ai-agent, preflight]
   block:
-    - name: Check for DYNAMIC feature test in pinned commit
-      ansible.builtin.stat:
-        path: "{{ telegram_ai_agent_home }}/tests/test_dynamic_cwd.py"
-      register: dynamic_test_file
-
-    - name: Grep for DYNAMIC sentinel in source (fallback if test doesn't exist)
+    - name: Run pytest collection for DYNAMIC feature test
       ansible.builtin.shell: |
-        grep -r "DYNAMIC" "{{ telegram_ai_agent_home }}/telegram_bot" --include="*.py" | head -5
-      register: dynamic_grep
+        cd "{{ telegram_ai_agent_home }}"
+        /usr/local/bin/uv run --project "{{ telegram_ai_agent_home }}" \
+          pytest tests/test_dynamic_cwd.py --co -q
+      register: pytest_collection
       changed_when: false
-      failed_when: false
-      when: not dynamic_test_file.stat.exists
+      failed_when: pytest_collection.rc != 0 or pytest_collection.stdout | length == 0
 
-    - name: FAIL if DYNAMIC feature not found in pinned commit
+    - name: FAIL if DYNAMIC feature test not collectible
       ansible.builtin.fail:
         msg: |
-          CRITICAL: The pinned commit ({{ telegram_ai_agent_pin }}) does not contain the
-          'cwd: DYNAMIC' feature required for coding-fabric AC6 (per-message worktree isolation).
+          CRITICAL: The pinned commit ({{ telegram_ai_agent_pin }}) does not contain a
+          collectible 'tests/test_dynamic_cwd.py' test. The 'cwd: DYNAMIC' feature is
+          required for coding-fabric AC6 (per-message worktree isolation).
 
-          The feature is tracked separately as 'mnemonic-tg-bridge' (S-size, approved).
+          The feature is tracked as 'mnemonic-tg-bridge' (S-size, approved).
 
           Options:
           1. If upstream PR merged: update telegram_ai_agent_pin to upstream tag in defaults/main.yml
           2. If PR still pending: ensure telegram_ai_agent_repo points to mnemonic-org fork
-          3. Reference: work/mnemonic-tg-bridge/user-spec.md §4–5 (feature scope and AC)
-      when: |
-        (not dynamic_test_file.stat.exists and
-         (dynamic_grep.rc != 0 or 'DYNAMIC' not in dynamic_grep.stdout)) or
-        telegram_ai_agent_require_dynamic_feature
+          3. Expected test path: {{ telegram_ai_agent_home }}/tests/test_dynamic_cwd.py
+          4. Reference: work/mnemonic-tg-bridge/user-spec.md §4–5 (feature scope and AC)
+
+          pytest collection output:
+          {{ pytest_collection.stdout }}
+          {{ pytest_collection.stderr }}
+      when: telegram_ai_agent_require_dynamic_feature and pytest_collection.rc != 0
 
 - name: Ensure configuration directory exists
   tags: [telegram-ai-agent, dirs]
@@ -206,6 +248,24 @@
 - name: Render environment file from sops
   tags: [telegram-ai-agent, secrets]
   block:
+    - name: Assert required secrets are present
+      ansible.builtin.assert:
+        that:
+          - telegram_bot_token is defined and telegram_bot_token | length >= 40
+          - anthropic_api_key is defined and anthropic_api_key | length >= 20
+        fail_msg: |
+          FATAL: Required secrets missing. Caller must provide via sops decryption.
+
+          Required variables:
+          - telegram_bot_token (minimum 40 chars, from BotFather)
+          - anthropic_api_key (minimum 20 chars, from Anthropic console)
+
+          Decryption steps:
+          1. Caller playbook must run: community.sops.load_vars
+          2. Load encrypted secrets file before including this role
+          3. See README §With SOPS Integration for example
+      no_log: true
+
     - name: Template .env file with secrets
       ansible.builtin.template:
         src: .env.j2
