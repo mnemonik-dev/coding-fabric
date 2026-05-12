@@ -9,6 +9,16 @@ source: spec.md (Mnemonic Protocol Agent-Driven Development Loop v0.1.1)
 attestation: 9253b6c0-78ea-4127-9397-8b7875f791b3
 solana_tx: 2bFxD4pWQZw87xnQcqVPqgTgfJ7VyLmTNiXbE8zCVpKPC61svZNcwYnTeNMiU3NtWheNdPV5fffHcF6iZkykBebf
 arweave_tx: 7wd7o88htpgkubidTv5iYi4CDE8xQaY9cnX6Qwa6EfK1
+delivery_v0.2.0: tech-spec.md (IaC + CI via OpenTofu + Ansible + GitHub Actions on Hetzner)
+related_features:
+  - mnemonic-tg-bridge — Rust rewrite of pavel-molyanov/telegram-ai-agent, separate user-spec at work/mnemonic-tg-bridge/user-spec.md
+  - ruflo-mnemonic — backlog, separate user-spec when scheduled
+note: |
+  user-spec acceptance criteria are delivery-mechanism-agnostic. tech-spec v0.2.0 ships
+  these ACs through OpenTofu + Ansible + GitHub Actions (replacing v0.1.1's manual
+  operator execution). Networking moved from self-hosted WireGuard to Tailscale; no AC
+  changes. See work/coding-fabric/bootstrap-checklist.md for the one-time operator
+  setup (~30 min).
 ---
 
 # User Spec — Coding Fabric (Mnemonic Protocol Agent-Driven Development Loop)
