@@ -1,0 +1,84 @@
+{
+  "task": "01",
+  "reviewer": "security-auditor",
+  "round": 1,
+  "commit_reviewed": "4fb136b",
+  "overall_verdict": "needs-fixes",
+  "findings": [
+    {
+      "severity": "medium",
+      "area": "network",
+      "file": "infrastructure/tofu/hetzner/main.tf",
+      "line": 84,
+      "issue": "Firewall is attached via a separate `hcloud_firewall_attachment` resource rather than `firewall_ids = [...]` on `hcloud_server.fabric`. With a separate attachment, the server is created and booted (cloud-init runs, OpenSSH on :22 starts, package mirrors reached) BEFORE the firewall is attached. This is a real race window: between `hcloud_server.fabric` apply completion and `hcloud_firewall_attachment.fabric` apply completion, port 22 (and any other listening services from the Ubuntu 24.04 base image) is reachable from the public internet. The `depends_on` block only enforces *order* — it does not eliminate the gap. For a bootstrap node whose entire access model is Tailscale-only, this is the largest concrete exposure window in the design.",
+      "fix_recommendation": "Use the inline `firewall_ids` argument on `hcloud_server`:\n\n```hcl\nresource \"hcloud_server\" \"fabric\" {\n  ...\n  firewall_ids = [hcloud_firewall.fabric.id]\n}\n```\n\nThis attaches the firewall atomically at server creation so no inbound traffic is ever accepted in the public state. Remove `hcloud_firewall_attachment.fabric` (or keep it as an explicit safety net — they are idempotent). Verify with `tofu plan` that the resource graph still shows the firewall on the server."
+    },
+    {
+      "severity": "low",
+      "area": "cloud-init",
+      "file": "infrastructure/tofu/hetzner/variables.tf",
+      "line": 9,
+      "issue": "`operator_ssh_pubkey` has no `validation { condition = ... }` block. The variable is interpolated raw into a YAML heredoc in `main.tf` user_data. If a malformed or maliciously-crafted value is passed (e.g. by an automation pipeline that does not validate operator input), it can introduce additional YAML keys: a value containing a newline + `    - name: attacker\\n      ssh_authorized_keys: [...]` would inject a second user. The current trust model assumes the operator is the only caller, which limits impact, but a regex check is a 5-line defense-in-depth measure.",
+      "fix_recommendation": "Add input validation:\n\n```hcl\nvariable \"operator_ssh_pubkey\" {\n  description = \"...\"\n  type        = string\n  validation {\n    condition     = can(regex(\"^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp(256|384|521)) [A-Za-z0-9+/=]+( [^\\\\n\\\\r]*)?$\", var.operator_ssh_pubkey))\n    error_message = \"operator_ssh_pubkey must be a single-line OpenSSH public key (ssh-rsa, ssh-ed25519, or ecdsa-sha2-nistp*).\"\n  }\n}\n```"
+    },
+    {
+      "severity": "low",
+      "area": "network",
+      "file": "infrastructure/tofu/hetzner/main.tf",
+      "line": 36,
+      "issue": "Outbound rules permit ALL TCP, UDP, and ICMP egress to `0.0.0.0/0` and `::/0`. The Tailscale-only access model on the inbound side is strong; the egress side has no defense-in-depth. If the agent trust boundary (D27) fails (an agent escapes its sandbox, or a supply-chain-compromised dependency phones home), there is zero egress restriction to slow exfiltration or C2. This is a defensible default for a build-fabric box that needs Tailscale DERP, GitHub, package mirrors, etc., but the choice should be conscious.",
+      "fix_recommendation": "For Task 01, leave as-is and document the decision (or defer to Task 02 base role for egress hardening with ufw/nftables on the VM). At minimum, add a comment in `main.tf` near the egress rules noting that egress is intentionally open and pointing to the tech-spec section where this is justified. A future hardening pass should consider per-protocol-port egress allowlists for known destinations (Tailscale DERP IP ranges, deb.debian.org, ghcr.io, api.github.com)."
+    },
+    {
+      "severity": "low",
+      "area": "cloud-init",
+      "file": "infrastructure/tofu/hetzner/main.tf",
+      "line": 75,
+      "issue": "The cloud-init `op` user is given `groups: [sudo, docker]` AND `sudo: \"ALL=(ALL) NOPASSWD:ALL\"`. (a) The `docker` group does not yet exist on a fresh Ubuntu 24.04 image — cloud-init may emit a warning. (b) Once Docker is installed (Task 02), membership in the `docker` group is equivalent to root via `docker run -v / --privileged`. Combined with passwordless sudo, the `op` user is effectively unrestricted root with no MFA and no audit trail. This is acceptable given Tailscale-only access, but it means the Tailscale key is the SOLE authentication factor for full root.",
+      "fix_recommendation": "Two options:\n1. Defer adding `op` to the `docker` group until Task 02 Ansible `base` role runs (after Docker is installed). Drop `docker` from the cloud-init groups list.\n2. Keep current behavior but add a comment that explicitly states the trust model: \"Tailscale auth-key is the sole pre-MFA credential gating full root access. Rotate aggressively.\" and ensure Task 02 enforces sshd `AuthenticationMethods publickey` and disables password auth."
+    },
+    {
+      "severity": "info",
+      "area": "secrets",
+      "file": "infrastructure/tofu/hetzner/main.tf",
+      "line": 7,
+      "issue": "Provider block sets `token = var.hcloud_token` explicitly. The hcloud provider also reads the `HCLOUD_TOKEN` env var automatically when no `token` is set. The current pattern requires the test/CI script to set BOTH `HCLOUD_TOKEN` and `TF_VAR_hcloud_token` (see `tests/test_tofu_plan.sh:55-56`), which doubles the surface where the token can leak (process env, OpenTofu state's input.json on disk under `.terraform/`). This is not a bug but a hygiene smell.",
+      "fix_recommendation": "Either (a) drop `var.hcloud_token` and let the provider read `HCLOUD_TOKEN` directly, removing the duplicate variable, or (b) keep `var.hcloud_token` as the canonical source and stop exporting `HCLOUD_TOKEN` in the test script. Pick one path; document it in a README so CI doesn't drift."
+    },
+    {
+      "severity": "info",
+      "area": "state",
+      "file": "infrastructure/tofu/hetzner/versions.tf",
+      "line": 14,
+      "issue": "Local state is acceptable for Task 01 (the task spec explicitly says so), and the upgrade path to encrypted remote state is documented in both `versions.tf` and `.gitignore`. However, the local `terraform.tfstate` file will contain the (sensitive) `hcloud_token` variable in its `input.json`/state metadata depending on how the operator invokes `tofu apply` — and on a shared dev machine this is a non-trivial risk if the machine is later compromised or the home directory is synced (Dropbox/iCloud/etc.).",
+      "fix_recommendation": "Add a one-line operator note to `versions.tf` (or a new README.md in the module): 'WARNING: until Task 24 lands, the local terraform.tfstate may contain sensitive resource attributes. Run tofu on a workstation with full-disk encryption and DO NOT sync this directory to cloud storage.' This is documentation-only; no code change required."
+    },
+    {
+      "severity": "info",
+      "area": "other",
+      "file": "infrastructure/tofu/hetzner/main.tf",
+      "line": 162,
+      "issue": "Volume encryption at rest is NOT enabled. Hetzner Cloud volumes are encrypted at the storage-backend level by Hetzner but are presented to the VM as plain ext4 — there is no per-tenant LUKS layer. The fabric volume will hold Vaultwarden's data dir, Restic local cache, sccache, and worktree data — i.e. exactly the high-value secrets bag. Defense-in-depth would mean LUKS on top of /dev/sdb. This is out-of-scope for Task 01 (no Tofu provider knob enables LUKS) but should be on the Task 02 base-role checklist.",
+      "fix_recommendation": "No change in Task 01. Surface to the team lead so Task 02 (`base` role) includes a LUKS-with-keyfile-on-root-fs step or equivalent before the volume is mounted at /var/lib/fabric. Alternative: rely on Vaultwarden's own at-rest encryption plus sops-encrypted secrets and accept the residual risk; document the decision."
+    },
+    {
+      "severity": "info",
+      "area": "other",
+      "file": "infrastructure/tofu/hetzner/main.tf",
+      "line": 110,
+      "issue": "`lifecycle.prevent_destroy = false` is explicit on both `hcloud_server.fabric` and `hcloud_volume.fabric_data`. Comments correctly note this is intentional for the dev phase. Once Task 06 (Restic backups) is verified, the volume should flip to `prevent_destroy = true` to avoid a `tofu destroy` accidentally wiping persistent state. This is process risk, not code risk, and is already documented in-file.",
+      "fix_recommendation": "No change required for Task 01. Track as an explicit follow-up TODO in `decisions.md` or in a future task that depends on Task 06 completing: 'set hcloud_volume.fabric_data lifecycle.prevent_destroy = true after first verified Restic restore test passes.'"
+    }
+  ],
+  "positive_notes": [
+    "`hcloud_token` is correctly marked `sensitive = true` and never appears in outputs or descriptions.",
+    "Firewall posture is correct: single inbound allow rule for UDP/41641 with explicit `direction = \"in\"`, default-deny on everything else. No accidental wildcard rules.",
+    "`.gitignore` is thorough: covers `.terraform/`, `*.tfstate*`, `*.tfvars`, `*.tfplan`, with an explicit comment preserving `.terraform.lock.hcl`.",
+    "State backend strategy is explicitly documented inline (versions.tf + .gitignore) with a clear upgrade path to Task 24 — auditor does not have to dig.",
+    "`outputs.tf` only exposes non-sensitive values (IPs, device path, names, firewall ID); no secrets leak via outputs.",
+    "`try(hcloud_server.fabric.ipv6_address, null)` correctly handles regions without IPv6.",
+    "Test script `tests/test_tofu_plan.sh` documents the post-apply nmap/ssh smoke checks (UDP/41641 open, TCP/22/80/443 closed) inline — auditor-friendly.",
+    "Cloud-init injection point uses a HEREDOC with a single `${var.operator_ssh_pubkey}` interpolation; no shell command construction or `local-exec` from variable input — no command-injection path."
+  ],
+  "scope_observations": "Two cross-task items worth surfacing to the team lead: (1) Volume encryption at rest (LUKS) is not addressable in Tofu and must be claimed by Task 02 (`base` role) or explicitly accepted as residual risk. (2) Egress firewall hardening is out-of-scope for the cloud-firewall layer (which is L3 between internet and VM); if the team wants defense-in-depth against compromised agents exfiltrating, that has to live in the VM's host firewall (ufw/nftables) configured by Task 02. Both are not blockers for Task 01 but should be tracked so they don't silently fall through the cracks between waves. Finally: the firewall race window flagged as the medium finding is the only item I'd actually require fixed before merge — everything else is hygiene or scope."
+}

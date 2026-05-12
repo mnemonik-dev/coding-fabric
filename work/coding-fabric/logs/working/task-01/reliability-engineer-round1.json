@@ -1,0 +1,126 @@
+{
+  "task": "01",
+  "reviewer": "reliability-engineer",
+  "round": 1,
+  "commit_reviewed": "4fb136b",
+  "overall_verdict": "needs-fixes",
+  "findings": [
+    {
+      "severity": "high",
+      "area": "cloud-init",
+      "file": "infrastructure/tofu/hetzner/main.tf",
+      "line": 97,
+      "issue": "SSH public key rotation is a destructive server replacement. The operator_ssh_pubkey is embedded in user_data. Hetzner does not re-run cloud-init on apply; if the key is rotated, the only way to make it take effect is to destroy and recreate the server (losing the root disk). There is no ignore_changes guard to prevent unintentional server replacement on a future key rotation.",
+      "fix_recommendation": "Add `ignore_changes = [user_data]` inside the server lifecycle block. Document that key rotation must be performed via Ansible (Task 02 base role). This separates one-time bootstrap provisioning from ongoing key management."
+    },
+    {
+      "severity": "high",
+      "area": "lifecycle",
+      "file": "infrastructure/tofu/hetzner/main.tf",
+      "line": 116,
+      "issue": "server_type change (CCX33 to CCX43) forces server replacement by default. The Hetzner provider does NOT support in-place resize for dedicated CCX servers via API (unlike shared CX). A naive `tofu apply` after changing server_type will destroy and recreate the server, dropping the root disk. The variable comment says 'no data migration required for attached volume' which is correct for the data volume, but the root disk will be wiped and the OS must be reprovisioned by Ansible.",
+      "fix_recommendation": "Add an explicit comment in variables.tf and main.tf clarifying that a server_type change triggers destroy+recreate of the server resource (not an in-place resize). The data volume survives because it is a separate resource. Operator should plan for a full Ansible re-run after the type change. Optionally add `create_before_destroy = true` on the server so the new server is ready before the old one is torn down, reducing downtime window."
+    },
+    {
+      "severity": "medium",
+      "area": "lifecycle",
+      "file": "infrastructure/tofu/hetzner/main.tf",
+      "line": 155,
+      "issue": "hcloud_volume has `automount = true` at the resource level AND hcloud_volume_attachment also sets `automount = true`. The volume-level automount applies to the initial creation (mounts at first attach). The attachment-level automount is the canonical setting for subsequent attaches. Having both set to true is functionally fine today, but creates ambiguity about which controls the behaviour and may cause confusion when switching between detach/reattach operations or if Hetzner API behaviour diverges.",
+      "fix_recommendation": "Remove `automount = true` from the `hcloud_volume` resource block (keep it only on `hcloud_volume_attachment`). Document with a comment that automount is controlled at attach time."
+    },
+    {
+      "severity": "medium",
+      "area": "drift",
+      "file": "infrastructure/tofu/hetzner/main.tf",
+      "line": 55,
+      "issue": "No `ignore_changes` on firewall labels or server labels. If an operator adds a label in the Hetzner console for operational tagging (e.g. `incident=true`), the next `tofu apply` will silently remove it. More critically, if Hetzner ever adds system labels (e.g. backup-related), Tofu will detect drift and remove them, which could impact Hetzner-side features.",
+      "fix_recommendation": "Consider `lifecycle { ignore_changes = [labels] }` on both `hcloud_server.fabric` and `hcloud_firewall.fabric`. For the server it is especially important since Ansible dynamic inventory relies on the `role=fabric-node` label — unexpected label drift could break Task 24 host discovery."
+    },
+    {
+      "severity": "medium",
+      "area": "ordering",
+      "file": "infrastructure/tofu/hetzner/main.tf",
+      "line": 176,
+      "issue": "The `hcloud_firewall_attachment` has explicit `depends_on` for both server and firewall, but the firewall is not applied until after the server is running. During the window between `hcloud_server.fabric` creation and `hcloud_firewall_attachment.fabric` attachment, the server is live with NO firewall rules (Hetzner default is allow-all). Tailscale is not yet installed, so the server is briefly exposed publicly.",
+      "fix_recommendation": "This is a known IaC bootstrapping race inherent to the Hetzner provider. Document it explicitly in main.tf with a comment noting the brief open-window risk and the fact that the cloud-init user_data does not start any listening services (no SSH port open in Hetzner firewall does not mean the OS is not listening on 22 until ufw is configured). Consider adding a cloud-init runcmd step that runs `ufw default deny incoming && ufw enable` as the very first action, before package installs, to close the OS-level window independently of Hetzner's firewall attachment."
+    },
+    {
+      "severity": "medium",
+      "area": "provider-pin",
+      "file": "infrastructure/tofu/hetzner/versions.tf",
+      "line": 9,
+      "issue": "Provider pinned to `~> 1.45` (>= 1.45.0, < 1.46.0). The `.terraform.lock.hcl` file is NOT present in this commit. Without a committed lockfile, `tofu init` in CI will resolve the latest 1.45.x patch at runtime, meaning two consecutive CI runs on different days could use different provider binaries. This defeats the purpose of provider pinning for reproducibility.",
+      "fix_recommendation": "Run `tofu providers lock -platform=linux_amd64 -platform=darwin_amd64` locally, commit the generated `.terraform.lock.hcl` file. The .gitignore already correctly avoids ignoring this file (note in line 25), but the lockfile was not committed with this task. The lockfile must be present for the CI run in Task 24 to be deterministic."
+    },
+    {
+      "severity": "medium",
+      "area": "test-robustness",
+      "file": "infrastructure/tofu/hetzner/tests/test_tofu_plan.sh",
+      "line": 56,
+      "issue": "Step numbering in the script is inconsistent: the script announces '3 steps' in the header comment but then prints 'Step 3/3' for fmt and 'Step 4/4' for plan. This is a copy-paste error that will confuse operators running the script for the first time in an incident.",
+      "fix_recommendation": "Normalize step announcements: there are 4 steps (init, validate, fmt, plan). Change 'Step 2/3' to 'Step 2/4', 'Step 3/3' to 'Step 3/4', 'Step 4/4' is already correct. Also update the header comment from '3 steps' to '4 steps'."
+    },
+    {
+      "severity": "medium",
+      "area": "test-robustness",
+      "file": "infrastructure/tofu/hetzner/tests/test_tofu_plan.sh",
+      "line": 110,
+      "issue": "The plan artifact `last.tfplan` is written to MODULE_DIR (i.e. infrastructure/tofu/hetzner/last.tfplan). The .gitignore correctly covers *.tfplan. However the plan file is written to the module source directory rather than a temp location. In CI, if the workspace is shared across runs, a stale last.tfplan from a previous run could be present and cause confusion. Additionally the plan file may contain sensitive values (API tokens are marked sensitive but cloud-init user_data is not).",
+      "fix_recommendation": "Write the plan to a tmpdir: use `PLAN_FILE=$(mktemp)` and pass `-out=${PLAN_FILE}`. Clean up with `trap 'rm -f ${PLAN_FILE}' EXIT`. This keeps the module directory clean and avoids any sensitive leakage into the workspace."
+    },
+    {
+      "severity": "low",
+      "area": "outputs",
+      "file": "infrastructure/tofu/hetzner/outputs.tf",
+      "line": 1,
+      "issue": "Output names `vm_ipv4`, `vm_ipv6`, `volume_device`, `server_name`, `firewall_id` are stable and match the tech-spec §2.2 specification (`vm_ipv4`, `vm_ipv6`, `volume_device`). However `server_name` and `firewall_id` are not mentioned in the tech-spec outputs list. If Task 24 Ansible inventory template only references the three spec-listed outputs, the extra outputs are harmless but untested.",
+      "fix_recommendation": "No action required for correctness. Consider adding a brief comment in outputs.tf indicating which outputs are consumed by downstream tasks (Ansible inventory in Task 24) to prevent future renaming of load-bearing outputs."
+    },
+    {
+      "severity": "low",
+      "area": "lifecycle",
+      "file": "infrastructure/tofu/hetzner/main.tf",
+      "line": 130,
+      "issue": "No `create_before_destroy` on hcloud_volume_attachment. If the attachment must be replaced (e.g. because the server is replaced), the old attachment is destroyed first, which briefly detaches the volume. For a stateless bootstrap this is fine, but once the fabric is in steady state with live data on the volume, this ordering could cause a brief unmount window.",
+      "fix_recommendation": "Add `lifecycle { create_before_destroy = true }` to `hcloud_volume_attachment.fabric_data`. This ensures the new attachment is created (volume re-attached to new server) before the old attachment object is deleted in Tofu's state."
+    },
+    {
+      "severity": "low",
+      "area": "gitignore",
+      "file": "infrastructure/tofu/hetzner/.gitignore",
+      "line": 1,
+      "issue": "The .gitignore lives inside infrastructure/tofu/hetzner/ and will only apply to that directory tree. If the operator runs tofu from the repo root or from infrastructure/tofu/, state files created at those paths will not be covered.",
+      "fix_recommendation": "Either add a root-level .gitignore entry covering `**/*.tfstate` and `**/*.tfstate.backup`, or add a second .gitignore at infrastructure/tofu/. This is minor since the task spec says state is local-only for now, but protects against accidental `tofu apply` from a parent directory."
+    },
+    {
+      "severity": "info",
+      "area": "lifecycle",
+      "file": "infrastructure/tofu/hetzner/main.tf",
+      "line": 116,
+      "issue": "prevent_destroy = false is explicitly commented as intentional for the bootstrap phase, with a note to set true later. There is no mechanism (task, checklist item, or TODO comment with a task reference) to ensure this is actually done in a later wave.",
+      "fix_recommendation": "Add a reference to the bootstrap-checklist.md or a specific future task number in the comment, e.g. 'Set to true after Task 06 (Restic backups) is verified'. Without an explicit hook, this will silently remain false indefinitely."
+    },
+    {
+      "severity": "info",
+      "area": "other",
+      "file": "infrastructure/tofu/hetzner/main.tf",
+      "line": 70,
+      "issue": "Tailscale only needs UDP/41641 for direct connections; DERP relay uses TCP/443 and UDP/3478 additionally. The firewall inbound rule comment says 'DERP relay fallback' but DERP relay is inbound only for the server receiving connections. In this use case the fabric VM is primarily an SSH destination, so it needs to receive Tailscale direct connections (UDP/41641) but Tailscale DERP relay traffic from the operator's client would arrive on different ports if the operator's client is behind a NAT. The current rule (UDP/41641 inbound only) is correct for the server side.",
+      "fix_recommendation": "The rule is correct. Update the comment to clarify: 'UDP/41641 inbound allows Tailscale direct peer-to-peer from operator clients. DERP relay fallback uses DERP servers as intermediaries (outbound from this server), so no additional inbound rule is needed for DERP.'"
+    }
+  ],
+  "positive_notes": [
+    "Excellent separation of concerns: firewall, server, volume, and attachments are all distinct resources with clear resource graph. This is the correct Tofu structure for Hetzner.",
+    "Explicit depends_on on both hcloud_firewall_attachment and hcloud_volume_attachment prevents silent race conditions that would otherwise be implicit on Hetzner's async API.",
+    "hcloud_location is a proper variable with default 'fsn1' — makes region change a single-line edit per tech-spec TR6 requirement.",
+    "server_type and volume_size_gb are both variables with sensible defaults — the one-line resize path for CCX33->CCX43 and 200GB->500GB is fully supported.",
+    "try() on vm_ipv6 output correctly handles regions without IPv6 without breaking the output contract.",
+    "Test script has set -euo pipefail, graceful tofu-not-found detection with informative error and exit 1, and correctly handles the dummy-token exit-code-1 case as a non-failure.",
+    ".gitignore correctly avoids ignoring .terraform.lock.hcl (with explicit comment explaining why) while covering state files, plan files, and tfvars.",
+    "Cloud-init user_data is minimal and idempotent for the first boot — no state-changing runcmd steps that would be dangerous to re-run.",
+    "provider version comment '~> 1.45 means >= 1.45.0, < 1.46.0' is accurate and helpful for operators who may not know Tofu version constraint syntax.",
+    "Labels on all resources include managed_by=opentofu to support operational inventory queries."
+  ],
+  "scope_observations": "The tech-spec (D31) defers encrypted remote state to Task 24, and the commit message acknowledges this. This is an accepted deferral, not a gap in this task. However, the local state file path is not documented in bootstrap-checklist.md — operators running Task 01 manually need to know where the state file lives and that they must preserve it until Task 24 wires remote state. This is an operational documentation gap for bootstrap-checklist.md, not a code issue. Additionally, the CCX33 has 16 GB RAM against the user-spec requirement of 32 GB — this is acknowledged in tech-spec D1 as an accepted trade-off pending watchdog-triggered upsizing. The resize path is structurally sound in the code."
+}

@@ -1,0 +1,41 @@
+---
+feature: coding-fabric
+version: 0.2.0
+total_waves: 8
+last_completed_wave: 0
+next_wave: 1
+review_level: L2
+team_name: coding-fabric-v0.2.0
+started: 2026-05-12
+last_updated: 2026-05-12
+status: dry-run-in-progress
+note: |
+  Dry-run mode: Wave 1 task 01 only. After completion, user decides whether to
+  unleash full Wave 1 parallelism (T02-T06).
+
+task_statuses:
+  "01": in_progress  # OpenTofu Hetzner VM + volume + firewall
+  "02": planned
+  "03": planned
+  "04": planned
+  "05": planned
+  "06": planned
+  "07": planned
+  "08": planned
+  "09": planned
+  "10": planned
+  "11": planned
+  "12": planned
+  "13": planned
+  "14": planned
+  "15": planned
+  "16": planned
+  "17": planned
+  "18": planned
+  "19": planned
+  "20": planned
+  "21": planned
+  "22": planned
+  "23": planned
+  "24": planned
+  "25": planned
