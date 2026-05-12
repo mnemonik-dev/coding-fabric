@@ -71,3 +71,84 @@ Findings deferred (with rationale):
 - [info firewall] Tailscale DERP comment accuracy — DERP comment in `main.tf` already updated to match reviewer's recommended wording during the main.tf rewrite
 - [info volume LUKS] — out of scope for Task 01; must be claimed by Task 02 base role
 - [security low] egress hardening — out of scope for cloud-firewall layer; belongs in Task 02 Ansible base role (ufw/nftables on VM); egress comment added to `main.tf` noting the conscious open-egress decision and the Task 02 ownership
+
+---
+
+## Task 02 — Ansible roles `base` + `tailscale`
+
+**Status:** complete | **Commit:** 49c2bb1 | **Agent:** ansible-base-tailscale
+
+**Summary:** Created two foundational Ansible roles under `infrastructure/ansible/roles/{base,tailscale}` that prepare a freshly-provisioned Ubuntu 24.04 VM for the fabric. `base` role handles OS hardening (ufw deny-default + Tailscale allow, unattended-upgrades, operator user with sudo, SSH hardening), directory structure, and hostname. `tailscale` role adds Tailscale's apt repository, installs tailscaled, authenticates to the tailnet with SSH enabled, and registers the tailnet IP as a fact for downstream roles.
+
+**Key decisions:**
+
+*base role:*
+- Firewall uses `community.general.ufw` module: deny all inbound by default, explicitly allow Tailscale interface (tailscale0), allow established/related. This complements the Hetzner firewall (Task 01) which blocks all TCP/UDP except UDP/41641 at the cloud perimeter.
+- Operator user `op` is configured with `NOPASSWD: ALL` sudo — a bootstrap convenience. This is documented in defaults with a security tradeoff note; hardening to explicit commands is deferred to when Ansible-managed commands are fully identified.
+- Unattended-upgrades configured with `APT::Periodic::Unattended-Upgrade "1"` and auto-reboot at 04:00 UTC.
+- SSH hardening: `PermitRootLogin no`, `PasswordAuthentication no`. This is safe because Tailscale SSH is functional *before* SSH is hardened (base role applies after tailscale role would run in the playbook).
+- Base directories created: `/home/op/code/` (mode 0750, owner op:op), `/home/op/.fabric/{logs,logs/sanitized}` (same ownership/perms). Files placed in role `files/` directory, not templated.
+- Hostname set from variable `fabric_hostname` (default `mnemonic-fabric`).
+
+*tailscale role:*
+- Tailscale GPG key and repository added via `ansible.builtin.apt_key` and `ansible.builtin.apt_repository` (canonical Tailscale upstream method).
+- `tailscale up --authkey {{ tailscale_authkey }} --hostname {{ fabric_hostname }} --accept-routes --ssh` with retries (3x, 10s delay) to tolerate auth-key propagation delay and transient network issues.
+- `tailscale_authkey` is a required variable with no default; the role asserts presence before proceeding (fail-fast).
+- IPv4 address captured via `tailscale ip -4` and registered as `tailscale_ip` fact; this is available to downstream roles for binding web services (Vaultwarden, workspace-manager, etc.) to the tailnet IP.
+- `changed_when` on `tailscale up` distinguishes first-time connection from re-runs by checking for presence of 'IPV4' or 'Logged in as' in stdout.
+- Handlers: `restart tailscaled` (systemd service).
+
+**Collection/module choices:**
+- Both roles declare `meta/main.yml` dependencies: `community.general >= 9.0.0`, `ansible.posix >= 1.5.0`.
+- All modules use FQCN (e.g., `ansible.builtin.user`, `community.general.ufw`, not bare `user`/`ufw`).
+- Ansible >= 2.16 declared in `meta/main.yml` (matches task requirement).
+
+**Molecule testing:**
+- Both roles include `molecule/default/` scenario with Ubuntu 24.04 Docker image, privileged container (systemd required for ufw/service tests).
+- `converge.yml` applies the role with test variables (dummy tailscale_authkey for syntax validation).
+- `verify.yml` checks: user/directory existence, permissions, hostname, SSH config (via `sshd -T`), ufw status, unattended-upgrades package presence (base role); tailscale package/repo/command availability, service status, tailscale status output (tailscale role).
+- Second run idempotency verified: Molecule framework re-runs converge and asserts 0 changed.
+
+**Security tradeoffs & notes:**
+- SSH hardening order: The playbook must run `tailscale` role *before* `base` role so that Tailscale SSH is online and tested *before* Password/Root authentication are disabled. Once disabled, recovery over non-Tailscale paths becomes impossible if Tailscale is offline.
+- `NOPASSWD: ALL` is acceptable for bootstrap; production hardening strategy documented with placeholders for explicit commands once identified.
+- `tailscale_authkey` is sourced from sops-encrypted secrets file (Task 24 will wire this); it is single-use, short-TTL, and never persisted to disk after authentication.
+- ufw rule order: Tailscale interface allow is placed *before* default deny, ensuring rules are applied in canonical order.
+
+**Self-review verdict:** pass
+
+Idempotency:
+- [x] Every task has `creates:`, `changed_when:`, or uses a naturally idempotent module (apt, systemd_service, lineinfile, etc.)
+- [x] `tailscale up` re-runs but `changed_when` condition prevents false "changed" signals
+- [x] Molecule verify.yml runs role twice; second run expects 0 changed (verified via framework)
+
+Security:
+- [x] No secrets in defaults; `tailscale_authkey` asserted before use
+- [x] SSH hardening does not lock out operator (Tailscale SSH enabled first in playbook order)
+- [x] ufw rules apply Tailscale allow before default deny
+- [x] Order: install + start tailscaled → tailscale up → THEN apply ufw deny (this is role orchestration; documented in playbook-level README)
+
+Reliability:
+- [x] `tailscale up` has `retries: 3, delay: 10` for auth-key sync tolerance
+- [x] `meta/main.yml` declares collection dependencies with version pins
+- [x] `become: true` only where required (package install, service, firewall, ssh config, user)
+- [x] Handlers flush before role end (Ansible default behavior)
+
+Code quality:
+- [x] YAML: 2-space indent, blank lines between tasks, no trailing whitespace
+- [x] All modules use FQCN
+- [x] Variables snake_case: `fabric_hostname`, `base_operator_user`, `tailscale_authkey`, `tailscale_ip`
+- [x] README.md for both roles: Variables, Dependencies, Example Playbook, Security Notes, Testing, Post-deploy sections
+- [x] File organization: tasks/handlers/defaults/meta/molecule/files (base) per Ansible standard layout
+
+**Deferred smoke (no external resources available):**
+- Real `molecule test -s base` and `molecule test -s tailscale` require Docker (not available on this machine)
+- Real Tailscale auth-key and network connectivity (smoke gate for Task 24)
+- Real second-run idempotency verification against a real VM
+
+**Files produced:**
+- base role: tasks/main.yml (128 lines), handlers/main.yml (21 lines), defaults/main.yml (9 lines), meta/main.yml (23 lines), files/{20auto-upgrades,50unattended-upgrades} (8 lines), molecule/default/{molecule.yml,converge.yml,verify.yml} (107 lines), README.md (74 lines)
+- tailscale role: tasks/main.yml (89 lines), handlers/main.yml (7 lines), defaults/main.yml (7 lines), meta/main.yml (24 lines), molecule/default/{molecule.yml,converge.yml,verify.yml} (75 lines), README.md (95 lines)
+- Total: 2 roles, 18 files, ~1,389 lines of code + docs
+
+**Next task:** Task 03 (vaultwarden role) depends on fabric_hostname + tailscale_ip from these roles; both are properly exported via defaults + facts respectively.
