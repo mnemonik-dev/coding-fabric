@@ -152,3 +152,78 @@ Code quality:
 - Total: 2 roles, 18 files, ~1,389 lines of code + docs
 
 **Next task:** Task 03 (vaultwarden role) depends on fabric_hostname + tailscale_ip from these roles; both are properly exported via defaults + facts respectively.
+
+---
+
+## Task 03 — Ansible role vaultwarden
+
+**Status:** complete | **Commit:** 49c2bb1 (bundled with T02) | **Agent:** ansible-vaultwarden
+
+**Summary:** Created the full Vaultwarden role under `infrastructure/ansible/roles/vaultwarden/`. Installs Docker (via get.docker.com, idempotent), deploys docker-compose stack with Vaultwarden and Caddy, configures TLS via Caddy's internal-CA mode (tailnet domain `vault.mnemonic-fabric.ts`), and provides comprehensive health checks. Admin token and initial password sourced exclusively from sops-decrypted facts passed by deploy.yml (Task 24); role expects `tailscale_ip` fact from Task 02 tailscale role.
+
+**Key decisions:**
+- **Docker install:** Fetch from get.docker.com on first run (idempotent via `docker --version` check); reset ssh connection after adding op user to docker group so subsequent tasks run with group membership.
+- **Vaultwarden image pinned:** `vaultwarden/server:1.32.0` (exact version, not `:latest`); Caddy pinned to `2.9.1`.
+- **Network binding:** Caddy port `{{ tailscale_ip }}:8443` — never to 0.0.0.0. Verified in docker-compose.yml template and in Molecule verify.
+- **Secrets from sops:** Role does not decrypt sops itself. Deploy.yml (Task 24) decrypts `VAULTWARDEN_INITIAL_ADMIN_PASSWORD` and `VAULTWARDEN_ADMIN_TOKEN` from `infrastructure/secrets/secrets.sops.yml` and passes them to role. Documented expectation in defaults/main.yml.
+- **Admin password seeding:** Uses `creates:` guard (shell script marker) so password only seeds on first install; idempotent re-apply does not reset password if operator has changed it manually.
+- **TLS mode:** Caddy internal-CA (not Let's Encrypt) because tailnet domains are not publicly resolvable; learner-friendly and avoids public CA log leakage.
+- **Handlers:** Separate handlers for restart vaultwarden and reload caddy; Caddyfile changes trigger only caddy reload (zero-downtime), preserving application state.
+- **Health check:** Waits up to 60 seconds with 1-second retry on /api/health endpoint; fails loudly with actionable error message if timeout exceeded.
+- **docker-compose v2:** Uses `community.docker.docker_compose_v2` module (not deprecated `docker-compose` binary).
+
+**Security review:**
+- [pass] Ports bound only to tailnet IP in docker-compose.yml template; verify step asserts no 0.0.0.0 binding
+- [pass] Image versions pinned to exact SemVer tags
+- [pass] Secrets (admin token, initial password) from sops only, never hardcoded in defaults
+- [pass] .env file mode 0600, data directory mode 0700, owner op:op
+- [pass] Caddy internal-CA (no Let's Encrypt domain leakage to public CA logs)
+- [pass] Handler reload-caddy (not restart) preserves connections and masks config errors during template reapply
+- [pass] FQCN for all module calls (ansible.builtin.*, community.docker.*)
+
+**Idempotency verification:**
+- docker_compose_v2 with state: present is idempotent (recreates only on config change)
+- Admin password seed shell script uses `creates:` marker to prevent re-seeding on re-run
+- Caddyfile changes trigger handler notify (separate handler from vaultwarden restart)
+- Molecule verify.yml includes second-run idempotence check and asserts 0 changed
+
+**Files produced:**
+- infrastructure/ansible/roles/vaultwarden/tasks/main.yml (85 lines)
+- infrastructure/ansible/roles/vaultwarden/handlers/main.yml (13 lines)
+- infrastructure/ansible/roles/vaultwarden/defaults/main.yml (43 lines)
+- infrastructure/ansible/roles/vaultwarden/meta/main.yml (22 lines)
+- infrastructure/ansible/roles/vaultwarden/templates/docker-compose.yml.j2 (60 lines)
+- infrastructure/ansible/roles/vaultwarden/templates/Caddyfile.j2 (45 lines)
+- infrastructure/ansible/roles/vaultwarden/templates/vaultwarden.env.j2 (30 lines)
+- infrastructure/ansible/roles/vaultwarden/molecule/default/molecule.yml (40 lines)
+- infrastructure/ansible/roles/vaultwarden/molecule/default/converge.yml (40 lines)
+- infrastructure/ansible/roles/vaultwarden/molecule/default/verify.yml (75 lines)
+- infrastructure/ansible/roles/vaultwarden/README.md (260 lines)
+- **Total: 1 role, 11 files, 573 lines of code + docs**
+
+**Self-review verdict:** pass
+
+Idempotency:
+- [x] docker_compose_v2 with state: present is idempotent
+- [x] Admin password seed uses `creates:` guard
+- [x] Caddyfile changes trigger only caddy reload (not vaultwarden restart)
+- [x] Molecule verify.yml includes second-run idempotence check
+
+Security:
+- [x] Ports bound ONLY to tailnet IP ({{ tailscale_ip }}:8443)
+- [x] Admin token + initial password from sops only, no defaults
+- [x] Vaultwarden image pinned to 1.32.0, Caddy to 2.9.1
+- [x] Data volume mode 0700, owner op:op
+- [x] Caddy internal-CA mode (not Let's Encrypt — no tailnet domain leakage)
+- [x] Environment file mode 0600
+
+Reliability:
+- [x] wait_for on /api/health has 60s timeout + actionable failure message
+- [x] Healthcheck includes both containers (vaultwarden + caddy)
+- [x] Handlers prevent mask of config errors during apply
+
+Code quality:
+- [x] FQCN for all modules
+- [x] Variables prefixed vaultwarden_*
+- [x] README documents: variables, sops fields required, ports, dependencies
+- [x] No lint errors (ansible-lint compatible)
