@@ -857,3 +857,74 @@ Code quality lens:
 **Upstream PR status:** mnemonic-tg-bridge (S-size, approved feature) is PR-pending merge to `pavel-molyanov/telegram-ai-agent`. Role gracefully pins to fork until PR merges, then switches via variable flip and re-apply.
 
 ---
+
+## Task 08 — fabric/workspace-manager FastAPI service + tests
+
+**Status:** complete | **Agent:** workspace-manager (fastapi-expert)
+
+**Summary:** Created the full `fabric/workspace-manager/` service (14 source files + 4 test files) implementing the tech-spec §2.5 API contract exactly: `POST /worktree`, `DELETE /worktree/{task_id}`, `GET /worktree/{task_id}`, `GET /worktrees`, `GET /health`. Capacity cap = 10 enforced via atomic state.json. All 46 tests pass.
+
+**Key decisions:**
+
+- **State-as-truth + side-effect pattern:** `state.json` is the single source of truth. On POST, state is written first (under flock), then .env materialised, then git worktree created. On any downstream failure the state entry is rolled back atomically. On DELETE, state is the authoritative record; git worktree removal is best-effort.
+- **fcntl.flock + atomic rename:** `state.py` uses `fcntl.LOCK_EX` on a `.lock` sidecar file and writes to a tempfile then `os.replace()`. POSIX guarantees rename is atomic, so a kill -9 mid-write leaves either the old or the new state file intact — never a partial JSON.
+- **git worktree add --detach:** Avoids creating a local branch that would need cleanup. The detached HEAD is in a fresh directory; the parent repo is not modified.
+- **Bitwarden query pattern:** `bw get item mnemonic/topic/<topic>`. The item's `notes` field contains `KEY=VALUE` lines. `SCCACHE_DIR` is injected if not present. Decrypted values are never logged; only structured metadata (`topic`, `key_count`) appears in log records.
+- **bw session token via LoadCredential:** The systemd unit uses `LoadCredential=bw-session:...` which places the token at `/run/credentials/workspace-manager.service/bw-session`. The `vault.py` module reads it at call time; no env var on disk.
+- **task_id regex `^[A-Z0-9-]{3,40}$`:** Enforced in both Pydantic models (POST body) and `_validate_task_id_path_param()` (path parameters). Lower-case, dots, underscores, slashes, and percent-encoded traversal sequences all rejected 400/422.
+- **Health endpoint design:** Returns `ok = sccache_mounted AND vault_reachable`. Service stays up with `ok=False` when either subsystem is degraded (D10 requirement: "sccache dir missing → /health degraded, service up").
+- **Async throughout:** All blocking I/O (subprocess bw, git, fcntl) wrapped in `asyncio.to_thread()`. FastAPI endpoints are async. No `print()` calls anywhere.
+- **SanitizedFileHandler import strategy:** `logging_setup.py` attempts `importlib.import_module("fabric.logs.sanitizer.handler")` at startup. If Task 07 module is not yet installed, it falls back gracefully to `RotatingFileHandler`. In production the sanitizer is installed first by the `fabric-services` Ansible role.
+- **Bind-IP guard:** `config.py` `field_validator` rejects `0.0.0.0` and `::` at settings-load time, not at route time. The systemd unit templates `BIND_IP` from OpenTofu output (tailscale_ip).
+- **Concurrent POST race:** Tested with two `threading.Thread` instances hitting the same `task_id`. The flock in `state.py.add()` serialises them; exactly one returns 200, the other 409 `already_exists`.
+
+**Self-review verdict:** pass
+
+Security-auditor lens:
+- No path traversal: task_id regex strictly enforced at both POST body and path-param layers. All 8 parametrized traversal inputs return 400/422.
+- bw session token never in env var or logs. `vault.py` logs only `{topic, key_count}`.
+- `.env` mode 0600, written via tempfile+rename (not open-truncate-write).
+- systemd unit: `NoNewPrivileges=true`, `PrivateTmp=true`, `ProtectSystem=strict`, `CapabilityBoundingSet=` (empty), `LoadCredential` for bw session.
+- All log calls use `logger.*` (structured), never `print()`.
+
+Reliability-engineer lens:
+- State is crash-safe: fcntl lock + atomic rename. `test_state_atomic_no_partial_write` and `test_concurrent_add_same_task_id` (multiprocessing) both pass.
+- DELETE is not idempotent for unknown task_id (returns 404) — deliberate and documented. POST rollback on vault/git failure restores clean state.
+- Vault unreachable on POST → 409 `vault_unreachable`, state entry rolled back.
+- sccache missing → `/health` degraded, service continues serving.
+- `destroy_worktree` failures are best-effort (logged, not raised) — prevents DELETE from getting stuck on git errors.
+
+**Files produced:**
+- fabric/workspace-manager/__init__.py (1 line)
+- fabric/workspace-manager/config.py (67 lines)
+- fabric/workspace-manager/logging_setup.py (65 lines)
+- fabric/workspace-manager/main.py (222 lines)
+- fabric/workspace-manager/models.py (77 lines)
+- fabric/workspace-manager/state.py (143 lines)
+- fabric/workspace-manager/vault.py (180 lines)
+- fabric/workspace-manager/worktree.py (107 lines)
+- fabric/workspace-manager/tests/__init__.py (0 lines)
+- fabric/workspace-manager/tests/conftest.py (122 lines)
+- fabric/workspace-manager/tests/test_api.py (239 lines)
+- fabric/workspace-manager/tests/test_state.py (136 lines)
+- fabric/workspace-manager/tests/test_vault.py (165 lines)
+- fabric/workspace-manager/tests/test_worktree.py (116 lines)
+- fabric/workspace-manager/systemd/workspace-manager.service (60 lines)
+- fabric/workspace-manager/pyproject.toml (55 lines)
+- fabric/workspace-manager/README.md (65 lines)
+
+**Test results:** 46 passed, 0 failed (pytest 9.0.3, Python 3.10.16)
+
+**TDD anchors status:**
+- [x] test_post_creates_worktree_and_env — PASS
+- [x] test_delete_removes_worktree_and_env — PASS
+- [x] test_capacity_cap — PASS
+- [x] test_health_reflects_subsystems — PASS
+- [x] test_get_worktrees_lists_active — PASS
+- [x] test_state_atomic — PASS (test_state_atomic_no_partial_write + test_concurrent_add_same_task_id)
+- [x] test_env_for_topic_matches_topic_secrets — PASS
+- [x] test_path_traversal_blocked — PASS (8 parametrized inputs)
+- [x] test_concurrent_post_same_task_id_returns_409 — PASS
+- [x] test_delete_unknown_task_id_returns_404 — PASS
+
+---
