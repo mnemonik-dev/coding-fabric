@@ -1464,3 +1464,51 @@ All 5 hooks now share common input validation (CWE-20 defense-in-depth). DAG int
 
 ---
 
+## Task 15 — fabric/molyanov/validators/ (ruflo plugin delegation wrappers)
+
+**Status:** complete | **Commit:** f93c765 | **Agent:** validator-wrappers (python-alchemist)
+
+**Summary:** Created three thin Python wrappers under `fabric/molyanov/validators/` that translate molyanov validator calls into ruflo plugin subprocess invocations and normalise output back to the molyanov finding schema. `skeptic_wrapper` delegates to `ruflo jujutsu`, `security_auditor_wrapper` to `ruflo security-audit`, and `post_deploy_qa_wrapper` to `ruflo browser`. Shared `_common.py` owns severity mapping, field aliasing/canonicalization, JSON parsing, and the subprocess helper. All 60 tests pass.
+
+**Key decisions:**
+
+- Subprocess uses argv-form list (`["ruflo", plugin, ...]`) with `shell=False` and `check=False` plus explicit returncode handling (0 = clean, 1 = findings present, other = plugin error). This matches the spec requirement and avoids shell injection.
+- Errors are logged exclusively via `fabric.logs.sanitizer.SanitizedStreamHandler` — raw plugin stderr is captured via `capture_output=True` and logged at WARNING level, never written directly to disk. The sanitizer strips base58/JWK/api-token patterns before any bytes leave the process.
+- `_common.py` is 148 LOC; each wrapper is under 160 LOC, within the 200 LOC limit.
+- Severity mapping covers ruflo jujutsu aliases (`blocker`→`critical`, `major`→`high`, `minor`→`low`) and ruflo browser aliases (`fail`→`high`, `pass`→`info`) alongside generic aliases.
+- Field alias table in `canonicalize_finding` maps common plugin output keys (`path`→`file`, `message`→`issue`, `lineno`→`line`, `category`→`area`, `fix`→`fix_recommendation`, etc.) so any reasonable plugin output shape normalises cleanly.
+- `--dry-run` flag (and `dry_run=True` kwarg) prints the intended invocation to stderr and returns empty findings without touching the subprocess.
+- Plugin missing (`FileNotFoundError`) and timeout (`subprocess.TimeoutExpired`) both return an actionable molyanov error finding referencing `ruflo` in both `issue` and `fix_recommendation`.
+- `delegated_to` field is attached unconditionally (including in error and dry-run paths) so callers can always trace which plugin was targeted.
+- `pyproject.toml` pins `pytest>=8.0` in dev extras and `fabric-logs-sanitizer>=0.1.0` as a runtime dependency.
+
+**Self-review verdict:** pass
+
+Security-auditor lens:
+- No shell=True anywhere; subprocess argv-form prevents command injection.
+- All plugin stderr captured and filtered through sanitizer before logging.
+- No secrets handled; sanitizer is defensive-in-depth.
+
+Code-reviewer lens:
+- Type hints on all public functions.
+- Each module has a module-level docstring with CLI usage example.
+- All TDD anchor tests present and passing (60 total, including `test_dry_run_flag` explicitly).
+- `_common.py` 148 LOC, each wrapper 140-160 LOC, all within limits.
+
+**Files produced:**
+- fabric/molyanov/__init__.py
+- fabric/molyanov/validators/__init__.py (15 lines)
+- fabric/molyanov/validators/_common.py (148 lines)
+- fabric/molyanov/validators/skeptic_wrapper.py (155 lines)
+- fabric/molyanov/validators/security_auditor_wrapper.py (156 lines)
+- fabric/molyanov/validators/post_deploy_qa_wrapper.py (155 lines)
+- fabric/molyanov/validators/tests/__init__.py
+- fabric/molyanov/validators/tests/test_common.py (175 lines, 25 tests)
+- fabric/molyanov/validators/tests/test_skeptic_wrapper.py (185 lines, 17 tests)
+- fabric/molyanov/validators/tests/test_security_auditor_wrapper.py (155 lines, 11 tests)
+- fabric/molyanov/validators/tests/test_post_deploy_qa_wrapper.py (160 lines, 11 tests)
+- fabric/molyanov/validators/pyproject.toml
+- fabric/molyanov/validators/README.md
+
+---
+
