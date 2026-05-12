@@ -1,0 +1,89 @@
+---
+- name: Verify tailscale_authkey is provided
+  ansible.builtin.assert:
+    that:
+      - tailscale_authkey is defined
+      - tailscale_authkey | length > 0
+    fail_msg: "tailscale_authkey is required and must not be empty"
+
+- name: Add Tailscale GPG key
+  become: true
+  ansible.builtin.apt_key:
+    url: https://pkgs.tailscale.com/stable/ubuntu/focal.gpg
+    state: present
+  register: gpg_key_result
+  retries: 3
+  delay: 5
+  until: gpg_key_result is succeeded
+
+- name: Add Tailscale APT repository
+  become: true
+  ansible.builtin.apt_repository:
+    repo: deb https://pkgs.tailscale.com/stable/ubuntu focal main
+    state: present
+  register: apt_repo_result
+  retries: 3
+  delay: 5
+  until: apt_repo_result is succeeded
+
+- name: Update apt cache
+  become: true
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 300
+  register: apt_cache
+
+- name: Install tailscaled
+  become: true
+  ansible.builtin.apt:
+    name: tailscale
+    state: present
+  register: tailscale_installed
+
+- name: Enable and start tailscaled
+  become: true
+  ansible.builtin.systemd_service:
+    name: tailscaled
+    enabled: true
+    state: started
+  register: tailscale_service
+
+- name: Authenticate with Tailscale
+  become: true
+  ansible.builtin.command:
+    cmd: >
+      tailscale up
+      --authkey={{ tailscale_authkey }}
+      --hostname={{ fabric_hostname }}
+      --accept-routes
+      --ssh
+  register: tailscale_up_result
+  retries: 3
+  delay: 10
+  until: tailscale_up_result is succeeded
+  changed_when: "'IPV4' in tailscale_up_result.stdout or 'Logged in as' in tailscale_up_result.stdout"
+
+- name: Wait for Tailscale interface to be ready
+  ansible.builtin.pause:
+    seconds: 5
+
+- name: Get Tailscale IPv4 address
+  become: true
+  ansible.builtin.command: tailscale ip -4
+  register: tailscale_ip_cmd
+  changed_when: false
+  retries: 3
+  delay: 5
+  until: tailscale_ip_cmd is succeeded and tailscale_ip_cmd.stdout | length > 0
+
+- name: Register tailscale_ip fact
+  ansible.builtin.set_fact:
+    tailscale_ip: "{{ tailscale_ip_cmd.stdout | trim }}"
+  when: tailscale_ip_cmd.stdout | length > 0
+
+- name: Verify tailscale is online
+  become: true
+  ansible.builtin.command: tailscale status
+  register: tailscale_status_result
+  changed_when: false
+  failed_when: "'Logged in as' not in tailscale_status_result.stdout"

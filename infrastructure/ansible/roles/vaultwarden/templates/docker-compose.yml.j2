@@ -1,0 +1,62 @@
+version: '3.8'
+
+services:
+  vaultwarden:
+    image: {{ vaultwarden_image }}
+    container_name: vaultwarden-vaultwarden-1
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DOMAIN: "https://{{ vaultwarden_tailnet_domain }}"
+      LOG_LEVEL: "info"
+      EXTENDED_LOGGING: "true"
+      LOG_FILE: "/data/vaultwarden.log"
+      SHOW_PASSWORD_HINT: "false"
+      INVITATIONS_ALLOWED: "true"
+      INVITATION_ORG_NAME: "Mnemonic Fabric"
+    volumes:
+      - ./data:/data
+    networks:
+      - vaultwarden
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      - caddy
+
+  caddy:
+    image: {{ vaultwarden_caddy_image }}
+    container_name: vaultwarden-caddy-1
+    restart: unless-stopped
+    ports:
+      - "{{ tailscale_ip }}:{{ vaultwarden_https_port }}:8443/tcp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy_data:/data
+      - ./caddy_config:/config
+    networks:
+      - vaultwarden
+    environment:
+      ACME_AGREE: "true"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:2019/config/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      - vaultwarden
+
+networks:
+  vaultwarden:
+    driver: bridge
+
+volumes:
+  caddy_data:
+    driver: local
+  caddy_config:
+    driver: local

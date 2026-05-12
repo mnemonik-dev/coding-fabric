@@ -1,0 +1,19 @@
+---
+- name: Restart vaultwarden
+  community.docker.docker_compose_v2:
+    project_src: /opt/vaultwarden
+    state: present
+    restarted: true
+    services:
+      - vaultwarden
+  environment:
+    COMPOSE_PROJECT_NAME: vaultwarden
+  become: true
+  become_user: op
+
+- name: Reload caddy
+  ansible.builtin.shell: |
+    docker exec vaultwarden-caddy-1 caddy reload -c /etc/caddy/Caddyfile || true
+  become: true
+  changed_when: false
+  ignore_errors: true

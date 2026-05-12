@@ -1,0 +1,128 @@
+---
+- name: Set hostname
+  become: true
+  ansible.builtin.hostname:
+    name: "{{ fabric_hostname }}"
+  register: hostname_result
+
+- name: Update apt cache
+  become: true
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 300
+  register: apt_cache
+
+- name: Install ufw and required packages
+  become: true
+  ansible.builtin.apt:
+    name:
+      - ufw
+      - unattended-upgrades
+      - apt-listchanges
+    state: present
+  register: packages_installed
+
+- name: Configure unattended-upgrades
+  become: true
+  ansible.builtin.copy:
+    src: 50unattended-upgrades
+    dest: /etc/apt/apt.conf.d/50unattended-upgrades
+    mode: '0644'
+  notify: restart unattended-upgrades
+
+- name: Enable unattended-upgrades
+  become: true
+  ansible.builtin.copy:
+    src: 20auto-upgrades
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    mode: '0644'
+
+- name: Create operator user
+  become: true
+  ansible.builtin.user:
+    name: "{{ base_operator_user }}"
+    shell: /bin/bash
+    groups: sudo
+    createhome: true
+    home: "/home/{{ base_operator_user }}"
+  register: operator_user
+
+- name: Configure sudo for operator user (NOPASSWD)
+  become: true
+  ansible.builtin.lineinfile:
+    path: /etc/sudoers.d/{{ base_operator_user }}
+    line: "{{ base_operator_user }} ALL=(ALL) NOPASSWD: ALL"
+    state: present
+    create: true
+    mode: '0440'
+    validate: /usr/sbin/visudo -cf %s
+
+- name: Create operator code directory
+  become: true
+  ansible.builtin.file:
+    path: "/home/{{ base_operator_user }}/code"
+    state: directory
+    owner: "{{ base_operator_user }}"
+    group: "{{ base_operator_user }}"
+    mode: '0750'
+
+- name: Create operator fabric directories
+  become: true
+  ansible.builtin.file:
+    path: "/home/{{ base_operator_user }}/.fabric/{{ item }}"
+    state: directory
+    owner: "{{ base_operator_user }}"
+    group: "{{ base_operator_user }}"
+    mode: '0750'
+  loop:
+    - logs/sanitized
+
+- name: Disable root SSH login
+  become: true
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?PermitRootLogin'
+    line: 'PermitRootLogin no'
+  notify: reload sshd
+
+- name: Disable SSH password authentication
+  become: true
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?PasswordAuthentication'
+    line: 'PasswordAuthentication no'
+  notify: reload sshd
+
+- name: Configure ufw default policies
+  become: true
+  community.general.ufw:
+    direction: "{{ item.direction }}"
+    policy: "{{ item.policy }}"
+  loop:
+    - { direction: 'incoming', policy: 'deny' }
+    - { direction: 'outgoing', policy: 'allow' }
+  notify: reload ufw
+
+- name: Allow established/related connections
+  become: true
+  community.general.ufw:
+    rule: allow
+    direction: in
+    state: enabled
+    policy: established,related
+  notify: reload ufw
+
+- name: Configure ufw to allow Tailscale interface
+  become: true
+  community.general.ufw:
+    rule: allow
+    interface: tailscale0
+    direction: in
+    state: enabled
+  notify: reload ufw
+
+- name: Enable ufw
+  become: true
+  community.general.ufw:
+    state: enabled
+  notify: reload ufw

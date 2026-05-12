@@ -1,0 +1,7 @@
+---
+# Hostname for Tailscale registration (derived from base role default)
+fabric_hostname: mnemonic-fabric
+
+# Tailscale authentication key (REQUIRED — must be provided via sops or playbook vars)
+# This is a no-default variable; the playbook must assert it before running this role
+tailscale_authkey: ""

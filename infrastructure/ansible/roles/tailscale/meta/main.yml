@@ -1,0 +1,24 @@
+---
+galaxy_info:
+  role_name: tailscale
+  namespace: fabric
+  description: Install tailscaled, authenticate to tailnet, and register tailnet IP fact
+  company: Mnemonic Protocol
+  author: Mnemonic Development
+  license: proprietary
+  min_ansible_version: '2.16'
+  platforms:
+    - name: Ubuntu
+      versions:
+        - '24.04'
+  galaxy_tags:
+    - infrastructure
+    - networking
+    - vpn
+    - tailscale
+
+dependencies:
+  - name: community.general
+    version: '>=9.0.0'
+  - name: ansible.posix
+    version: '>=1.5.0'

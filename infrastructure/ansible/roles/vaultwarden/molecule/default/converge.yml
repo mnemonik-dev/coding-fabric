@@ -1,0 +1,46 @@
+---
+- name: Converge
+  hosts: all
+  gather_facts: true
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+
+  pre_tasks:
+    - name: Install Docker (required for community.docker collection)
+      ansible.builtin.apt:
+        name:
+          - docker.io
+          - python3-docker
+          - python3-dockerpycreds
+          - docker-compose-plugin
+        state: present
+        update_cache: true
+
+    - name: Start Docker daemon
+      ansible.builtin.systemd_service:
+        name: docker
+        state: started
+        enabled: true
+        daemon_reload: true
+
+    - name: Create op user for molecule test
+      ansible.builtin.user:
+        name: op
+        shell: /bin/bash
+        home: /home/op
+        groups: docker
+        append: true
+        createhome: true
+
+    - name: Reset connection to pick up docker group
+      ansible.builtin.meta: reset_connection
+
+    - name: Set tailscale_ip fact for testing
+      ansible.builtin.set_fact:
+        tailscale_ip: "127.0.0.1"
+
+  roles:
+    - role: vaultwarden
+      vars:
+        vaultwarden_initial_admin_password: "test-admin-password-12345"
+        vaultwarden_admin_token: "test-admin-token-abcdef123456"

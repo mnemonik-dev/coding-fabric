@@ -1,0 +1,21 @@
+---
+- name: reload sshd
+  become: true
+  ansible.builtin.systemd_service:
+    name: ssh
+    state: reloaded
+  listen: reload sshd
+
+- name: reload ufw
+  become: true
+  ansible.builtin.systemd_service:
+    name: ufw
+    state: reloaded
+  listen: reload ufw
+
+- name: restart unattended-upgrades
+  become: true
+  ansible.builtin.systemd_service:
+    name: unattended-upgrades
+    state: restarted
+  listen: restart unattended-upgrades

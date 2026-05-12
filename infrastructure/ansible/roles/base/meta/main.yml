@@ -1,0 +1,23 @@
+---
+galaxy_info:
+  role_name: base
+  namespace: fabric
+  description: OS hardening, firewall, operator user, and base directories
+  company: Mnemonic Protocol
+  author: Mnemonic Development
+  license: proprietary
+  min_ansible_version: '2.16'
+  platforms:
+    - name: Ubuntu
+      versions:
+        - '24.04'
+  galaxy_tags:
+    - infrastructure
+    - hardening
+    - firewall
+
+dependencies:
+  - name: community.general
+    version: '>=9.0.0'
+  - name: ansible.posix
+    version: '>=1.5.0'

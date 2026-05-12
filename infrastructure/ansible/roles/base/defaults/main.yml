@@ -1,0 +1,9 @@
+---
+# Default hostname for the Mnemonic fabric VM
+fabric_hostname: mnemonic-fabric
+
+# Operator user configuration
+# SECURITY TRADEOFF: NOPASSWD: ALL is acceptable for initial bootstrap but should be
+# hardened to explicit commands in production. This will be refined in later tasks
+# when specific Ansible-managed commands are identified.
+base_operator_user: op

@@ -1,0 +1,22 @@
+---
+galaxy_info:
+  author: ansible-vaultwarden
+  description: Deploy Vaultwarden password manager with Caddy reverse proxy
+  company: Mnemonic Protocol
+  license: MIT
+  min_ansible_version: 2.10
+  platforms:
+    - name: Ubuntu
+      versions:
+        - "20.04"
+        - "22.04"
+        - "24.04"
+
+dependencies:
+  - role: base
+    description: OS hardening, ufw, base directories
+  - role: tailscale
+    description: Tailscale installation and tailnet membership; provides tailscale_ip fact
+
+collections:
+  - community.docker

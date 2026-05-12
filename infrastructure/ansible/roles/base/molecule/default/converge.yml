@@ -1,0 +1,9 @@
+---
+- name: Converge
+  hosts: all
+  become: true
+  vars:
+    fabric_hostname: mnemonic-fabric
+    base_operator_user: op
+  roles:
+    - role: base

@@ -1,0 +1,74 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Verify hostname is set
+      ansible.builtin.command: hostname
+      register: hostname_output
+      changed_when: false
+
+    - name: Assert hostname matches
+      ansible.builtin.assert:
+        that:
+          - hostname_output.stdout == 'mnemonic-fabric'
+        fail_msg: "Hostname not set correctly"
+
+    - name: Verify operator user exists
+      ansible.builtin.user:
+        name: op
+        state: present
+      register: operator_check
+      check_mode: true
+      changed_when: false
+
+    - name: Assert operator user directory exists
+      ansible.builtin.stat:
+        path: /home/op
+      register: operator_home
+      failed_when: not operator_home.stat.exists
+
+    - name: Verify code directory
+      ansible.builtin.stat:
+        path: /home/op/code
+      register: code_dir
+      failed_when: not code_dir.stat.exists or code_dir.stat.mode != '0750'
+
+    - name: Verify .fabric directories
+      ansible.builtin.stat:
+        path: "/home/op/.fabric/{{ item }}"
+      register: fabric_dir_result
+      failed_when: not fabric_dir_result.stat.exists
+      loop:
+        - logs
+        - logs/sanitized
+
+    - name: Verify ufw is enabled
+      ansible.builtin.command: ufw status
+      register: ufw_status
+      changed_when: false
+      failed_when: "'Status: active' not in ufw_status.stdout"
+
+    - name: Verify SSH configuration
+      ansible.builtin.command: sshd -T
+      register: sshd_config
+      changed_when: false
+
+    - name: Assert PermitRootLogin is disabled
+      ansible.builtin.assert:
+        that:
+          - "'permitrootlogin no' in sshd_config.stdout"
+        fail_msg: "PermitRootLogin not disabled"
+
+    - name: Assert PasswordAuthentication is disabled
+      ansible.builtin.assert:
+        that:
+          - "'passwordauthentication no' in sshd_config.stdout"
+        fail_msg: "PasswordAuthentication not disabled"
+
+    - name: Verify unattended-upgrades is installed
+      ansible.builtin.command: dpkg -l | grep unattended-upgrades
+      register: unattended_check
+      changed_when: false
+      failed_when: unattended_check.rc != 0

@@ -1,0 +1,38 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Verify tailscaled package is installed
+      ansible.builtin.command: dpkg -l | grep tailscale
+      register: tailscale_pkg
+      changed_when: false
+      failed_when: tailscale_pkg.rc != 0
+
+    - name: Verify tailscaled service is enabled
+      ansible.builtin.systemd_service:
+        name: tailscaled
+        state: started
+      register: tailscaled_service_check
+      check_mode: true
+      changed_when: false
+
+    - name: Check tailscale repository is configured
+      ansible.builtin.stat:
+        path: /etc/apt/sources.list.d/tailscale-ubuntu-focal-jammy.list
+      register: tailscale_repo
+      # Repo file name may vary; this is informational only
+      ignore_errors: true
+
+    - name: Verify tailscale command is available
+      ansible.builtin.command: which tailscale
+      register: tailscale_cmd
+      changed_when: false
+      failed_when: tailscale_cmd.rc != 0
+
+    - name: Get tailscale status (may show offline in test container)
+      ansible.builtin.command: tailscale status
+      register: tailscale_status
+      changed_when: false
+      ignore_errors: true

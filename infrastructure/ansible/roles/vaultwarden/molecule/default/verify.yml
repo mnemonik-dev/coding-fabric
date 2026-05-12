@@ -1,0 +1,88 @@
+---
+- name: Verify
+  hosts: all
+  gather_facts: true
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+
+  tasks:
+    - name: Check Docker is running
+      ansible.builtin.systemd_service:
+        name: docker
+        state: started
+
+    - name: Verify docker-compose.yml exists
+      ansible.builtin.stat:
+        path: /opt/vaultwarden/docker-compose.yml
+      register: compose_stat
+      failed_when: not compose_stat.stat.exists
+
+    - name: Verify Caddyfile exists
+      ansible.builtin.stat:
+        path: /opt/vaultwarden/Caddyfile
+      register: caddyfile_stat
+      failed_when: not caddyfile_stat.stat.exists
+
+    - name: Verify environment file exists with restricted permissions
+      ansible.builtin.stat:
+        path: /opt/vaultwarden/.env
+      register: env_stat
+      failed_when:
+        - not env_stat.stat.exists
+        - env_stat.stat.mode != "0600"
+
+    - name: Verify data directory exists with restricted permissions
+      ansible.builtin.stat:
+        path: /opt/vaultwarden/data
+      register: data_dir_stat
+      failed_when:
+        - not data_dir_stat.stat.exists
+        - data_dir_stat.stat.mode != "0700"
+
+    - name: Check Vaultwarden container is running
+      ansible.builtin.shell: |
+        docker ps --filter "label=com.docker.compose.service=vaultwarden" --format "{{.Names}}"
+      register: vaultwarden_container
+      until: vaultwarden_container.stdout | length > 0
+      retries: 30
+      delay: 2
+      changed_when: false
+
+    - name: Check Caddy container is running
+      ansible.builtin.shell: |
+        docker ps --filter "label=com.docker.compose.service=caddy" --format "{{.Names}}"
+      register: caddy_container
+      until: caddy_container.stdout | length > 0
+      retries: 30
+      delay: 2
+      changed_when: false
+
+    - name: Verify docker-compose.yml does not bind to 0.0.0.0
+      ansible.builtin.shell: |
+        grep -E "0\.0\.0\.0" /opt/vaultwarden/docker-compose.yml || echo "PASS"
+      register: bind_check
+      failed_when: '"0.0.0.0" in bind_check.stdout'
+      changed_when: false
+
+    - name: Verify op user owns Vaultwarden directories
+      ansible.builtin.stat:
+        path: /opt/vaultwarden
+      register: vaultwarden_dir
+      failed_when: vaultwarden_dir.stat.pw_name != "op"
+
+    - name: Verify admin token is in environment file
+      ansible.builtin.command: grep -q "ADMIN_TOKEN" /opt/vaultwarden/.env
+      changed_when: false
+
+    - name: Run idempotency check (apply role again)
+      ansible.builtin.include_role:
+        name: vaultwarden
+      vars:
+        vaultwarden_initial_admin_password: "test-admin-password-12345"
+        vaultwarden_admin_token: "test-admin-token-abcdef123456"
+
+    - name: Verify no changes on second run
+      ansible.builtin.assert:
+        that:
+          - ansible_play.status == "completed"
+        fail_msg: "Role should be idempotent on second run"

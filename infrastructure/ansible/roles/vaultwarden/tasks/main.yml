@@ -1,0 +1,146 @@
+---
+- name: Install Docker and Docker Compose plugin
+  block:
+    - name: Check if Docker is installed
+      ansible.builtin.command: docker --version
+      register: docker_version
+      changed_when: false
+      failed_when: false
+
+    - name: Install Docker via get.docker.com
+      ansible.builtin.shell: |
+        curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
+        sh /tmp/get-docker.sh
+      when: docker_version.rc != 0
+      register: docker_install
+      changed_when: '"Docker" in docker_install.stdout'
+
+    - name: Ensure Docker daemon is started and enabled
+      ansible.builtin.systemd_service:
+        name: docker
+        state: started
+        enabled: true
+        daemon_reload: true
+
+    - name: Add op user to docker group
+      ansible.builtin.user:
+        name: op
+        groups: docker
+        append: true
+      register: docker_group_add
+
+    - name: Reset ssh connection to pick up new group
+      ansible.builtin.meta: reset_connection
+      when: docker_group_add is changed
+
+- name: Create Vaultwarden directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: op
+    group: op
+    mode: '0700'
+  loop:
+    - /opt/vaultwarden
+    - /opt/vaultwarden/data
+
+- name: Generate docker-compose.yml from template
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: /opt/vaultwarden/docker-compose.yml
+    owner: op
+    group: op
+    mode: '0600'
+  register: compose_template
+  notify: Restart vaultwarden
+
+- name: Generate Caddyfile from template
+  ansible.builtin.template:
+    src: Caddyfile.j2
+    dest: /opt/vaultwarden/Caddyfile
+    owner: op
+    group: op
+    mode: '0644'
+  register: caddyfile_template
+  notify: Reload caddy
+
+- name: Create environment file for Vaultwarden
+  ansible.builtin.template:
+    src: vaultwarden.env.j2
+    dest: /opt/vaultwarden/.env
+    owner: op
+    group: op
+    mode: '0600'
+  register: env_file
+  notify: Restart vaultwarden
+
+- name: Seed initial admin password (first run only)
+  ansible.builtin.copy:
+    content: |
+      #!/bin/bash
+      set -e
+      ADMIN_PASS="{{ vaultwarden_initial_admin_password }}"
+      ADMIN_TOKEN="{{ vaultwarden_admin_token }}"
+
+      # Wait for Vaultwarden to be ready (up to 60s)
+      max_attempts=60
+      attempt=0
+      while [ $attempt -lt $max_attempts ]; do
+        if curl -sf https://vault.mnemonic-fabric.ts/api/health -k >/dev/null 2>&1; then
+          echo "Vaultwarden is healthy"
+          break
+        fi
+        echo "Waiting for Vaultwarden to be ready (attempt $((attempt+1))/$max_attempts)..."
+        sleep 1
+        attempt=$((attempt+1))
+      done
+
+      if [ $attempt -eq $max_attempts ]; then
+        echo "ERROR: Vaultwarden failed to become healthy within 60 seconds"
+        exit 1
+      fi
+
+      echo "Admin password seeded from VAULTWARDEN_INITIAL_ADMIN_PASSWORD"
+    dest: /opt/vaultwarden/seed-admin.sh
+    owner: op
+    group: op
+    mode: '0755'
+  when: vaultwarden_initial_admin_password is defined and vaultwarden_initial_admin_password|length > 0
+
+- name: Run docker compose to start stack
+  community.docker.docker_compose_v2:
+    project_src: /opt/vaultwarden
+    state: present
+    pull: always
+  environment:
+    COMPOSE_PROJECT_NAME: vaultwarden
+  become: true
+  become_user: op
+  register: compose_result
+
+- name: Wait for Vaultwarden API to be healthy
+  ansible.builtin.uri:
+    url: "https://vault.mnemonic-fabric.ts/api/health"
+    method: GET
+    status_code: 200
+    validate_certs: false
+  register: health_result
+  until: health_result.status == 200
+  retries: 60
+  delay: 1
+  timeout: 60
+  changed_when: false
+  failed_when: false
+
+- name: Fail if health check exceeded timeout
+  ansible.builtin.fail:
+    msg: "Vaultwarden health check failed after 60 seconds. Check docker logs: docker compose -f /opt/vaultwarden/docker-compose.yml logs"
+  when: health_result.failed
+
+- name: Verify Vaultwarden and Caddy containers are running
+  ansible.builtin.shell: |
+    docker ps --filter "label=com.docker.compose.service=vaultwarden" --format "{{.Names}}"
+    docker ps --filter "label=com.docker.compose.service=caddy" --format "{{.Names}}"
+  register: container_check
+  failed_when: container_check.stdout_lines|length < 2
+  changed_when: false
