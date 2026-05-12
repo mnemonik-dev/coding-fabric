@@ -1,0 +1,169 @@
+---
+metadata:
+  feature_name: coding-fabric
+  work_type: feature
+  size: L
+  started: 2026-05-12
+  last_updated: 2026-05-12
+  status: completed
+  source: spec.md (Mnemonic Protocol Agent-Driven Development Loop v0.1.1)
+  note: |
+    Interview was bypassed at user request ("work without stopping for clarifying questions").
+    User-spec derived directly from spec.md which contains finalized decisions (v0.1.1, attested
+    9253b6c0-78ea-4127-9397-8b7875f791b3). spec.md is effectively a tech-spec; this user-spec
+    extracts WHAT and WHY for the operator, leaving HOW (architecture, phases, components)
+    to be re-stated and elaborated in the subsequent tech-spec.
+
+phase1_feature_overview:
+  problem_statement:
+    score: 90
+    value: |
+      Single operator (developer) building Mnemonic Protocol across 6 repos cannot scale by
+      keyboard. Need autonomous coding fabric so intent issued from Telegram flows through
+      spec → tasks → TDD → review → merge → deploy, with every meaningful decision attested
+      via Mnemonic (dog-food) and operational papercuts captured as work items instead of
+      ad-hoc messages.
+    gaps: []
+    status: complete
+  user_value:
+    score: 90
+    value: |
+      One operator can sustain development of all Mnemonic Protocol repos from a single
+      Telegram interface. Every artefact has tamper-evident lineage. No keypress is wasted
+      on ssh, tmux, worktree cleanup, or chasing alerts.
+    gaps: []
+    status: complete
+  primary_user:
+    score: 95
+    value: "Single human operator (project owner) interacting only via Telegram forum on phone or laptop."
+    gaps: []
+    status: complete
+  scope_boundaries:
+    score: 90
+    value: |
+      In: 6 repos (mnemonic-core, mnemonic-mcp, mnemonic-wasm, mnemonic-demo-client,
+      mnemonic-docs, mnemonic-loop), 8 Telegram topics, attestation at 5 trigger points,
+      watchdog with 9 alert classes, recursive self-hosting of mnemonic-loop with safe-mode.
+      Out: ruflo-mnemonic plugin, multi-operator/federation, mainnet Solana, public demo of
+      the loop, OpenClaw-equivalent PM agent, VM HA.
+    gaps: []
+    status: complete
+  size_estimate:
+    score: 95
+    value: "L — ~21 days, 5 phases, four cooperating layers + one new component (workspace-manager)."
+    gaps: []
+    status: complete
+  testing_strategy:
+    score: 85
+    value: |
+      End-to-end smoke test of full pipeline at Phase 2. Cross-platform byte-equivalence
+      for schema/CBOR. Third-party verification for crypto. MCP client compatibility for MCP
+      surface. Devnet round-trip + independent verifier recovery for full-mode protocol-qa.
+      Deliberate-break exercise of safe-mode at Phase 5. Smoke gate (trivial docs task
+      end-to-end, 15 min budget) before any mnemonic-loop PR merges itself.
+    gaps: []
+    status: complete
+
+phase2_user_experience:
+  primary_flow:
+    score: 90
+    value: |
+      Operator opens a Telegram topic for the target repo, types intent (or replies to an
+      alert), watches the engine (Claude Code or Codex) run user-spec → tech-spec → tasks →
+      TDD → review → QA → merge, with each gate posting back into the topic and being signed
+      by local Mnemonic MCP.
+    gaps: []
+    status: complete
+  secondary_flows:
+    score: 80
+    value: |
+      - /turn-into-task converts an ops-topic alert into a Kaneo card routed to the right repo
+      - /do-feature triggers swarm-orchestrated execution via ruflo MCP tools
+      - protocol-qa topic runs full-mode (Solana devnet + Arweave testnet) verification
+      - Manual SSH + fabric-safe-mode rollback when self-hosting break is detected
+    gaps: []
+    status: complete
+  manual_user_actions:
+    score: 85
+    value: |
+      One-time setup: provision cloud VM, set up VPN, create Telegram bot/forum, populate
+      Vaultwarden, clone master repos, register Solana devnet wallet, fund Irys testnet,
+      pin MEMORY_NAMESPACE per topic. Recurring: approve human-gated PRs (schema/CBOR
+      changes, crypto-crate bumps).
+    gaps: []
+    status: complete
+  deploy_approach:
+    score: 85
+    value: |
+      Single cloud VM, 8+ vCPU, 32 GB+ RAM, 200 GB+ disk, VPN-fronted. Phase 0 stands up
+      VM/VPN/Vaultwarden/Kaneo/Telegram/master clones/sanitized logging/backups. No
+      production deploy target — protocol-qa runs against Solana devnet + Arweave testnet
+      only. ops topic and Telegram bot are the always-available admin back-channel.
+    gaps: []
+    status: complete
+  post_deploy_verification:
+    score: 80
+    value: |
+      Per-task: pre-deploy-qa pass receipt (parent=task receipts) and post-deploy verification
+      attestation (parent=pre-deploy) signed via Mnemonic. fabric-watchdog 5-minute cadence
+      validates fabric health (worktrees, tmux, RPC, Irys, swarms, disk, drift, stale PRs,
+      failed attestations, stale last-known-good tag). Smoke gate confirms mnemonic-loop PRs
+      before merging themselves.
+    gaps: []
+    status: complete
+
+phase3_integration:
+  components:
+    score: 90
+    value: |
+      Four cooperating layers + glue:
+      - Transport: telegram-ai-agent
+      - Methodology: molyanov-ai-dev
+      - Substrate: ruflo full CLI install
+      - Attestation: local Mnemonic MCP server
+      - Glue: workspace-manager (new component — per-task git worktrees, dynamic topic
+        routing, cleanup)
+    gaps: []
+    status: complete
+  integration_points:
+    score: 90
+    value: |
+      - telegram-ai-agent cwd:"DYNAMIC" sentinel resolves via workspace-manager HTTP API
+      - /do-feature dispatches through ruflo swarm MCP tools (swarm_init, agent_spawn) with
+        per-task cwd injection
+      - Molyanov validators delegate to ruflo plugins (skeptic→jujutsu,
+        security-auditor→security-audit, post-deploy-qa→browser)
+      - Mnemonic MCP signs at 5 trigger points forming a per-feature DAG
+    gaps: []
+    status: complete
+  cohabitation_constraints:
+    score: 90
+    value: |
+      ruflo-autopilot OFF for core/mcp/wasm/protocol-qa/loop; ON for docs/demo-client.
+      MEMORY_NAMESPACE pinned per topic. Molyanov Project Knowledge is canonical.
+      ruflo-aidefence disabled in core/mcp (false positives on hex keys).
+      ruflo-rag-memory disabled in protocol-qa (fresh context per run).
+    gaps: []
+    status: complete
+  secrets_and_trust:
+    score: 90
+    value: |
+      All state on VM. Vaultwarden holds credentials; .env generated per-worktree and
+      deleted on cleanup. Solana devnet only — no mainnet keypair. Sanitized logging filter
+      strips base58 keys, JWK fragments, sk-/api_/ANTHROPIC_ tokens, Telegram file URLs.
+      Agents: broad local permissions inside worktree, no write outside, no direct
+      Vaultwarden access, no push to main, no production deploy.
+    gaps: []
+    status: complete
+  recovery_and_safe_mode:
+    score: 90
+    value: |
+      mnemonic-loop self-merges through the same fabric. Auto-updating last-known-good git
+      tag after every successful non-loop task. Smoke gate (15 min budget) before any loop
+      PR merges. Manual rollback via SSH + fabric-safe-mode script. ops topic runs
+      independently of workspace-manager/ruflo/watchdog as always-available admin
+      back-channel.
+    gaps: []
+    status: complete
+
+conversation_history: []
