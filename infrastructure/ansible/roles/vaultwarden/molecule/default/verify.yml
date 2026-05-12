@@ -27,17 +27,13 @@
       ansible.builtin.stat:
         path: /opt/vaultwarden/.env
       register: env_stat
-      failed_when:
-        - not env_stat.stat.exists
-        - env_stat.stat.mode != "0600"
+      failed_when: not env_stat.stat.exists or env_stat.stat.mode != "0600"
 
     - name: Verify data directory exists with restricted permissions
       ansible.builtin.stat:
         path: /opt/vaultwarden/data
       register: data_dir_stat
-      failed_when:
-        - not data_dir_stat.stat.exists
-        - data_dir_stat.stat.mode != "0700"
+      failed_when: not data_dir_stat.stat.exists or data_dir_stat.stat.mode != "0700"
 
     - name: Check Vaultwarden container is running
       ansible.builtin.shell: |

@@ -1,5 +1,25 @@
 ---
+- name: Assert required secrets are provided
+  ansible.builtin.assert:
+    that:
+      - vaultwarden_admin_token is defined
+      - vaultwarden_admin_token | length >= 32
+      - vaultwarden_initial_admin_password is defined
+      - vaultwarden_initial_admin_password | length >= 12
+    fail_msg: 'vaultwarden role requires VAULTWARDEN_ADMIN_TOKEN and VAULTWARDEN_INITIAL_ADMIN_PASSWORD from sops. See README.md.'
+    quiet: true
+  no_log: true
+
+- name: Assert tailscale_ip fact is available
+  ansible.builtin.assert:
+    that:
+      - tailscale_ip is defined
+      - tailscale_ip | length > 0
+    fail_msg: 'tailscale_ip fact not set. Ensure tailscale role is applied before vaultwarden.'
+    quiet: true
+
 - name: Install Docker and Docker Compose plugin
+  become: true
   block:
     - name: Check if Docker is installed
       ansible.builtin.command: docker --version
@@ -7,13 +27,27 @@
       changed_when: false
       failed_when: false
 
-    - name: Install Docker via get.docker.com
-      ansible.builtin.shell: |
-        curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
-        sh /tmp/get-docker.sh
+    - name: Add Docker GPG key
+      ansible.builtin.apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        id: 9DC858229FC7DD38854AE2D88D81803C0EBFCD88
+        state: present
+      when: docker_version.rc != 0
+
+    - name: Add Docker apt repository
+      ansible.builtin.apt_repository:
+        repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+      when: docker_version.rc != 0
+
+    - name: Install Docker and Docker Compose plugin
+      ansible.builtin.apt:
+        name: [docker-ce, docker-ce-cli, containerd.io, docker-compose-plugin]
+        state: present
+        update_cache: true
       when: docker_version.rc != 0
       register: docker_install
-      changed_when: '"Docker" in docker_install.stdout'
+      changed_when: docker_install.changed
 
     - name: Ensure Docker daemon is started and enabled
       ansible.builtin.systemd_service:
@@ -34,6 +68,7 @@
       when: docker_group_add is changed
 
 - name: Create Vaultwarden directories
+  become: true
   ansible.builtin.file:
     path: "{{ item }}"
     state: directory
@@ -45,6 +80,7 @@
     - /opt/vaultwarden/data
 
 - name: Generate docker-compose.yml from template
+  become: true
   ansible.builtin.template:
     src: docker-compose.yml.j2
     dest: /opt/vaultwarden/docker-compose.yml
@@ -55,6 +91,7 @@
   notify: Restart vaultwarden
 
 - name: Generate Caddyfile from template
+  become: true
   ansible.builtin.template:
     src: Caddyfile.j2
     dest: /opt/vaultwarden/Caddyfile
@@ -65,6 +102,7 @@
   notify: Reload caddy
 
 - name: Create environment file for Vaultwarden
+  become: true
   ansible.builtin.template:
     src: vaultwarden.env.j2
     dest: /opt/vaultwarden/.env
@@ -72,55 +110,24 @@
     group: op
     mode: '0600'
   register: env_file
+  no_log: true
   notify: Restart vaultwarden
-
-- name: Seed initial admin password (first run only)
-  ansible.builtin.copy:
-    content: |
-      #!/bin/bash
-      set -e
-      ADMIN_PASS="{{ vaultwarden_initial_admin_password }}"
-      ADMIN_TOKEN="{{ vaultwarden_admin_token }}"
-
-      # Wait for Vaultwarden to be ready (up to 60s)
-      max_attempts=60
-      attempt=0
-      while [ $attempt -lt $max_attempts ]; do
-        if curl -sf https://vault.mnemonic-fabric.ts/api/health -k >/dev/null 2>&1; then
-          echo "Vaultwarden is healthy"
-          break
-        fi
-        echo "Waiting for Vaultwarden to be ready (attempt $((attempt+1))/$max_attempts)..."
-        sleep 1
-        attempt=$((attempt+1))
-      done
-
-      if [ $attempt -eq $max_attempts ]; then
-        echo "ERROR: Vaultwarden failed to become healthy within 60 seconds"
-        exit 1
-      fi
-
-      echo "Admin password seeded from VAULTWARDEN_INITIAL_ADMIN_PASSWORD"
-    dest: /opt/vaultwarden/seed-admin.sh
-    owner: op
-    group: op
-    mode: '0755'
-  when: vaultwarden_initial_admin_password is defined and vaultwarden_initial_admin_password|length > 0
 
 - name: Run docker compose to start stack
   community.docker.docker_compose_v2:
     project_src: /opt/vaultwarden
     state: present
-    pull: always
+    pull: missing
   environment:
     COMPOSE_PROJECT_NAME: vaultwarden
   become: true
   become_user: op
   register: compose_result
+  no_log: true
 
 - name: Wait for Vaultwarden API to be healthy
   ansible.builtin.uri:
-    url: "https://vault.mnemonic-fabric.ts/api/health"
+    url: "https://{{ vaultwarden_tailnet_domain }}/api/health"
     method: GET
     status_code: 200
     validate_certs: false
@@ -136,6 +143,15 @@
   ansible.builtin.fail:
     msg: "Vaultwarden health check failed after 60 seconds. Check docker logs: docker compose -f /opt/vaultwarden/docker-compose.yml logs"
   when: health_result.failed
+
+- name: Mark admin as seeded (first run only)
+  become: true
+  become_user: op
+  ansible.builtin.file:
+    path: /opt/vaultwarden/.admin-seeded
+    state: touch
+    mode: '0600'
+  when: vaultwarden_initial_admin_password is defined and vaultwarden_initial_admin_password | length > 0
 
 - name: Verify Vaultwarden and Caddy containers are running
   ansible.builtin.shell: |

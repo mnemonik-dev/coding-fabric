@@ -10,10 +10,14 @@
     COMPOSE_PROJECT_NAME: vaultwarden
   become: true
   become_user: op
+  no_log: true
 
 - name: Reload caddy
-  ansible.builtin.shell: |
-    docker exec vaultwarden-caddy-1 caddy reload -c /etc/caddy/Caddyfile || true
+  community.docker.docker_container_exec:
+    container: vaultwarden-caddy-1
+    command: caddy reload -c /etc/caddy/Caddyfile
   become: true
-  changed_when: false
-  ignore_errors: true
+  become_user: op
+  register: caddy_reload
+  failed_when: caddy_reload.rc != 0
+  changed_when: true

@@ -8,7 +8,8 @@ vaultwarden_caddy_image: "caddy:2.9.1"
 
 # Network binding (from tailscale role fact)
 # WARNING: Must be bound to {{ tailscale_ip }}, never to 0.0.0.0
-# This variable is expected to be set by the tailscale role
+# EXTERNAL DEPENDENCY: tailscale_ip fact must be set by the tailscale role applied before this role
+# If tailscale_ip is not available, this role will fail with a clear assertion
 vaultwarden_tailnet_domain: "vault.mnemonic-fabric.ts"
 
 # Data directory
@@ -37,7 +38,7 @@ vaultwarden_config:
   LOG_FILE: "/data/vaultwarden.log"
 
 # Caddy configuration
-caddy_log_level: "info"
+vaultwarden_caddy_log_level: "info"
 
 # Docker Compose settings
 compose_project_name: "vaultwarden"

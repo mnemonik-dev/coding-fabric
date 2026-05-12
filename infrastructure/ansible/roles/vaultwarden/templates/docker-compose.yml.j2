@@ -40,8 +40,6 @@ services:
       - ./caddy_config:/config
     networks:
       - vaultwarden
-    environment:
-      ACME_AGREE: "true"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:2019/config/"]
       interval: 30s

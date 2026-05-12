@@ -1,14 +1,12 @@
 {
   log {
-    level {{ caddy_log_level }}
+    level {{ vaultwarden_caddy_log_level }}
   }
   storage file_system /data/caddy
 }
 
 {{ vaultwarden_tailnet_domain }}:8443 {
-  tls internal {
-    on_demand
-  }
+  tls internal
 
   reverse_proxy vaultwarden:80 {
     header_up X-Real-IP {remote_host}
@@ -34,12 +32,12 @@
   header Referrer-Policy "same-origin"
 
   log {
-    level {{ caddy_log_level }}
+    level {{ vaultwarden_caddy_log_level }}
     output stdout
     format console
   }
 }
 
-:2019 {
+127.0.0.1:2019 {
   metrics
 }
