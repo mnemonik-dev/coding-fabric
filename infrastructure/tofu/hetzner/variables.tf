@@ -14,6 +14,23 @@ variable "operator_ssh_pubkey" {
   #   ssh-ed25519 AAAA... user@host
   description = "Operator SSH public key to inject into cloud-init authorized_keys."
   type        = string
+
+  # Validate the key is a well-formed single-line OpenSSH public key.
+  # The raw value is interpolated directly into a YAML heredoc in user_data;
+  # an unvalidated multi-line or specially-crafted value could inject extra
+  # YAML keys and create additional users (YAML injection defense-in-depth).
+  validation {
+    condition     = can(regex("^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp(256|384|521)) [A-Za-z0-9+/=]+( [^\\n\\r]*)?$", var.operator_ssh_pubkey))
+    error_message = "operator_ssh_pubkey must be a single-line OpenSSH public key (ssh-rsa, ssh-ed25519, or ecdsa-sha2-nistp256/384/521)."
+  }
+
+  # Sanity-check length: a typical ed25519 key is ~100 chars; RSA-4096 is ~760.
+  # A value over 1024 chars almost certainly indicates a pasted private key or
+  # a certificate blob — reject it early rather than silently truncate YAML.
+  validation {
+    condition     = length(var.operator_ssh_pubkey) <= 1024
+    error_message = "operator_ssh_pubkey must be <= 1024 characters (typical public keys are well under this limit)."
+  }
 }
 
 variable "hcloud_location" {

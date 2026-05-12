@@ -3,10 +3,11 @@
 #
 # Validates the OpenTofu module without touching real Hetzner infrastructure.
 #
-# What this script checks:
+# What this script checks (4 steps):
 #   1. tofu init    — downloads provider plugins; verifies .terraform.lock.hcl
 #   2. tofu validate — static HCL/schema validation; no credentials needed
-#   3. tofu plan -detailed-exitcode — generates execution plan with dummy creds
+#   3. tofu fmt -check — formatting lint (advisory; treat as error in CI)
+#   4. tofu plan -detailed-exitcode — generates execution plan with dummy creds
 #                     Exit code 2 = changes pending (expected on clean state)
 #                     Exit code 0 = no changes (expected after apply)
 #                     Exit code 1 = error (fail)
@@ -38,6 +39,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODULE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+# Write the plan artifact to a temp file so the module source directory stays
+# clean across CI runs, and to avoid leaving sensitive user_data values in a
+# workspace-level last.tfplan that could persist between runs.
+PLAN_FILE="$(mktemp)"
+trap 'rm -f "${PLAN_FILE}"' EXIT
+
 # ── Colour helpers ────────────────────────────────────────────────────────────
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -68,7 +75,7 @@ export TF_VAR_hcloud_token="${HCLOUD_TOKEN}"
 export TF_VAR_operator_ssh_pubkey="${TF_VAR_operator_ssh_pubkey:-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPlaceholderKeyForLocalValidationOnly test@localhost}"
 
 # ── Step 1: tofu init ─────────────────────────────────────────────────────────
-info "Step 1/3: tofu init (downloads provider plugins)"
+info "Step 1/4: tofu init (downloads provider plugins)"
 if ! tofu -chdir="${MODULE_DIR}" init -input=false; then
   error "tofu init failed. Check network connectivity and provider version constraints."
   exit 1
@@ -76,7 +83,7 @@ fi
 info "tofu init: OK"
 
 # ── Step 2: tofu validate ─────────────────────────────────────────────────────
-info "Step 2/3: tofu validate (static schema validation)"
+info "Step 2/4: tofu validate (static schema validation)"
 if ! tofu -chdir="${MODULE_DIR}" validate; then
   error "tofu validate failed. Fix HCL errors above and re-run."
   exit 1
@@ -103,7 +110,7 @@ tofu -chdir="${MODULE_DIR}" plan \
   -input=false \
   -var "hcloud_token=${HCLOUD_TOKEN}" \
   -var "operator_ssh_pubkey=${TF_VAR_operator_ssh_pubkey}" \
-  -out="${MODULE_DIR}/last.tfplan" \
+  -out="${PLAN_FILE}" \
   2>&1
 PLAN_EXIT=$?
 set -e
@@ -114,7 +121,6 @@ case "${PLAN_EXIT}" in
     ;;
   2)
     info "tofu plan exit 2: changes pending — expected on a clean/new state."
-    info "Resource plan produced: ${MODULE_DIR}/last.tfplan"
     info "Expected resources in plan:"
     info "  + hcloud_firewall.fabric"
     info "  + hcloud_firewall_attachment.fabric"

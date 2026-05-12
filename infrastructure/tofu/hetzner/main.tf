@@ -10,8 +10,11 @@ provider "hcloud" {
 
 ################################################################################
 # Firewall — deny all public inbound except Tailscale handshake port UDP/41641.
-# Tailscale uses UDP/41641 for direct peer-to-peer connections and DERP relay
-# fallback. No public SSH port: operator access is exclusively via Tailscale
+# Tailscale uses UDP/41641 for direct peer-to-peer connections.
+# UDP/41641 inbound allows Tailscale direct peer-to-peer from operator clients.
+# DERP relay fallback uses DERP servers as intermediaries (outbound from this
+# server), so no additional inbound rule is needed for DERP.
+# No public SSH port: operator access is exclusively via Tailscale
 # (configured in Task 02 Ansible role `tailscale`).
 # No public HTTP/HTTPS: Caddy binds to the tailnet IP only (Task 03).
 ################################################################################
@@ -32,6 +35,10 @@ resource "hcloud_firewall" "fabric" {
 
   # Outbound: allow all. The VM must reach package mirrors, Tailscale DERP
   # servers, Hetzner metadata, GitHub, and other external services.
+  # Egress is intentionally open at the cloud-firewall layer (L3 between
+  # internet and VM). Per-protocol egress hardening lives in Task 02 Ansible
+  # base role (ufw/nftables on the VM) to guard against compromised agent
+  # exfiltration or C2 callback.
   rule {
     direction       = "out"
     protocol        = "tcp"
@@ -59,6 +66,13 @@ resource "hcloud_firewall" "fabric" {
     managed_by = "opentofu"
     fabric     = var.server_name
   }
+
+  # Ignore operator console labels added for incident tagging or Hetzner system
+  # labels (e.g. backup-related). Without this guard, tofu apply would silently
+  # remove any label not declared here, including Ansible inventory labels.
+  lifecycle {
+    ignore_changes = [labels]
+  }
 }
 
 ################################################################################
@@ -68,6 +82,27 @@ resource "hcloud_firewall" "fabric" {
 # The server has no public SSH firewall rule; SSH is reachable only after
 # Tailscale comes up (Task 02 Ansible role bootstrapped via cloud-init or
 # operator one-time manual step described in bootstrap-checklist.md).
+#
+# FIREWALL NOTE: firewall_ids attaches the firewall atomically at server
+# creation time — no race window between server boot and firewall attachment
+# (unlike a separate hcloud_firewall_attachment resource, which leaves the
+# server reachable from the public internet until the attachment apply
+# completes). The hcloud_firewall_attachment resource is kept below as an
+# idempotent safety net for state reconciliation, but the inline attachment
+# here is the authoritative protection mechanism.
+#
+# SERVER TYPE CHANGE WARNING:
+# Changing var.server_type (e.g. ccx33 -> ccx43) triggers a server
+# DESTROY + RECREATE — Hetzner does not support in-place resize for
+# dedicated CCX instances via API. The root disk is WIPED; the attached
+# data volume (hcloud_volume.fabric_data) survives as a separate resource.
+# Operator checklist on resize:
+#   (a) Verify volume detaches and reattaches cleanly (check hcloud_volume_attachment
+#       state after apply; automount = true on the attachment handles re-mount).
+#   (b) Run the full Ansible playbook after the new server is up to re-provision
+#       the OS (Tailscale, Docker, Caddy, base hardening, etc.).
+#   (c) create_before_destroy below minimises the downtime window by starting
+#       the new server before tearing down the old one.
 ################################################################################
 
 resource "hcloud_server" "fabric" {
@@ -75,6 +110,10 @@ resource "hcloud_server" "fabric" {
   server_type = var.server_type
   image       = "ubuntu-24.04"
   location    = var.hcloud_location
+
+  # Attach the firewall atomically at creation time (no race window).
+  # See the firewall note in the block comment above.
+  firewall_ids = [hcloud_firewall.fabric.id]
 
   # Enable both IPv4 and IPv6 public addresses.
   # IPv6 may be absent in some Hetzner regions; outputs.tf uses try() to guard.
@@ -85,11 +124,14 @@ resource "hcloud_server" "fabric" {
 
   # cloud-init: create operator OS user with the injected SSH public key.
   # This is the bootstrap access path used until Tailscale is active.
+  # docker group is intentionally omitted: the group does not exist on a fresh
+  # Ubuntu 24.04 image, causing cloud-init warnings. The Task 02 Ansible base
+  # role adds op to the docker group after Docker is installed.
   user_data = <<-CLOUDINIT
     #cloud-config
     users:
       - name: op
-        groups: [sudo, docker]
+        groups: [sudo]
         shell: /bin/bash
         sudo: "ALL=(ALL) NOPASSWD:ALL"
         ssh_authorized_keys:
@@ -107,25 +149,46 @@ resource "hcloud_server" "fabric" {
     fabric     = var.server_name
     env        = "production"
     # Ansible dynamic inventory uses this label to discover the fabric host.
-    role       = "fabric-node"
+    role = "fabric-node"
   }
 
-  # lifecycle.prevent_destroy = false is intentional for now:
-  # during development we want clean destroy/recreate cycles.
-  # Set to true in a later wave once the fabric is in steady-state operation
-  # and accidental destroys would require a full cold-start recovery.
+  # lifecycle notes:
+  #
+  # prevent_destroy = false: intentional for the dev phase; clean destroy/recreate
+  # cycles are needed. Set to true after Task 06 (Restic backups) is verified and
+  # the fabric is in steady-state operation, so accidental destroys require a full
+  # cold-start recovery.
+  #
+  # ignore_changes = [user_data]: cloud-init runs only on first boot; Hetzner does
+  # not re-run it on subsequent applies. Rotating operator_ssh_pubkey must be done
+  # via Ansible (Task 02 base role) — not by modifying user_data and re-applying,
+  # which would force a server destroy+recreate and wipe the root disk. Tofu owns
+  # bootstrap injection only; Ansible owns ongoing key management.
+  #
+  # create_before_destroy = true: when a server type change forces replacement,
+  # the new server is created (and Ansible-provisioned) before the old server is
+  # destroyed, reducing the outage window. See the SERVER TYPE CHANGE WARNING above.
+  #
+  # ignore_changes = [labels]: guards against operator console labels or Hetzner
+  # system labels being removed by a subsequent tofu apply. The role=fabric-node
+  # label is declared here and will always be enforced on resource creation; only
+  # post-creation label drift is ignored.
   lifecycle {
-    prevent_destroy = false
+    prevent_destroy       = false
+    ignore_changes        = [user_data, labels]
+    create_before_destroy = true
   }
 }
 
 ################################################################################
-# Firewall attachment — apply the firewall to the server.
-# Explicit depends_on ensures the server exists before we try to attach.
+# Firewall attachment — idempotent safety net for state reconciliation.
+# The hcloud_server.fabric resource already attaches the firewall inline via
+# firewall_ids at creation time (atomic, no race window). This attachment
+# resource ensures the firewall association is represented in Tofu state and
+# reconciled on drift (e.g. if manually detached in the Hetzner console).
 ################################################################################
 
 resource "hcloud_firewall_attachment" "fabric" {
-  # Attach the fabric firewall to the fabric server.
   firewall_id = hcloud_firewall.fabric.id
   server_ids  = [hcloud_server.fabric.id]
 
@@ -143,13 +206,13 @@ resource "hcloud_firewall_attachment" "fabric" {
 ################################################################################
 
 resource "hcloud_volume" "fabric_data" {
-  name      = "${var.server_name}-data"
-  size      = var.volume_size_gb
-  location  = var.hcloud_location
-  format    = "ext4"
-  # automount = true asks Hetzner to mount the volume automatically after
-  # attachment. The Ansible base role (Task 02) writes /etc/fstab for
-  # persistence across reboots.
+  name     = "${var.server_name}-data"
+  size     = var.volume_size_gb
+  location = var.hcloud_location
+  format   = "ext4"
+  # automount at the volume level applies on initial creation (first attach).
+  # Subsequent attach behaviour is controlled by hcloud_volume_attachment.automount
+  # below. Both are true; the attachment setting is canonical for re-attach ops.
   automount = true
 
   labels = {
@@ -167,19 +230,27 @@ resource "hcloud_volume" "fabric_data" {
 
 ################################################################################
 # Volume attachment — attach the persistent volume to the fabric server.
-# Explicit depends_on on the server (not implied by the server_id reference)
-# is listed for clarity and to guard against any future refactoring that might
-# break implicit ordering.
+# automount = true here is the canonical setting for re-attach operations
+# (controls Hetzner automount on subsequent attach after detach/reattach cycles).
 ################################################################################
 
 resource "hcloud_volume_attachment" "fabric_data" {
-  # Attach the data volume to the fabric server.
   volume_id = hcloud_volume.fabric_data.id
   server_id = hcloud_server.fabric.id
+  # automount is controlled at attachment time (canonical for re-attach ops).
   automount = true
 
   depends_on = [
     hcloud_server.fabric,
     hcloud_volume.fabric_data,
   ]
+
+  # create_before_destroy: when the server is replaced (e.g. server_type change),
+  # the new volume attachment is created before the old one is destroyed, ensuring
+  # the volume is re-attached to the new server before Tofu removes the old
+  # attachment object from state. This avoids a brief unmount window once the
+  # fabric has live data on the volume.
+  lifecycle {
+    create_before_destroy = true
+  }
 }
