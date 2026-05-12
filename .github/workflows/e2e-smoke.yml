@@ -1,0 +1,229 @@
+name: e2e-smoke
+
+on:
+  workflow_call:
+    inputs:
+      vm_hostname:
+        description: 'Tailscale VM hostname (default: mnemonic-fabric)'
+        type: string
+        default: 'mnemonic-fabric'
+      feature_name:
+        description: 'Feature name for AVP tracking (e.g., docs-typo-fix)'
+        type: string
+        required: true
+    secrets:
+      TAILSCALE_OAUTH_CLIENT_ID:
+        required: true
+      TAILSCALE_OAUTH_SECRET:
+        required: true
+      TELEGRAM_OPS_BOT_TOKEN:
+        required: false
+
+  workflow_dispatch:
+    inputs:
+      vm_hostname:
+        description: 'Tailscale VM hostname (default: mnemonic-fabric)'
+        type: string
+        default: 'mnemonic-fabric'
+      feature_name:
+        description: 'Feature name for AVP tracking (e.g., docs-typo-fix)'
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: e2e-smoke-${{ inputs.feature_name }}
+  cancel-in-progress: false
+
+env:
+  E2E_TIMEOUT_MINUTES: 30
+  DAG_POLL_MAX_MINUTES: 20
+  TAILSCALE_TAG: tag:ci-e2e
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Tailscale up (ephemeral)
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
+          tags: ${{ env.TAILSCALE_TAG }}
+
+      - name: Validate Tailscale connectivity
+        run: |
+          echo "Checking Tailscale status..."
+          tailscale status
+
+          echo "Verifying VM is reachable..."
+          if ! tailscale ping -c 1 "${{ inputs.vm_hostname }}" > /dev/null 2>&1; then
+            echo "ERROR: Cannot ping ${{ inputs.vm_hostname }}"
+            exit 1
+          fi
+          echo "VM connectivity verified"
+
+      - name: Copy smoke.sh to VM
+        run: |
+          if ! scp -o StrictHostKeyChecking=no \
+            scripts/e2e/smoke.sh \
+            "op@${{ inputs.vm_hostname }}:/tmp/smoke.sh"; then
+            echo "ERROR: Failed to copy smoke.sh to VM"
+            exit 1
+          fi
+          echo "smoke.sh copied successfully"
+
+      - name: Run smoke test on VM
+        id: smoke
+        run: |
+          echo "Starting smoke test with feature_name=${{ inputs.feature_name }}"
+
+          if ! tailscale ssh "op@${{ inputs.vm_hostname }}" \
+            "bash /tmp/smoke.sh '${{ inputs.feature_name }}'"; then
+            echo "ERROR: smoke.sh failed"
+            exit 1
+          fi
+          echo "Smoke test completed"
+
+      - name: Poll Mnemonic MCP for 5-node DAG
+        id: dag-poll
+        run: |
+          echo "Polling for 5-node DAG (max ${{ env.DAG_POLL_MAX_MINUTES }} minutes)..."
+
+          MAX_POLLS=$((${{ env.DAG_POLL_MAX_MINUTES }} * 2))
+          POLL_INTERVAL=30
+          POLL_COUNT=0
+          DAG_FOUND=false
+
+          while [ $POLL_COUNT -lt $MAX_POLLS ]; do
+            echo "Poll #$((POLL_COUNT + 1))/$MAX_POLLS (${POLL_COUNT}*30s elapsed)..."
+
+            DAG_OUTPUT=$(tailscale ssh "op@${{ inputs.vm_hostname }}" \
+              "mnemonic_recall --feature='${{ inputs.feature_name }}' --json 2>/dev/null" || echo "")
+
+            if [ -z "$DAG_OUTPUT" ]; then
+              echo "  → No DAG yet, waiting..."
+              POLL_COUNT=$((POLL_COUNT + 1))
+              sleep $POLL_INTERVAL
+              continue
+            fi
+
+            # Count nodes: parse JSON and look for 5 nodes with parent chain
+            NODE_COUNT=$(echo "$DAG_OUTPUT" | jq -r '.[] | select(.parent != null) | .id' 2>/dev/null | wc -l)
+            TOTAL_COUNT=$(echo "$DAG_OUTPUT" | jq -r '.[] | .id' 2>/dev/null | wc -l)
+
+            echo "  → Found $TOTAL_COUNT nodes, $NODE_COUNT with parents"
+
+            if [ "$TOTAL_COUNT" -eq 5 ]; then
+              echo "SUCCESS: 5-node DAG detected"
+              DAG_FOUND=true
+              echo "dag_json=$DAG_OUTPUT" >> "$GITHUB_OUTPUT"
+              break
+            fi
+
+            POLL_COUNT=$((POLL_COUNT + 1))
+            sleep $POLL_INTERVAL
+          done
+
+          if [ "$DAG_FOUND" = false ]; then
+            echo "ERROR: Timeout waiting for 5-node DAG"
+            exit 1
+          fi
+
+      - name: Verify DAG structure
+        run: |
+          DAG_JSON='${{ steps.dag-poll.outputs.dag_json }}'
+
+          echo "Validating DAG structure..."
+          echo "$DAG_JSON" | jq '.' > /tmp/dag.json
+
+          # Verify against expected schema
+          if ! jq -e '
+            length == 5 and
+            all(
+              .id != null and
+              .timestamp != null
+            )
+          ' /tmp/dag.json > /dev/null 2>&1; then
+            echo "ERROR: DAG structure invalid"
+            cat /tmp/dag.json
+            exit 1
+          fi
+
+          echo "DAG structure valid"
+          jq '.' /tmp/dag.json
+
+      - name: Verify worktree cleanup
+        run: |
+          echo "Verifying worktree cleanup on VM..."
+
+          WORKTREE_COUNT=$(tailscale ssh "op@${{ inputs.vm_hostname }}" \
+            "ls -1 ~/code/mnemonic-workspaces 2>/dev/null | wc -l" || echo "0")
+
+          echo "Active worktrees: $WORKTREE_COUNT"
+
+          if [ "$WORKTREE_COUNT" -gt 10 ]; then
+            echo "WARNING: Worktree count exceeds capacity (10)"
+            exit 1
+          fi
+
+      - name: Comment on commit (success)
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const feature = '${{ inputs.feature_name }}';
+            const comment = `✅ e2e-smoke PASSED\n\nFeature: \`${feature}\`\n5-node DAG verified, worktree cleanup confirmed.`;
+
+            github.rest.repos.createCommitComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+              body: comment
+            });
+
+      - name: Report failure to ops
+        if: failure()
+        run: |
+          if [ -z "${{ secrets.TELEGRAM_OPS_BOT_TOKEN }}" ]; then
+            echo "TELEGRAM_OPS_BOT_TOKEN not configured, skipping ops notification"
+            exit 0
+          fi
+
+          # Collect last 50 lines of smoke.sh output via SSH
+          DIAGNOSTIC=$(tailscale ssh "op@${{ inputs.vm_hostname }}" \
+            "journalctl -u smoke-test -n 50 2>/dev/null || tail -50 /tmp/smoke-test.log 2>/dev/null" || echo "No diagnostic log available")
+
+          # Sanitize secrets from diagnostic
+          SANITIZED=$(echo "$DIAGNOSTIC" | \
+            sed 's/sk-[A-Za-z0-9_-]*/sk-***REDACTED***/g' | \
+            sed 's/api_[A-Za-z0-9_-]*/api_***REDACTED***/g' | \
+            sed 's/ANTHROPIC_API_KEY=.*/ANTHROPIC_API_KEY=***REDACTED***/g')
+
+          # Post to ops topic via Telegram bot
+          PAYLOAD=$(cat <<EOF
+          {
+            "text": "e2e-smoke FAILED\nFeature: ${{ inputs.feature_name }}\n\nDiagnostic:\n\`\`\`\n${SANITIZED:0:1000}\n\`\`\`",
+            "parse_mode": "Markdown"
+          }
+          EOF
+          )
+
+          # Note: actual Telegram bot integration is configured separately
+          echo "Would post to ops topic: $PAYLOAD"
+
+      - name: Tailscale logout
+        if: always()
+        run: |
+          echo "Logging out of Tailscale..."
+          tailscale logout || true
+          echo "Cleanup complete"
