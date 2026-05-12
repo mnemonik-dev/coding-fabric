@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "fabric-logs-sanitizer"
+version = "0.1.0"
+description = "Log redaction module for the coding fabric — strips secrets before disk write or Telegram send"
+requires-python = ">=3.12"
+dependencies = []  # stdlib only: re, logging
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+
+[tool.setuptools.packages.find]
+where = [".."]
+include = ["fabric.logs.sanitizer*"]
