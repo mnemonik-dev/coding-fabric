@@ -5,9 +5,10 @@
   vars:
     fabric_hostname: mnemonic-fabric
     # NOTE: In real deployment, tailscale_authkey comes from sops-encrypted secrets.
-    # For molecule test, we set a dummy value to allow syntax validation.
-    # The actual authentication will fail in the test container, but the role structure
-    # and idempotency can still be verified.
+    # For molecule test, we use a dummy test key. NEVER replace this with a real tskey-...
+    # in version control; the test key triggers a skip guard in the role.
     tailscale_authkey: "tskey-dummy-key-for-testing"
+    # Disable route acceptance in test to avoid spurious network errors
+    tailscale_accept_routes: false
   roles:
     - role: tailscale

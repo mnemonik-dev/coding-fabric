@@ -5,12 +5,15 @@
       - tailscale_authkey is defined
       - tailscale_authkey | length > 0
     fail_msg: "tailscale_authkey is required and must not be empty"
+  no_log: true
 
-- name: Add Tailscale GPG key
+- name: Download Tailscale GPG key
   become: true
-  ansible.builtin.apt_key:
-    url: https://pkgs.tailscale.com/stable/ubuntu/focal.gpg
-    state: present
+  ansible.builtin.get_url:
+    url: https://pkgs.tailscale.com/stable/ubuntu/noble.gpg
+    dest: /usr/share/keyrings/tailscale-archive-keyring.gpg
+    mode: '0644'
+    force: true
   register: gpg_key_result
   retries: 3
   delay: 5
@@ -19,7 +22,7 @@
 - name: Add Tailscale APT repository
   become: true
   ansible.builtin.apt_repository:
-    repo: deb https://pkgs.tailscale.com/stable/ubuntu focal main
+    repo: "deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] https://pkgs.tailscale.com/stable/ubuntu noble main"
     state: present
   register: apt_repo_result
   retries: 3
@@ -55,13 +58,14 @@
       tailscale up
       --authkey={{ tailscale_authkey }}
       --hostname={{ fabric_hostname }}
-      --accept-routes
+      {% if tailscale_accept_routes %}--accept-routes{% endif %}
       --ssh
   register: tailscale_up_result
   retries: 3
   delay: 10
   until: tailscale_up_result is succeeded
-  changed_when: "'IPV4' in tailscale_up_result.stdout or 'Logged in as' in tailscale_up_result.stdout"
+  changed_when: tailscale_up_result.rc == 0 and 'already' not in tailscale_up_result.stdout | lower
+  no_log: true
 
 - name: Wait for Tailscale interface to be ready
   ansible.builtin.pause:
@@ -75,11 +79,11 @@
   retries: 3
   delay: 5
   until: tailscale_ip_cmd is succeeded and tailscale_ip_cmd.stdout | length > 0
+  failed_when: tailscale_ip_cmd.stdout | length == 0
 
 - name: Register tailscale_ip fact
   ansible.builtin.set_fact:
     tailscale_ip: "{{ tailscale_ip_cmd.stdout | trim }}"
-  when: tailscale_ip_cmd.stdout | length > 0
 
 - name: Verify tailscale is online
   become: true
@@ -87,3 +91,4 @@
   register: tailscale_status_result
   changed_when: false
   failed_when: "'Logged in as' not in tailscale_status_result.stdout"
+  no_log: true

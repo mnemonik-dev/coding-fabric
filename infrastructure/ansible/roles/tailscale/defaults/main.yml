@@ -5,3 +5,8 @@ fabric_hostname: mnemonic-fabric
 # Tailscale authentication key (REQUIRED — must be provided via sops or playbook vars)
 # This is a no-default variable; the playbook must assert it before running this role
 tailscale_authkey: ""
+
+# Accept advertised subnet routes from other tailnet nodes (opt-in for security)
+# WARNING: Route advertisement is governed by Tailscale admin ACLs. Lock down upstream
+# via tailscale.com ACL rules to prevent unauthorized route injection.
+tailscale_accept_routes: false

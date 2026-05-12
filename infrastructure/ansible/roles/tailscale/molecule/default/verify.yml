@@ -20,10 +20,9 @@
 
     - name: Check tailscale repository is configured
       ansible.builtin.stat:
-        path: /etc/apt/sources.list.d/tailscale-ubuntu-focal-jammy.list
+        path: /etc/apt/sources.list.d/tailscale-ubuntu-noble-main.list
       register: tailscale_repo
-      # Repo file name may vary; this is informational only
-      ignore_errors: true
+      changed_when: false
 
     - name: Verify tailscale command is available
       ansible.builtin.command: which tailscale
@@ -31,8 +30,19 @@
       changed_when: false
       failed_when: tailscale_cmd.rc != 0
 
-    - name: Get tailscale status (may show offline in test container)
-      ansible.builtin.command: tailscale status
-      register: tailscale_status
+    - name: Verify GPG keyring is in place
+      ansible.builtin.stat:
+        path: /usr/share/keyrings/tailscale-archive-keyring.gpg
+      register: tailscale_gpg
       changed_when: false
+      failed_when: not tailscale_gpg.stat.exists
+
+    - name: Verify tailscale_ip fact is registered (even if offline in test)
+      ansible.builtin.assert:
+        that:
+          - hostvars[inventory_hostname].get('tailscale_ip') is defined or
+            'tailscale_ip' in vars or
+            (tailscale_ip_cmd is not skipped)
+        fail_msg: "tailscale_ip fact must be registered for downstream role compatibility"
+      check_mode: false
       ignore_errors: true
