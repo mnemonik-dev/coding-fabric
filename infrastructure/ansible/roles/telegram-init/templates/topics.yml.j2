@@ -6,7 +6,7 @@
 
 telegram_topics:
 {% for topic_name, thread_id in topics_mapping.items() | sort %}
-  {{ topic_name }}: {{ thread_id }}
+  {{ topic_name | quote }}: {{ thread_id }}
 {% endfor %}
 
 # Topic references for downstream roles (mnemonic-tg-bridge, fabric-watchdog)

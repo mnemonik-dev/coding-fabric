@@ -1,30 +1,26 @@
 ---
-- name: Load secrets from sops
+- name: Load secrets from playbook variables
+  tags: [telegram-init, secrets, always]
   block:
-    - name: Decrypt sops secrets
-      ansible.builtin.slurp:
-        src: "{{ playbook_dir }}/../../secrets/secrets.sops.yml"
-      register: sops_file
+    - name: Validate telegram_bot_token is defined
+      ansible.builtin.assert:
+        that:
+          - telegram_bot_token is defined
+          - telegram_bot_token | length > 0
+        fail_msg: "telegram_bot_token must be passed to role via playbook vars (decrypted by community.sops.load_vars)"
       no_log: true
 
-    - name: Set bot token and chat ID from secrets
-      ansible.builtin.set_fact:
-        telegram_bot_token: "{{ sops_file.content | b64decode | from_yaml | selectattr('name', 'equalto', 'telegram_bot_token') | map(attribute='value') | first }}"
-        telegram_forum_chat_id: "{{ sops_file.content | b64decode | from_yaml | selectattr('name', 'equalto', 'telegram_forum_chat_id') | map(attribute='value') | first }}"
-      no_log: true
-  rescue:
-    - name: Fallback to environment variables for testing
-      ansible.builtin.set_fact:
-        telegram_bot_token: "{{ lookup('env', 'TELEGRAM_BOT_TOKEN', default='') }}"
-        telegram_forum_chat_id: "{{ lookup('env', 'TELEGRAM_FORUM_CHAT_ID', default='') }}"
+    - name: Validate telegram_forum_chat_id is defined
+      ansible.builtin.assert:
+        that:
+          - telegram_forum_chat_id is defined
+          - telegram_forum_chat_id | length > 0
+        fail_msg: "telegram_forum_chat_id must be passed to role via playbook vars (decrypted by community.sops.load_vars)"
       no_log: true
 
-- name: Validate secrets are present
-  ansible.builtin.fail:
-    msg: "TELEGRAM_BOT_TOKEN or TELEGRAM_FORUM_CHAT_ID not found in secrets or environment"
-  when: telegram_bot_token == '' or telegram_forum_chat_id == ''
 
-- name: Verify bot is admin in the chat
+- name: Verify bot is admin in the chat with manage_topics permission
+  tags: [telegram-init, telegram-verify, always]
   block:
     - name: Get chat administrators
       ansible.builtin.uri:
@@ -33,44 +29,55 @@
         body_format: json
         body:
           chat_id: "{{ telegram_forum_chat_id }}"
-        status_code: 200
-        timeout: 10
+        status_code: [200, 400, 403, 429, 500, 502, 503, 504]
+        timeout: "{{ telegram_api_timeout }}"
       register: chat_admins_response
-      retries: 3
-      delay: 2
+      retries: "{{ telegram_api_retries }}"
+      delay: "{{ telegram_api_delay }}"
       until: chat_admins_response.status == 200
+      failed_when: chat_admins_response.status not in [200]
       no_log: true
 
-    - name: Check if bot is admin
+    - name: Pause for rate limiting
+      ansible.builtin.pause:
+        seconds: "{{ telegram_api_rate_limit }}"
+
+    - name: Check if bot is admin with can_manage_topics permission
       ansible.builtin.set_fact:
-        bot_is_admin: "{{ chat_admins_response.json.result | selectattr('user.is_bot', 'equalto', true) | length > 0 }}"
+        bot_is_admin: "{{ chat_admins_response.json.result | selectattr('user.is_bot', 'equalto', true) | selectattr('can_manage_topics', 'equalto', true) | length > 0 }}"
       no_log: true
 
-    - name: Fail if bot is not admin
+    - name: Fail if bot is not admin or lacks can_manage_topics
       ansible.builtin.fail:
         msg: |
-          Bot is not an administrator in the chat.
+          Bot is not an administrator or lacks 'can_manage_topics' permission in the chat.
           Actions required (see bootstrap-checklist.md):
           1. Add bot to the forum supergroup
-          2. Promote bot to administrator with "Manage topics" permission
+          2. Promote bot to administrator with "Manage topics" permission enabled
           3. Ensure supergroup has forum mode enabled
           chat_id: {{ telegram_forum_chat_id }}
       when: not bot_is_admin
 
 - name: Get forum topics sticker icons (for optional icon colors)
+  tags: [telegram-init, telegram-topics]
   block:
     - name: Fetch forum topic icon stickers
       ansible.builtin.uri:
         url: "https://api.telegram.org/bot{{ telegram_bot_token }}/getForumTopicIconStickers"
         method: POST
         body_format: json
-        status_code: 200
-        timeout: 10
+        status_code: [200, 400, 403, 429, 500, 502, 503, 504]
+        timeout: "{{ telegram_api_timeout }}"
       register: icon_stickers_response
-      retries: 3
-      delay: 2
+      retries: "{{ telegram_api_retries }}"
+      delay: "{{ telegram_api_delay }}"
       until: icon_stickers_response.status == 200
+      failed_when: icon_stickers_response.status not in [200]
       no_log: true
+
+    - name: Pause for rate limiting
+      ansible.builtin.pause:
+        seconds: "{{ telegram_api_rate_limit }}"
 
     - name: Store available icon colors
       ansible.builtin.set_fact:
@@ -78,77 +85,68 @@
       no_log: true
   rescue:
     - name: Continue without icon colors if fetch fails
+      ansible.builtin.debug:
+        msg: "Warning: Failed to fetch forum topic icon stickers; continuing without custom icon colors"
+
+    - name: Set empty icon colors on fetch failure
       ansible.builtin.set_fact:
         available_icon_colors: []
 
-- name: Get existing forum topics (paginated)
+- name: Get existing forum topics with full pagination support
+  tags: [telegram-init, telegram-topics]
   block:
-    - name: Initialize topic mapping
+    - name: Initialize topic mapping and pagination state
       ansible.builtin.set_fact:
         existing_topics: {}
-        topics_offset: 0
-        has_more_topics: true
+        pagination_offset: 0
+        pagination_iteration: 0
 
-    - name: Fetch forum topics with pagination
-      ansible.builtin.uri:
-        url: "https://api.telegram.org/bot{{ telegram_bot_token }}/getForumTopics"
-        method: POST
-        body_format: json
-        body:
-          chat_id: "{{ telegram_forum_chat_id }}"
-          offset: "{{ topics_offset }}"
-          limit: 100
-        status_code: 200
-        timeout: 10
-      register: forum_topics_response
-      retries: 3
-      delay: 2
-      until: forum_topics_response.status == 200
-      no_log: true
-
-    - name: Build topic name to ID mapping
-      ansible.builtin.set_fact:
-        existing_topics: "{{ existing_topics | combine({item.name: item.message_thread_id}) }}"
-      loop: "{{ forum_topics_response.json.result }}"
-      no_log: true
-
-    - name: Check for pagination
-      ansible.builtin.set_fact:
-        topics_offset: "{{ forum_topics_response.json.result[-1].message_thread_id }}"
-        has_more_topics: "{{ forum_topics_response.json.result | length == 100 }}"
-      no_log: true
-
-    - name: Fetch next page if available
+    - name: Paginate through all forum topics until exhausted
       block:
-        - name: Fetch next page of forum topics
+        - name: Fetch forum topics page
           ansible.builtin.uri:
             url: "https://api.telegram.org/bot{{ telegram_bot_token }}/getForumTopics"
             method: POST
             body_format: json
             body:
               chat_id: "{{ telegram_forum_chat_id }}"
-              offset: "{{ topics_offset }}"
+              offset: "{{ pagination_offset }}"
               limit: 100
-            status_code: 200
-            timeout: 10
-          register: forum_topics_next_response
-          retries: 3
-          delay: 2
-          until: forum_topics_next_response.status == 200
+            status_code: [200, 400, 403, 429, 500, 502, 503, 504]
+            timeout: "{{ telegram_api_timeout }}"
+          register: forum_topics_response
+          retries: "{{ telegram_api_retries }}"
+          delay: "{{ telegram_api_delay }}"
+          until: forum_topics_response.status == 200
+          failed_when: forum_topics_response.status not in [200]
           no_log: true
 
-        - name: Add next page topics to mapping
+        - name: Pause for rate limiting
+          ansible.builtin.pause:
+            seconds: "{{ telegram_api_rate_limit }}"
+
+        - name: Merge topics from current page
           ansible.builtin.set_fact:
             existing_topics: "{{ existing_topics | combine({item.name: item.message_thread_id}) }}"
-          loop: "{{ forum_topics_next_response.json.result }}"
+          loop: "{{ forum_topics_response.json.result }}"
           no_log: true
 
-        - name: Update pagination state
+        - name: Check if more pages exist
           ansible.builtin.set_fact:
-            has_more_topics: "{{ forum_topics_next_response.json.result | length == 100 }}"
-      when: has_more_topics | bool
+            pagination_iteration: "{{ pagination_iteration | int + 1 }}"
+            pagination_offset: "{{ forum_topics_response.json.result[-1].message_thread_id if forum_topics_response.json.result | length > 0 else pagination_offset }}"
+
+        - name: Guard against infinite pagination
+          ansible.builtin.fail:
+            msg: "Pagination loop exceeded {{ telegram_max_pagination_pages }} iterations; aborting to prevent infinite loop"
+          when: pagination_iteration | int > telegram_max_pagination_pages | int
+
+      until: forum_topics_response.json.result | length == 0
+      retries: "{{ telegram_max_pagination_pages }}"
+      delay: 0
 
 - name: Create canonical topics with icon colors mapping
+  tags: [telegram-init, telegram-topics]
   block:
     - name: Define canonical topics with icon colors
       ansible.builtin.set_fact:
@@ -185,12 +183,13 @@
               chat_id: "{{ telegram_forum_chat_id }}"
               name: "{{ topic_name }}"
               icon_color: "{{ canonical_topics[topic_name].color }}"
-            status_code: 200
-            timeout: 10
+            status_code: [200, 400, 403, 429, 500, 502, 503, 504]
+            timeout: "{{ telegram_api_timeout }}"
           register: create_topic_response
-          retries: 3
-          delay: 2
+          retries: "{{ telegram_api_retries }}"
+          delay: "{{ telegram_api_delay }}"
           until: create_topic_response.status == 200
+          failed_when: create_topic_response.status not in [200]
           no_log: true
           when: topic_name not in existing_topics
 
@@ -206,14 +205,15 @@
           when: topic_name in existing_topics
           no_log: true
 
-        - name: Sleep between API calls for rate limiting
+        - name: Rate limit pause between API calls
           ansible.builtin.pause:
-            seconds: 0.5
+            seconds: "{{ telegram_api_rate_limit }}"
       loop: "{{ canonical_topics.keys() | list }}"
       loop_control:
         loop_var: topic_name
 
 - name: Render inventory file with topic mapping
+  tags: [telegram-init, telegram-topics]
   block:
     - name: Ensure inventory directory exists
       ansible.builtin.file:
@@ -230,8 +230,14 @@
         group: root
       vars:
         topics_mapping: "{{ telegram_topics }}"
+      register: template_render_result
 
-- name: Healthcheck - post test message to ops topic
+    - name: Log template render status
+      ansible.builtin.debug:
+        msg: "Topics inventory {{ 'updated' if template_render_result.changed else 'unchanged' }}: {{ playbook_dir }}/../../inventory/telegram-topics.yml"
+
+- name: Healthcheck - post and delete test message to ops topic
+  tags: [telegram-init, telegram-health]
   block:
     - name: Send test message to ops topic
       ansible.builtin.uri:
@@ -242,12 +248,13 @@
           chat_id: "{{ telegram_forum_chat_id }}"
           message_thread_id: "{{ telegram_topics['ops'] }}"
           text: "Healthcheck: telegram-init role executing"
-        status_code: 200
-        timeout: 10
+        status_code: [200, 400, 403, 429, 500, 502, 503, 504]
+        timeout: "{{ telegram_api_timeout }}"
       register: test_message_response
-      retries: 3
-      delay: 2
+      retries: "{{ telegram_api_retries }}"
+      delay: "{{ telegram_api_delay }}"
       until: test_message_response.status == 200
+      failed_when: test_message_response.status not in [200]
       no_log: true
 
     - name: Store message ID for deletion
@@ -267,19 +274,28 @@
         body:
           chat_id: "{{ telegram_forum_chat_id }}"
           message_id: "{{ test_message_id }}"
-        status_code: 200
-        timeout: 10
-      retries: 3
-      delay: 2
-      until: "deleteMessage_response.status == 200 or deleteMessage_response.status == 400"
+        status_code: [200, 400, 403, 429, 500, 502, 503, 504]
+        timeout: "{{ telegram_api_timeout }}"
+      retries: "{{ telegram_api_retries }}"
+      delay: "{{ telegram_api_delay }}"
+      until: "deleteMessage_response.status in [200, 400]"
       register: deleteMessage_response
+      failed_when: false
+      no_log: true
+
+    - name: Verify delete message success or acceptable 400 (already deleted)
+      ansible.builtin.assert:
+        that:
+          - deleteMessage_response.status == 200 or (deleteMessage_response.status == 400 and 'not found' in deleteMessage_response.json.description | default(''))
+        fail_msg: "Failed to delete test message: {{ deleteMessage_response.json.description | default('unknown error') }}"
       no_log: true
   rescue:
     - name: Log healthcheck failure (non-fatal)
       ansible.builtin.debug:
-        msg: "Healthcheck message send/delete failed, but role continues"
+        msg: "Warning: Healthcheck message send/delete failed, but role continues (this may indicate network issues or permission problems)"
 
 - name: Log completion
+  tags: [telegram-init, always]
   ansible.builtin.debug:
     msg: |
       telegram-init role completed successfully.

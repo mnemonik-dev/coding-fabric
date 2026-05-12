@@ -33,5 +33,8 @@ telegram_api_delay: 2
 # Rate limiting between API calls (seconds)
 telegram_api_rate_limit: 0.5
 
+# Maximum pagination iterations to prevent infinite loops
+telegram_max_pagination_pages: 20
+
 # Inventory output path
 telegram_inventory_file: "infrastructure/ansible/inventory/telegram-topics.yml"
