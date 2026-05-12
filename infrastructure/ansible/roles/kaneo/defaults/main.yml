@@ -8,6 +8,11 @@
 # Current placeholder; operator can override via group_vars or host_vars
 kaneo_image: "kaneo/kaneo:latest"
 
+# Caddy container name (cross-role dependency with vaultwarden role)
+# This must match the container name defined in the vaultwarden role's docker-compose configuration.
+# See README for cross-role contract details.
+vaultwarden_caddy_container_name: "vaultwarden-caddy-1"
+
 # Network binding (from tailscale role fact)
 # WARNING: Must be bound to {{ tailscale_ip }}, never to 0.0.0.0
 # This variable is expected to be set by the tailscale role

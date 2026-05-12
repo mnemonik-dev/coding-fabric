@@ -13,7 +13,7 @@
 
 - name: Reload caddy for kaneo vhost
   ansible.builtin.shell: |
-    docker exec vaultwarden-caddy-1 caddy reload -c /etc/caddy/Caddyfile || true
+    docker exec {{ vaultwarden_caddy_container_name }} caddy reload -c /etc/caddy/Caddyfile || true
   become: true
   changed_when: false
   ignore_errors: true

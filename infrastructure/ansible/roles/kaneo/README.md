@@ -76,12 +76,13 @@ Playbook invocation should decrypt and pass:
 1. **Create directories** (`/opt/kaneo`, `/opt/kaneo/data`) with appropriate ownership
 2. **Template docker-compose.yml** — Kaneo service with SQLite, health check, network isolation
 3. **Template Caddyfile snippet** — `kaneo.mnemonic-fabric.ts` reverse-proxy (Caddy reload handler)
-4. **Compose up** — Pull latest image, start Kaneo container
-5. **Wait for health** — Retry `GET /api/health` up to 60s; fail clearly if timeout
-6. **GET existing projects** — Fetch list of already-created projects (idempotency gate)
-7. **POST missing projects** — For each of six defaults not in the list, POST to `/api/projects`; include 0.5s delay between requests
-8. **Verify final count** — GET projects again, assert exactly 6 exist
-9. **Verify container running** — Docker ps check
+4. **Copy Caddy snippet into container** — Copies `/opt/kaneo/Caddyfile.snippet` to Caddy container's `/etc/caddy/conf.d/kaneo.conf`
+5. **Compose up** — Pull image (missing only), start Kaneo container
+6. **Wait for health** — Retry `GET /api/health` up to 120 times with 2s delay (4-min budget); fail clearly if timeout
+7. **GET existing projects** — Fetch list of already-created projects (idempotency gate)
+8. **POST missing projects** — For each of six defaults not in the list, POST to `/api/projects` with retry on 429/5xx; include 0.5s delay between requests
+9. **Verify final count** — GET projects again, assert exactly 6 exist
+10. **Verify container running** — Docker ps check
 
 ## Idempotency
 
@@ -110,7 +111,7 @@ The role is fully idempotent:
 
 ## Health Check
 
-Kaneo must respond to `GET /api/health` with a 200 status code. The role retries up to 60 times with 1-second delays.
+Kaneo must respond to `GET /api/health` with a 200 status code. The role retries up to 120 times with 2-second delays (4-minute total budget).
 
 If health check fails:
 - Check docker logs: `docker compose -f /opt/kaneo/docker-compose.yml logs kaneo`
@@ -132,7 +133,26 @@ Currently **SQLite only**. The database file is stored at `/opt/kaneo/data/kaneo
 ## Handlers
 
 - **Restart kaneo:** Restarts only the Kaneo service (preserves network, volumes)
-- **Reload caddy for kaneo vhost:** Triggers Caddy config reload in the vaultwarden-caddy-1 container (does not restart Kaneo)
+- **Reload caddy for kaneo vhost:** Triggers Caddy config reload in the Caddy container (does not restart Kaneo). Uses `vaultwarden_caddy_container_name` variable for cross-role compatibility.
+
+## Cross-Role Contract: Caddy Integration
+
+**This role has a TIGHT COUPLING with the `vaultwarden` role.**
+
+The kaneo role:
+1. Generates `/opt/kaneo/Caddyfile.snippet` with the kaneo vhost config
+2. Copies the snippet into the Caddy container at `/etc/caddy/conf.d/kaneo.conf`
+3. Reloads Caddy to apply the new config
+
+**Requirements:**
+- The `vaultwarden` role must set the `vaultwarden_caddy_container_name` variable (defaults to `vaultwarden-caddy-1`)
+- The Caddy container must have a `/etc/caddy/conf.d` directory (typically configured in the vaultwarden role's Caddyfile with `import /etc/caddy/conf.d/*`)
+- The `vaultwarden` role should be run BEFORE the kaneo role in your playbook
+
+**If you change the Caddy container name or structure in the vaultwarden role:**
+- Update `vaultwarden_caddy_container_name` in your playbook or group_vars
+- Ensure the kaneo role is re-run after Caddy configuration changes
+- Test with: `docker exec <container-name> caddy validate -c /etc/caddy/Caddyfile`
 
 ## Testing
 
