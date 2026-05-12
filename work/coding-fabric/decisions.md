@@ -263,6 +263,33 @@ Code quality:
 - [x] README documents: variables, sops fields required, ports, dependencies
 - [x] No lint errors (ansible-lint compatible)
 
+
+---
+
+**Round 2 — fix:** commit `da82b27`
+
+Findings addressed (critical, high, and major severity):
+- [critical] no_log on all secret-handling tasks — added to env template, docker_compose_v2, handlers
+- [critical] seed script world-readable mode 0755 with plaintext secrets — removed entirely; replaced with creates: guard + marker file
+- [critical] no creates: guard on admin password seed — added .admin-seeded marker + touch task; prevents re-seeding on subsequent runs
+- [critical] missing assert on required sops secrets — added pre-flight assert for vaultwarden_admin_token (>= 32 chars) and vaultwarden_initial_admin_password (>= 12 chars)
+- [critical] Caddy on_demand + ACME_AGREE for tailnet domain — removed both; tls internal now matches non-public domain spec
+- [critical] Docker install via curl|sh without verification — replaced with apt + signed GPG key (pinned fingerprint 9DC858229FC7DD38854AE2D88D81803C0EBFCD88)
+- [critical] Caddy admin API exposed inside docker network — bound to 127.0.0.1:2019 only (prevents lateral movement)
+- [major] pull: always on docker_compose_v2 — changed to pull: missing (only pull if not present; tag pinning prevents drift)
+- [major] molecule verify.yml failed_when AND-of-list logic — fixed env mode 0600 and data_dir mode 0700 checks (use OR instead of AND)
+- [major] Docker install tasks lack become: true — added to block and individual privilege-escalation tasks
+- [major] Initial admin password persists in .env forever — removed VAULTWARDEN_INITIAL_ADMIN_PASSWORD from template (single-use bootstrap credential)
+- [major] Handler Reload caddy uses shell+docker exec with ignore_errors — replaced with community.docker.docker_container_exec module; removed || true; added proper error handling
+- [major] Handler missing become_user: op — added become_user: op to both Restart and Reload handlers
+- [minor] Hardcoded domain vault.mnemonic-fabric.ts in seed script/health check — now uses {{ vaultwarden_tailnet_domain }} variable
+- [minor] Duplicate LOG_LEVEL in vaultwarden.env.j2 — removed LOG_LEVEL=warn on line 29
+- [minor] caddy_log_level not prefixed with vaultwarden_ — renamed to vaultwarden_caddy_log_level for consistency
+- [minor] tailscale_ip dependency implicit — added pre-flight assert + documented in defaults as EXTERNAL DEPENDENCY
+- [minor] ADMIN_TOKEN unquoted in env file — added | quote filter to handle special characters
+
+Summary: Removed 47 lines of seed script generation (replaced with 8-line marker file touch). Added 3 pre-flight assert tasks. Switched Docker install from insecure shell script to apt-based method (5 tasks, fully idempotent). Molecule verify.yml now correctly fails on any permission or existence mismatch.
+
 ---
 
 ## Task 04 — Ansible role `kaneo`
