@@ -1,0 +1,49 @@
+---
+- name: Prepare
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Install python3
+      raw: apt-get update && apt-get install -y python3
+      changed_when: false
+
+    - name: Install base packages
+      apt:
+        name:
+          - curl
+          - wget
+          - git
+          - systemd
+          - sudo
+        state: present
+        update_cache: yes
+
+    - name: Create operator user group
+      group:
+        name: mnemonic-operator
+        state: present
+
+    - name: Create operator user
+      user:
+        name: mnemonic-operator
+        group: mnemonic-operator
+        home: /home/mnemonic-operator
+        shell: /bin/bash
+        createhome: yes
+        state: present
+
+    - name: Create op service user
+      user:
+        name: op
+        group: op
+        home: /var/lib/mnemonic-mcp
+        shell: /usr/sbin/nologin
+        system: yes
+        createhome: yes
+        state: present
+
+    - name: Install sudo (for become in tests)
+      apt:
+        name: sudo
+        state: present
+      changed_when: false

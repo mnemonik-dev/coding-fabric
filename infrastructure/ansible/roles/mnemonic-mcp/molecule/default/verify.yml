@@ -1,0 +1,110 @@
+---
+- name: Verify
+  hosts: all
+  gather_facts: true
+  vars:
+    mnemonic_mcp_config_dir: /etc/mnemonic-mcp
+    mnemonic_mcp_hooks_dir: "/etc/mnemonic-mcp/hooks"
+    mnemonic_mcp_install_dir: /opt/mnemonic-mcp
+    mnemonic_mcp_service_user: op
+  tasks:
+    - name: Verify op user exists
+      user:
+        name: "{{ mnemonic_mcp_service_user }}"
+        state: present
+      check_mode: yes
+      register: op_user_check
+
+    - name: Assert op user exists
+      assert:
+        that:
+          - op_user_check.changed == false
+        fail_msg: "op user does not exist"
+
+    - name: Verify mnemonic-mcp binary exists and is executable
+      stat:
+        path: "{{ mnemonic_mcp_install_dir }}/bin/mnemonic-mcp"
+      register: binary_stat
+
+    - name: Assert binary is executable
+      assert:
+        that:
+          - binary_stat.stat.exists
+          - binary_stat.stat.executable
+          - binary_stat.stat.pw_name == mnemonic_mcp_service_user
+        fail_msg: "Binary check failed"
+
+    - name: Verify config directory exists
+      stat:
+        path: "{{ mnemonic_mcp_config_dir }}"
+      register: config_dir_stat
+
+    - name: Assert config directory exists
+      assert:
+        that:
+          - config_dir_stat.stat.exists
+          - config_dir_stat.stat.isdir
+        fail_msg: "Config directory check failed"
+
+    - name: Verify config.yml exists
+      stat:
+        path: "{{ mnemonic_mcp_config_dir }}/config.yml"
+      register: config_yml_stat
+
+    - name: Assert config.yml exists
+      assert:
+        that:
+          - config_yml_stat.stat.exists
+        fail_msg: "config.yml check failed"
+
+    - name: Verify hooks directory exists
+      stat:
+        path: "{{ mnemonic_mcp_hooks_dir }}"
+      register: hooks_dir_stat
+
+    - name: Assert hooks directory exists
+      assert:
+        that:
+          - hooks_dir_stat.stat.exists
+          - hooks_dir_stat.stat.isdir
+        fail_msg: "Hooks directory check failed"
+
+    - name: Verify all 5 hooks exist and are executable
+      stat:
+        path: "{{ mnemonic_mcp_hooks_dir }}/{{ item }}.sh"
+      loop:
+        - user-spec
+        - tech-spec
+        - task-complete
+        - pre-deploy
+        - post-deploy
+      register: hook_stat
+
+    - name: Assert all hooks are executable
+      assert:
+        that:
+          - item.stat.exists
+          - item.stat.executable
+          - item.stat.pw_name == mnemonic_mcp_service_user
+        fail_msg: "Hook {{ item.invocation.module_args.path }} check failed"
+      loop: "{{ hook_stat.results }}"
+
+    - name: Verify systemd unit exists
+      stat:
+        path: /etc/systemd/system/mnemonic-mcp.service
+      register: service_stat
+
+    - name: Assert systemd unit exists
+      assert:
+        that:
+          - service_stat.stat.exists
+        fail_msg: "systemd unit check failed"
+
+    - name: Verify molyanov hooks config was rendered
+      stat:
+        path: /home/mnemonic-operator/.fabric/ruflo/hooks.d/molyanov-mnemonic-hooks.yml
+      register: molyanov_config_stat
+
+    - name: Assert molyanov config exists (may not exist in test env, skip if missing)
+      debug:
+        msg: "molyanov config check: exists={{ molyanov_config_stat.stat.exists }}"

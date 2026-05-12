@@ -1,0 +1,42 @@
+---
+dependency:
+  name: galaxy
+
+driver:
+  name: docker
+
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      interpreter_python: auto_silent
+  inventory:
+    host_vars:
+      instance:
+        ansible_python_interpreter: /usr/bin/python3
+        operator_user: mnemonic-operator
+        operator_home: /home/mnemonic-operator
+
+platforms:
+  - name: instance
+    image: ubuntu:22.04
+    pre_build_image: true
+    command: /lib/systemd/systemd-cgroup-agent
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:ro
+    privileged: true
+    environment:
+      container: docker
+
+scenario:
+  name: default
+  test_sequence:
+    - dependency
+    - cleanup
+    - destroy
+    - create
+    - prepare
+    - converge
+    - verify
+    - cleanup
+    - destroy

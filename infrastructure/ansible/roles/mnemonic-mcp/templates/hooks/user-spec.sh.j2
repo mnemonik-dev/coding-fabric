@@ -1,0 +1,65 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# user-spec.sh
+# Trigger point 1: user-spec approval
+# Invokes mnemonic_sign_memory to attest user-spec approval
+# Records attestation_id in work/<feature>/attestations.yml
+# Parent: none (DAG root)
+
+FEATURE=""
+ARTEFACT=""
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --feature)
+      FEATURE="$2"
+      shift 2
+      ;;
+    --artefact)
+      ARTEFACT="$2"
+      shift 2
+      ;;
+    *)
+      echo "Usage: $0 --feature <name> --artefact <path>"
+      exit 1
+      ;;
+  esac
+done
+
+if [[ -z "$FEATURE" ]] || [[ -z "$ARTEFACT" ]]; then
+  echo "user-spec.sh: FEATURE and ARTEFACT required" >&2
+  exit 1
+fi
+
+WORK_DIR="work/$FEATURE"
+ATTESTATIONS_FILE="$WORK_DIR/attestations.yml"
+
+mkdir -p "$WORK_DIR"
+
+# Invoke mnemonic_sign_memory to create attestation
+if ! ATTESTATION_OUTPUT=$(mnemonic_sign_memory \
+  --content "user-spec approved: $FEATURE" \
+  --tags "user-spec" "$FEATURE" 2>&1); then
+  echo "user-spec.sh: mnemonic_sign_memory failed" >&2
+  exit 1
+fi
+
+# Extract attestation_id from output
+ATTESTATION_ID=$(echo "$ATTESTATION_OUTPUT" | grep -oP 'attestation_id[=:]?\s*\K[a-f0-9-]+' | head -1)
+if [[ -z "$ATTESTATION_ID" ]]; then
+  echo "user-spec.sh: failed to extract attestation_id" >&2
+  exit 1
+fi
+
+# Record in attestations.yml
+cat >> "$ATTESTATIONS_FILE" <<EOF
+user_spec:
+  attestation_id: $ATTESTATION_ID
+  timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+  artefact: $ARTEFACT
+EOF
+
+echo "user-spec.sh: attestation created: $ATTESTATION_ID"
+exit 0

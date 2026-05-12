@@ -1,0 +1,79 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# post-deploy.sh
+# Trigger point 5: deploy + post-deploy verification
+# Invokes mnemonic_sign_memory to finalize feature attestation
+# Parent: pre-deploy attestation
+# Completion: final DAG node
+
+FEATURE=""
+ARTEFACT=""
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --feature)
+      FEATURE="$2"
+      shift 2
+      ;;
+    --artefact)
+      ARTEFACT="$2"
+      shift 2
+      ;;
+    *)
+      echo "Usage: $0 --feature <name> --artefact <path>"
+      exit 1
+      ;;
+  esac
+done
+
+if [[ -z "$FEATURE" ]] || [[ -z "$ARTEFACT" ]]; then
+  echo "post-deploy.sh: FEATURE and ARTEFACT required" >&2
+  exit 1
+fi
+
+WORK_DIR="work/$FEATURE"
+ATTESTATIONS_FILE="$WORK_DIR/attestations.yml"
+
+mkdir -p "$WORK_DIR"
+
+# Verify parent (pre-deploy attestation) exists
+if [[ ! -f "$ATTESTATIONS_FILE" ]] || ! grep -q "pre_deploy:" "$ATTESTATIONS_FILE"; then
+  echo "post-deploy.sh: parent attestation (pre_deploy) not found" >&2
+  exit 1
+fi
+
+PARENT_ID=$(grep -A1 "pre_deploy:" "$ATTESTATIONS_FILE" | grep "attestation_id:" | awk '{print $NF}')
+if [[ -z "$PARENT_ID" ]]; then
+  echo "post-deploy.sh: failed to extract parent attestation_id" >&2
+  exit 1
+fi
+
+# Invoke mnemonic_sign_memory with parent reference (final node)
+if ! ATTESTATION_OUTPUT=$(mnemonic_sign_memory \
+  --content "deploy + post-deploy verified: $FEATURE" \
+  --parent "$PARENT_ID" \
+  --tags "post-deploy" "$FEATURE" 2>&1); then
+  echo "post-deploy.sh: mnemonic_sign_memory failed" >&2
+  exit 1
+fi
+
+# Extract attestation_id from output
+ATTESTATION_ID=$(echo "$ATTESTATION_OUTPUT" | grep -oP 'attestation_id[=:]?\s*\K[a-f0-9-]+' | head -1)
+if [[ -z "$ATTESTATION_ID" ]]; then
+  echo "post-deploy.sh: failed to extract attestation_id" >&2
+  exit 1
+fi
+
+# Record in attestations.yml (final node)
+cat >> "$ATTESTATIONS_FILE" <<EOF
+post_deploy:
+  attestation_id: $ATTESTATION_ID
+  parent_id: $PARENT_ID
+  timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+  artefact: $ARTEFACT
+EOF
+
+echo "post-deploy.sh: attestation created: $ATTESTATION_ID (parent: $PARENT_ID, DAG complete)"
+exit 0

@@ -1,0 +1,12 @@
+---
+- name: reload mnemonic-mcp systemd
+  systemd:
+    daemon_reload: yes
+  listen: "reload mnemonic-mcp systemd"
+
+- name: restart mnemonic-mcp service
+  systemd:
+    name: "{{ mnemonic_mcp_systemd_unit }}"
+    state: restarted
+    enabled: yes
+  listen: "restart mnemonic-mcp service"

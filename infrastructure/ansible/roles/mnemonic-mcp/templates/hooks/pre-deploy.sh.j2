@@ -1,0 +1,78 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# pre-deploy.sh
+# Trigger point 4: pre-deploy QA pass
+# Invokes mnemonic_sign_memory to attest pre-deploy verification
+# Parent: task-complete attestation
+
+FEATURE=""
+ARTEFACT=""
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --feature)
+      FEATURE="$2"
+      shift 2
+      ;;
+    --artefact)
+      ARTEFACT="$2"
+      shift 2
+      ;;
+    *)
+      echo "Usage: $0 --feature <name> --artefact <path>"
+      exit 1
+      ;;
+  esac
+done
+
+if [[ -z "$FEATURE" ]] || [[ -z "$ARTEFACT" ]]; then
+  echo "pre-deploy.sh: FEATURE and ARTEFACT required" >&2
+  exit 1
+fi
+
+WORK_DIR="work/$FEATURE"
+ATTESTATIONS_FILE="$WORK_DIR/attestations.yml"
+
+mkdir -p "$WORK_DIR"
+
+# Verify parent (task-complete attestation) exists
+if [[ ! -f "$ATTESTATIONS_FILE" ]] || ! grep -q "task_complete:" "$ATTESTATIONS_FILE"; then
+  echo "pre-deploy.sh: parent attestation (task_complete) not found" >&2
+  exit 1
+fi
+
+PARENT_ID=$(grep -A1 "task_complete:" "$ATTESTATIONS_FILE" | grep "attestation_id:" | awk '{print $NF}')
+if [[ -z "$PARENT_ID" ]]; then
+  echo "pre-deploy.sh: failed to extract parent attestation_id" >&2
+  exit 1
+fi
+
+# Invoke mnemonic_sign_memory with parent reference
+if ! ATTESTATION_OUTPUT=$(mnemonic_sign_memory \
+  --content "pre-deploy QA passed: $FEATURE" \
+  --parent "$PARENT_ID" \
+  --tags "pre-deploy" "$FEATURE" 2>&1); then
+  echo "pre-deploy.sh: mnemonic_sign_memory failed" >&2
+  exit 1
+fi
+
+# Extract attestation_id from output
+ATTESTATION_ID=$(echo "$ATTESTATION_OUTPUT" | grep -oP 'attestation_id[=:]?\s*\K[a-f0-9-]+' | head -1)
+if [[ -z "$ATTESTATION_ID" ]]; then
+  echo "pre-deploy.sh: failed to extract attestation_id" >&2
+  exit 1
+fi
+
+# Record in attestations.yml
+cat >> "$ATTESTATIONS_FILE" <<EOF
+pre_deploy:
+  attestation_id: $ATTESTATION_ID
+  parent_id: $PARENT_ID
+  timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+  artefact: $ARTEFACT
+EOF
+
+echo "pre-deploy.sh: attestation created: $ATTESTATION_ID (parent: $PARENT_ID)"
+exit 0

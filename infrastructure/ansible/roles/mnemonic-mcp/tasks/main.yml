@@ -1,0 +1,240 @@
+---
+- name: Ensure op system user exists
+  user:
+    name: "{{ mnemonic_mcp_service_user }}"
+    group: "{{ mnemonic_mcp_service_group }}"
+    home: /var/lib/mnemonic-mcp
+    shell: /usr/sbin/nologin
+    system: yes
+    createhome: yes
+  register: op_user_created
+
+- name: Ensure mnemonic-mcp installation directory exists
+  file:
+    path: "{{ mnemonic_mcp_install_dir }}"
+    state: directory
+    owner: "{{ mnemonic_mcp_service_user }}"
+    group: "{{ mnemonic_mcp_service_group }}"
+    mode: '0755'
+
+- name: Ensure mnemonic-mcp bin directory exists
+  file:
+    path: "{{ mnemonic_mcp_install_dir }}/bin"
+    state: directory
+    owner: "{{ mnemonic_mcp_service_user }}"
+    group: "{{ mnemonic_mcp_service_group }}"
+    mode: '0755'
+
+- name: Download mnemonic-mcp binary
+  get_url:
+    url: "{{ mnemonic_mcp_binary_url }}"
+    dest: "{{ mnemonic_mcp_install_dir }}/bin/mnemonic-mcp"
+    owner: "{{ mnemonic_mcp_service_user }}"
+    group: "{{ mnemonic_mcp_service_group }}"
+    mode: '0755'
+    checksum: "sha256:{{ mnemonic_mcp_binary_sha256 }}"
+  register: mnemonic_mcp_binary_download
+
+- name: Verify mnemonic-mcp binary is executable
+  stat:
+    path: "{{ mnemonic_mcp_install_dir }}/bin/mnemonic-mcp"
+  register: mnemonic_mcp_binary_stat
+
+- name: Assert binary downloaded and executable
+  assert:
+    that:
+      - mnemonic_mcp_binary_stat.stat.exists
+      - mnemonic_mcp_binary_stat.stat.executable
+    fail_msg: "mnemonic-mcp binary download or permission setup failed"
+
+- name: Ensure config directory exists
+  file:
+    path: "{{ mnemonic_mcp_config_dir }}"
+    state: directory
+    owner: "{{ mnemonic_mcp_service_user }}"
+    group: "{{ mnemonic_mcp_service_group }}"
+    mode: '0755'
+
+- name: Ensure hooks directory exists
+  file:
+    path: "{{ mnemonic_mcp_hooks_dir }}"
+    state: directory
+    owner: "{{ mnemonic_mcp_service_user }}"
+    group: "{{ mnemonic_mcp_service_group }}"
+    mode: '0755'
+
+- name: Render mnemonic-mcp config.yml
+  template:
+    src: config.yml.j2
+    dest: "{{ mnemonic_mcp_config_dir }}/config.yml"
+    owner: "{{ mnemonic_mcp_service_user }}"
+    group: "{{ mnemonic_mcp_service_group }}"
+    mode: '0644'
+  notify: reload mnemonic-mcp systemd
+
+- name: Render protocol-qa.env (MNEMONIC_MODE=full secrets)
+  template:
+    src: protocol-qa.env.j2
+    dest: "{{ mnemonic_mcp_config_dir }}/protocol-qa.env"
+    owner: "{{ mnemonic_mcp_service_user }}"
+    group: "{{ mnemonic_mcp_service_group }}"
+    mode: '0600'
+  no_log: true
+  notify: reload mnemonic-mcp systemd
+
+- name: Render systemd service unit with LoadCredential
+  template:
+    src: mnemonic-mcp.service.j2
+    dest: /etc/systemd/system/{{ mnemonic_mcp_systemd_unit }}
+    owner: root
+    group: root
+    mode: '0644'
+  notify: reload mnemonic-mcp systemd
+  no_log: true
+
+- name: Install user-spec.sh hook
+  template:
+    src: hooks/user-spec.sh.j2
+    dest: "{{ mnemonic_mcp_hooks_dir }}/user-spec.sh"
+    owner: "{{ mnemonic_mcp_service_user }}"
+    group: "{{ mnemonic_mcp_service_group }}"
+    mode: '0755'
+
+- name: Install tech-spec.sh hook
+  template:
+    src: hooks/tech-spec.sh.j2
+    dest: "{{ mnemonic_mcp_hooks_dir }}/tech-spec.sh"
+    owner: "{{ mnemonic_mcp_service_user }}"
+    group: "{{ mnemonic_mcp_service_group }}"
+    mode: '0755'
+
+- name: Install task-complete.sh hook
+  template:
+    src: hooks/task-complete.sh.j2
+    dest: "{{ mnemonic_mcp_hooks_dir }}/task-complete.sh"
+    owner: "{{ mnemonic_mcp_service_user }}"
+    group: "{{ mnemonic_mcp_service_group }}"
+    mode: '0755'
+
+- name: Install pre-deploy.sh hook
+  template:
+    src: hooks/pre-deploy.sh.j2
+    dest: "{{ mnemonic_mcp_hooks_dir }}/pre-deploy.sh"
+    owner: "{{ mnemonic_mcp_service_user }}"
+    group: "{{ mnemonic_mcp_service_group }}"
+    mode: '0755'
+
+- name: Install post-deploy.sh hook
+  template:
+    src: hooks/post-deploy.sh.j2
+    dest: "{{ mnemonic_mcp_hooks_dir }}/post-deploy.sh"
+    owner: "{{ mnemonic_mcp_service_user }}"
+    group: "{{ mnemonic_mcp_service_group }}"
+    mode: '0755'
+
+- name: Verify all 5 hooks installed and executable
+  stat:
+    path: "{{ mnemonic_mcp_hooks_dir }}/{{ item }}.sh"
+  loop:
+    - user-spec
+    - tech-spec
+    - task-complete
+    - pre-deploy
+    - post-deploy
+  register: hook_stat
+
+- name: Assert all hooks are executable
+  assert:
+    that:
+      - item.stat.exists
+      - item.stat.executable
+    fail_msg: "Hook installation failed"
+  loop: "{{ hook_stat.results }}"
+
+- name: Configure molyanov skill success paths to invoke hooks
+  template:
+    src: molyanov-mnemonic-hooks.yml.j2
+    dest: "{{ operator_home }}/.fabric/ruflo/hooks.d/molyanov-mnemonic-hooks.yml"
+    owner: "{{ operator_user }}"
+    group: "{{ operator_group }}"
+    mode: '0644'
+  become: true
+  become_user: "{{ operator_user }}"
+
+- name: Reload systemd daemon
+  systemd:
+    daemon_reload: yes
+  notify: restart mnemonic-mcp service
+
+- name: Enable mnemonic-mcp service
+  systemd:
+    name: "{{ mnemonic_mcp_systemd_unit }}"
+    enabled: yes
+    state: started
+
+- name: Wait for mnemonic-mcp to become active
+  systemd:
+    name: "{{ mnemonic_mcp_systemd_unit }}"
+  register: mnemonic_mcp_status
+  until: mnemonic_mcp_status.status.ActiveState == 'active'
+  retries: 5
+  delay: 2
+
+- name: Verify mnemonic-mcp service is active
+  command: systemctl is-active {{ mnemonic_mcp_systemd_unit }}
+  changed_when: false
+  register: mnemonic_mcp_active
+  failed_when: mnemonic_mcp_active.rc != 0
+
+- name: Run healthcheck - invoke user-spec hook with stub feature
+  shell: |
+    set -euo pipefail
+    export FEATURE=stub
+    export ARTEFACT="test-artefact-$(date +%s)"
+    "{{ mnemonic_mcp_hooks_dir }}/user-spec.sh" --feature="$FEATURE" --artefact="$ARTEFACT"
+  become: true
+  become_user: "{{ mnemonic_mcp_service_user }}"
+  register: healthcheck_user_spec
+  failed_when: healthcheck_user_spec.rc != 0
+  retries: 3
+  delay: 2
+  environment:
+    PATH: "/opt/mnemonic-mcp/bin:/usr/local/bin:/usr/bin:/bin"
+
+- name: Run full healthcheck through all 5 hooks
+  shell: |
+    set -euo pipefail
+    FEATURE="stub"
+    ARTEFACT="test-artefact-$(date +%s)"
+    for hook in user-spec tech-spec task-complete pre-deploy post-deploy; do
+      "{{ mnemonic_mcp_hooks_dir }}/$hook.sh" --feature="$FEATURE" --artefact="$ARTEFACT" || exit 1
+    done
+  become: true
+  become_user: "{{ mnemonic_mcp_service_user }}"
+  register: healthcheck_all_hooks
+  failed_when: healthcheck_all_hooks.rc != 0
+  environment:
+    PATH: "/opt/mnemonic-mcp/bin:/usr/local/bin:/usr/bin:/bin"
+
+- name: Verify DAG construction via mnemonic_recall
+  shell: |
+    set -euo pipefail
+    python3 -c "
+    import subprocess
+    import json
+    result = subprocess.run(['mnemonic_recall', '--feature=stub'], capture_output=True, text=True)
+    if result.returncode != 0:
+      print('mnemonic_recall failed:', result.stderr)
+      exit(1)
+    output = json.loads(result.stdout) if result.stdout else {}
+    if 'nodes' not in output or len(output.get('nodes', [])) < 5:
+      print(f'DAG has insufficient nodes: {len(output.get(\"nodes\", []))}')
+      exit(1)
+    print('DAG verification passed:', len(output.get('nodes', [])), 'nodes')
+    "
+  environment:
+    PATH: "/opt/mnemonic-mcp/bin:/usr/local/bin:/usr/bin:/bin"
+    FEATURE: "stub"
+  register: dag_verify
+  failed_when: dag_verify.rc != 0
+  changed_when: false
