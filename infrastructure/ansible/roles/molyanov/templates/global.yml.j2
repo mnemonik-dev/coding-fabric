@@ -1,0 +1,48 @@
+# molyanov global configuration
+# Rendered by Ansible role molyanov (Task 11)
+# Auto-generated; do not edit manually
+
+version: "1.0"
+created: "{{ ansible_date_time.iso8601 }}"
+
+# Project Knowledge canonical reference
+project_knowledge:
+  enabled: true
+  path: "{{ molyanov_operator_home }}/.claude/skills/project-knowledge"
+  refs_pattern: "{{ molyanov_pk_guard_refs_pattern }}"
+  guard_scope: "{{ molyanov_ruflo_session_env }}"
+  description: "Molynov methodology project knowledge; protected from ruflo rewrites by pk-guard hook"
+
+# Slash commands metadata
+slash_commands:
+  - name: "/init-project-knowledge"
+    description: "Bootstrap Project Knowledge from upstream template (one-time per master repo)"
+    operator_only: true
+  - name: "/recall-spec"
+    description: "Query mnemonic memory for approved specs"
+    context: "any"
+  - name: "/turn-into-task"
+    description: "Convert watchdog alert to task (Kaneo webhook)"
+    requires_ops_topic: true
+
+# Integration points
+integrations:
+  ruflo:
+    hooks_dir: "{{ molyanov_operator_home }}/.fabric/ruflo/hooks.d"
+    config_file: "molyanov-pk-guard.yml"
+    enabled: true
+  telegram:
+    ops_topic: "{{ molyanov_telegram_ops_topic_id }}"
+    alert_channel: true
+  sops:
+    secrets_file: "infrastructure/secrets/secrets.sops.yml"
+    keys:
+      - telegram_bot_token
+      - github_token
+
+# Bypass procedures (operational only, logged)
+bypasses:
+  - name: "pk-guard manual override"
+    description: "Operator may set RUFLO_SESSION= (empty) to write to PK refs (emergency only)"
+    requires_verification: true
+    logged_always: true

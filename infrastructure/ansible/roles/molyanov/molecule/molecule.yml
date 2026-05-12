@@ -1,0 +1,36 @@
+---
+dependency:
+  name: galaxy
+
+driver:
+  name: docker
+
+platforms:
+  - name: molyanov-test
+    image: ubuntu:24.04
+    pre_build_image: true
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:ro
+    privileged: true
+    init: true
+    command: /lib/systemd/systemd-cgroup-generator
+    env:
+      container: podman
+
+provisioner:
+  name: ansible
+  playbooks:
+    converge: converge.yml
+  inventory:
+    host_vars:
+      molyanov-test:
+        operator_user: mnemonic-operator
+        operator_home: /home/mnemonic-operator
+        telegram_ops_topic_id: "-100123456789"
+        molyanov_skills_repo: https://github.com/mnemonic-ai/molyanov-ai-dev.git
+        molyanov_skills_version: v0.1.0
+
+verifier:
+  name: ansible
+  playbooks:
+    verify: verify.yml

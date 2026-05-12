@@ -1,0 +1,17 @@
+---
+molyanov_operator_user: mnemonic-operator
+molyanov_operator_home: /home/mnemonic-operator
+
+# molyanov-ai-dev skills bundle repo and version
+molyanov_skills_repo: https://github.com/mnemonic-ai/molyanov-ai-dev.git
+molyanov_skills_version: v0.1.0
+
+# Project Knowledge guard scope
+molyanov_pk_guard_refs_pattern: ".claude/skills/project-knowledge/references/"
+
+# Telegram bot token source (from sops secrets)
+molyanov_telegram_bot_token_sops_key: "telegram_bot_token"
+molyanov_telegram_ops_topic_id: "{{ molyanov_telegram_ops_topic_id }}"
+
+# ruflo session environment variable for scoping
+molyanov_ruflo_session_env: RUFLO_SESSION

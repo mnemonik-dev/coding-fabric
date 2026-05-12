@@ -1,0 +1,20 @@
+---
+- name: Converge
+  hosts: all
+  become: true
+  pre_tasks:
+    - name: Create operator user for testing
+      ansible.builtin.user:
+        name: "{{ molyanov_operator_user }}"
+        home: "{{ molyanov_operator_home }}"
+        shell: /bin/bash
+        createhome: true
+        state: present
+
+  roles:
+    - role: molyanov
+
+  post_tasks:
+    - name: Ensure role is idempotent
+      ansible.builtin.debug:
+        msg: "Role applied successfully"

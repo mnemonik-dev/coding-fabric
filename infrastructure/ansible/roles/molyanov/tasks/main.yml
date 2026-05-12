@@ -1,0 +1,83 @@
+---
+- name: Ensure molyanov directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ molyanov_operator_user }}"
+    group: "{{ molyanov_operator_user }}"
+    mode: '0755'
+  loop:
+    - "{{ molyanov_operator_home }}/.claude/skills"
+    - "{{ molyanov_operator_home }}/.fabric/molyanov/hooks"
+    - "{{ molyanov_operator_home }}/.fabric/ruflo/hooks.d"
+
+- name: Clone molyanov-ai-dev skills bundle
+  ansible.builtin.git:
+    repo: "{{ molyanov_skills_repo }}"
+    dest: "{{ molyanov_operator_home }}/.claude/skills/molyanov-ai-dev"
+    version: "{{ molyanov_skills_version }}"
+    update: true
+    force: true
+  become: true
+  become_user: "{{ molyanov_operator_user }}"
+  register: molyanov_skills_clone
+
+- name: Render molyanov global config
+  ansible.builtin.template:
+    src: global.yml.j2
+    dest: "{{ molyanov_operator_home }}/.fabric/molyanov/global.yml"
+    owner: "{{ molyanov_operator_user }}"
+    group: "{{ molyanov_operator_user }}"
+    mode: '0644'
+  notify: Molyanov config changed
+
+- name: Install pk-guard pre-write hook
+  ansible.builtin.copy:
+    src: pk-guard.sh
+    dest: "{{ molyanov_operator_home }}/.fabric/molyanov/hooks/pk-guard.sh"
+    owner: "{{ molyanov_operator_user }}"
+    group: "{{ molyanov_operator_user }}"
+    mode: '0755'
+  notify: Molyanov hook installed
+
+- name: Install ops-notify wrapper hook
+  ansible.builtin.copy:
+    src: ops-notify.sh
+    dest: "{{ molyanov_operator_home }}/.fabric/molyanov/hooks/ops-notify.sh"
+    owner: "{{ molyanov_operator_user }}"
+    group: "{{ molyanov_operator_user }}"
+    mode: '0755'
+  notify: Molyanov hook installed
+
+- name: Configure ruflo pk-guard integration
+  ansible.builtin.template:
+    src: ruflo-hooks.d-molyanov-pk-guard.yml.j2
+    dest: "{{ molyanov_operator_home }}/.fabric/ruflo/hooks.d/molyanov-pk-guard.yml"
+    owner: "{{ molyanov_operator_user }}"
+    group: "{{ molyanov_operator_user }}"
+    mode: '0644'
+  notify: Ruflo pk-guard hook configured
+
+- name: Verify molyanov skills installation
+  ansible.builtin.stat:
+    path: "{{ molyanov_operator_home }}/.claude/skills/molyanov-ai-dev"
+  register: molyanov_skills_stat
+
+- name: Assert molyanov skills installed
+  ansible.builtin.assert:
+    that:
+      - molyanov_skills_stat.stat.exists
+      - molyanov_skills_stat.stat.isdir
+    fail_msg: "molyanov-ai-dev skills bundle installation failed"
+
+- name: Verify pk-guard hook installed
+  ansible.builtin.stat:
+    path: "{{ molyanov_operator_home }}/.fabric/molyanov/hooks/pk-guard.sh"
+  register: molyanov_pk_guard_stat
+
+- name: Assert pk-guard hook is executable
+  ansible.builtin.assert:
+    that:
+      - molyanov_pk_guard_stat.stat.exists
+      - molyanov_pk_guard_stat.stat.executable
+    fail_msg: "pk-guard.sh hook installation or permissions failed"

@@ -1,0 +1,17 @@
+---
+galaxy_info:
+  author: "Mnemonic Protocol"
+  description: "Install molyanov-ai-dev slash commands and Project Knowledge guard hook"
+  license: MIT
+  min_ansible_version: "2.10"
+  galaxy_tags:
+    - molyanov
+    - fabric
+    - hooks
+    - pk_guard
+
+dependencies:
+  - role: base
+    tags: always
+  - role: tailscale
+    tags: always

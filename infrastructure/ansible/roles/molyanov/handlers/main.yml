@@ -1,0 +1,12 @@
+---
+- name: Molyanov config changed
+  ansible.builtin.debug:
+    msg: "molyanov global.yml rendered successfully"
+
+- name: Molyanov hook installed
+  ansible.builtin.debug:
+    msg: "molyanov hook installed successfully"
+
+- name: Ruflo pk-guard hook configured
+  ansible.builtin.debug:
+    msg: "ruflo pk-guard hook integration configured"
