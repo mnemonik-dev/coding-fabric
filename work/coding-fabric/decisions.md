@@ -1464,6 +1464,42 @@ All 5 hooks now share common input validation (CWE-20 defense-in-depth). DAG int
 
 ---
 
+## Task 14 — fabric/integrations/swarm-bridge (`/do-feature` → ruflo swarm)
+
+**Status:** complete | **Agent:** swarm-bridge (python-alchemist)
+
+**Summary:** Implemented the adapter from molyanov `/do-feature` to ruflo swarm MCP. The bridge calls `swarm_init` once per feature, then for each wave dispatches tasks concurrently, each getting an isolated worktree lease from workspace-manager. Worktree lifetime is guaranteed by a `finally` block — DELETE fires regardless of agent outcome. Partial failure (one spawn crashes) does not leak other worktrees.
+
+**Files produced:**
+- `fabric/integrations/__init__.py` (10 lines)
+- `fabric/integrations/swarm_bridge.py` (200 lines)
+- `fabric/integrations/workspace_client.py` (185 lines)
+- `fabric/integrations/ruflo_client.py` (130 lines)
+- `fabric/integrations/tests/conftest.py` (115 lines)
+- `fabric/integrations/tests/test_swarm_bridge.py` (290 lines)
+- `fabric/integrations/pyproject.toml` (40 lines)
+- `fabric/integrations/README.md` (50 lines)
+
+**Tests:** 15/15 passed (pytest-asyncio, asyncio_mode=auto, Python 3.10).
+
+**Key decisions:**
+- `SwarmBridge._spawn_one` owns the full create→spawn→delete lifecycle for each task; `asyncio.gather` on the wave list achieves intra-wave concurrency without shared state.
+- Worktree DELETE is in a `try/finally` wrapping only the `agent_spawn` call (not the create). This matches the task spec: "cleanup guaranteed; successful spawns still get DELETE even on partial failure."
+- 409 (CapacityError) triggers one retry after `capacity_wait_s`; persistent 409 surfaces to the caller as `CapacityError` (maps to AC5 graceful-wait/error).
+- `WorkspaceClient` retries 5xx (max 3, exponential back-off at 0.5s base); raises immediately on 4xx (per task spec "retry only 5xx, not 4xx").
+- `RufloClient` accepts `swarm_init_fn` and `agent_spawn_fn` as constructor parameters — pure dependency injection; zero MCP process coupling in this module.
+- `ImportError` from `fabric.logs.sanitizer.handler` is a hard fail at module import time (not a deferred warning), enforcing AC40 sanitization contract.
+- `~/.fabric/molyanov/skills/feature-execution/SKILL.md` update deferred to deploy time via `fabric-services` Ansible role (documented in README.md).
+
+**Self-review verdict:** pass
+
+Correctness: DELETE guaranteed in `finally`; `asyncio.gather` propagates the first exception after all tasks settle, so all coroutines have reached their `finally` blocks.
+Security: All log emission paths use `SanitizedFileHandler`; no raw stack traces with secret context reach Telegram topic. Hard ImportError prevents silent bypass.
+Reliability: 5xx retries max 3 with exponential back-off; single 409 retry; 4xx immediate raise. No infinite retry loops.
+Code quality: Full type hints, Pydantic v2 models for all MCP shapes, `dataclass` for domain models, `asynccontextmanager` for `WorkspaceClient.lease`.
+
+---
+
 ## Task 15 — fabric/molyanov/validators/ (ruflo plugin delegation wrappers)
 
 **Status:** complete | **Commit:** f93c765 | **Agent:** validator-wrappers (python-alchemist)
