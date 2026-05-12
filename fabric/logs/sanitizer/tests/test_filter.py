@@ -78,11 +78,19 @@ NEUTRAL_STRINGS: list[str] = [
     "def sanitize(line: str) -> str:",
     "Starting workspace manager on port 8080",
     "Task 07 completed successfully",
-    "api_call is a short string",  # "api_call" → "api_" + "call" only 4 chars
-    "sk-short",                    # sk- + 5 chars, below 8-char threshold
+    "api_call is a short string",  # "api_call" -> "api_" + "call" only 4 chars
+    "sk-short",                    # sk- + 5 chars, below 16-char threshold
     "Hello, World!",
     "2026-05-12T10:00:00Z INFO fabric.watchdog healthy",
     "",
+    # ANTHROPIC_ var names without a digit in the payload must NOT be redacted
+    "ANTHROPIC_MODEL_NAME",
+    "ANTHROPIC_VERSION",
+    "ANTHROPIC_BASE_URL",
+    # Short api_ identifiers below the 16-char threshold
+    "api_v2_endpoint",
+    # SKU-style pattern (uppercase SK, not sk-)
+    "SKU-12345",
 ]
 
 # ---------------------------------------------------------------------------
@@ -111,10 +119,10 @@ def test_base58_boundary_31_chars_not_redacted() -> None:
     assert sanitize(s) == s
 
 
-def test_base58_boundary_45_chars_not_redacted() -> None:
-    """45-char base58 string (above maximum) must NOT be redacted."""
+def test_base58_boundary_45_chars_is_redacted() -> None:
+    """45-char base58 string is now redacted (upper bound removed, {32,} matches)."""
     s = "A" * 45
-    assert sanitize(s) == s
+    assert sanitize(s) == REDACTED
 
 
 def test_base58_excludes_zero() -> None:
@@ -197,10 +205,16 @@ def test_api_token_threshold_too_short() -> None:
     assert sanitize("api_tiny") == "api_tiny"  # exactly 4 chars after api_
 
 
-def test_api_token_exactly_8_chars_payload() -> None:
-    """Token prefix with exactly 8 payload chars IS redacted."""
-    assert REDACTED in sanitize("sk-12345678")
-    assert REDACTED in sanitize("api_12345678")
+def test_api_token_exactly_16_chars_mixed_payload() -> None:
+    """Token prefix with exactly 16 mixed (letter+digit) payload chars IS redacted."""
+    assert REDACTED in sanitize("sk-abc1234567890def")   # sk- + 16 chars, has letter+digit
+    assert REDACTED in sanitize("api_abc1234567890def")  # api_ + 16 chars, has letter+digit
+
+
+def test_api_token_below_16_chars_not_redacted() -> None:
+    """Token prefix with fewer than 16 payload chars is NOT redacted."""
+    assert sanitize("sk-12345678") == "sk-12345678"    # 8 chars, below threshold
+    assert sanitize("api_12345678") == "api_12345678"  # 8 chars, below threshold
 
 
 # ---------------------------------------------------------------------------
@@ -370,6 +384,176 @@ def test_sanitize_outgoing_equals_sanitize() -> None:
     """sanitize_outgoing is a thin wrapper — result equals sanitize()."""
     msg = "4Nd1mBQtrMJVYVfKf2PX98fDUiZmJpmEJBYYLiMF1TLe sk-abc123XYZ456def"
     assert sanitize_outgoing(msg) == sanitize(msg)
+
+
+# ---------------------------------------------------------------------------
+# Adversarial tests — round 2 (bypass attempts identified in security audit)
+# ---------------------------------------------------------------------------
+
+
+def test_redacts_padded_base58_prefix() -> None:
+    """Pubkey preceded by one base58 char must still be fully redacted.
+
+    Old {32,44} bound allowed the 44-char suffix to be missed when the total
+    run exceeded 44 chars.  With {32,256} and look-around, the full run is
+    redacted.
+    """
+    pubkey = "4Nd1mBQtrMJVYVfKf2PX98fDUiZmJpmEJBYYLiMF1TLe"
+    # 'x' is a valid base58 char — concatenated run is 45 chars, must be redacted
+    padded = "x" + pubkey
+    result = sanitize(padded)
+    assert pubkey not in result, f"Padded pubkey leaked: {result!r}"
+    assert REDACTED in result
+
+
+def test_redacts_padded_base58_suffix() -> None:
+    """Pubkey followed by one base58 char must still be fully redacted."""
+    pubkey = "4Nd1mBQtrMJVYVfKf2PX98fDUiZmJpmEJBYYLiMF1TLe"
+    padded = pubkey + "x"
+    result = sanitize(padded)
+    assert pubkey not in result, f"Padded pubkey leaked: {result!r}"
+    assert REDACTED in result
+
+
+def test_redacts_solana_88_char_keypair() -> None:
+    """88-char Solana secret keypair (64-byte, base58-encoded) is redacted."""
+    # 88 base58 chars — representative length of a full Ed25519 keypair
+    keypair = "A" * 88
+    result = sanitize(keypair)
+    assert result == REDACTED, f"88-char keypair not redacted: {result!r}"
+
+
+def test_redacts_87_char_keypair() -> None:
+    """87-char Solana secret keypair is redacted."""
+    keypair = "B" * 87
+    result = sanitize(keypair)
+    assert result == REDACTED, f"87-char keypair not redacted: {result!r}"
+
+
+def test_does_not_redact_anthropic_var_name_only() -> None:
+    """Bare ANTHROPIC_ variable NAMES (no digit in payload) must NOT be redacted.
+
+    ANTHROPIC_MODEL_NAME, ANTHROPIC_VERSION, etc. are config names, not secrets.
+    """
+    for var_name in (
+        "ANTHROPIC_MODEL_NAME",
+        "ANTHROPIC_VERSION",
+        "ANTHROPIC_BETA_FEATURES",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_LOG_LEVEL",
+    ):
+        result = sanitize(var_name)
+        assert result == var_name, f"Var name incorrectly redacted: {var_name!r} => {result!r}"
+
+
+def test_redacts_anthropic_assignment_with_digit() -> None:
+    """ANTHROPIC_ assignments whose payload contains a digit ARE redacted."""
+    cases = [
+        "ANTHROPIC_API_KEY=sk-ant-api03-verylongkeyvalue1234567890",
+        "ANTHROPIC_AUTH_TOKEN=Bearer_longtoken12345678901234567890",
+        "env var: ANTHROPIC_SECRET_KEY_VALUE=longvaluehere123",
+    ]
+    for line in cases:
+        result = sanitize(line)
+        assert REDACTED in result, f"Expected redaction for: {line!r}, got: {result!r}"
+
+
+def test_does_not_redact_sku_patterns() -> None:
+    """SKU-style patterns must not be redacted."""
+    # SKU-12345 does not start with sk- (uppercase SK)
+    assert sanitize("SKU-12345") == "SKU-12345"
+    # api_v2_endpoint — 10 chars after api_, below 16-char threshold
+    assert sanitize("api_v2_endpoint") == "api_v2_endpoint"
+
+
+def test_redacts_tg_url_inside_json() -> None:
+    """Telegram URL inside a JSON string must be redacted without eating the closing quote."""
+    line = '{"url": "https://api.telegram.org/file/botX:Y/file.jpg"}'
+    result = sanitize(line)
+    assert "api.telegram.org/file" not in result, f"URL leaked in: {result!r}"
+    assert REDACTED in result
+    # Surrounding JSON structure must be preserved
+    assert result.startswith('{"url": "'), f"Opening context lost: {result!r}"
+    assert result.endswith('"}'), f"Closing quote/brace consumed: {result!r}"
+
+
+def test_redacts_tg_url_in_html() -> None:
+    """Telegram URL inside an HTML href must not eat the closing quote."""
+    line = '<a href="https://api.telegram.org/file/bot1:T/f.jpg">link</a>'
+    result = sanitize(line)
+    assert "api.telegram.org/file" not in result
+    # Closing quote must survive
+    assert '"' in result, f"Quote was consumed: {result!r}"
+
+
+def test_jwk_with_escaped_quote_in_value() -> None:
+    """JWK value containing an escaped quote must be fully redacted."""
+    # \"d\":\"abc\\\"def\\\"ghi\" — the d value is: abc\"def\"ghi
+    line = r'{"d":"abc\"def\"ghi"}'
+    result = sanitize(line)
+    assert "abc" not in result, f"JWK value leaked (abc): {result!r}"
+    assert "def" not in result, f"JWK value leaked (def): {result!r}"
+    assert "ghi" not in result, f"JWK value leaked (ghi): {result!r}"
+    assert REDACTED in result
+
+
+def test_sanitized_stream_handler_stderr(tmp_path: pathlib.Path) -> None:
+    """SanitizedStreamHandler redacts secrets written to a stream."""
+    from fabric.logs.sanitizer import SanitizedStreamHandler
+
+    buf = io.StringIO()
+    handler = SanitizedStreamHandler(buf)
+    handler.setLevel(logging.DEBUG)
+
+    logger = logging.getLogger("test_stream_handler")
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
+    logger.addHandler(handler)
+
+    pubkey = "4Nd1mBQtrMJVYVfKf2PX98fDUiZmJpmEJBYYLiMF1TLe"
+    token = "sk-abc123XYZ456defghijklmnopq"
+    try:
+        logger.debug("key=%s token=%s", pubkey, token)
+    finally:
+        handler.close()
+        logger.removeHandler(handler)
+
+    output = buf.getvalue()
+    assert pubkey not in output, f"Pubkey leaked to stream: {output!r}"
+    assert "sk-abc" not in output, f"Token leaked to stream: {output!r}"
+    assert REDACTED in output
+
+
+def test_sanitized_stream_handler_is_drop_in() -> None:
+    """SanitizedStreamHandler is an instance of logging.StreamHandler."""
+    from fabric.logs.sanitizer import SanitizedStreamHandler
+
+    handler = SanitizedStreamHandler(io.StringIO())
+    assert isinstance(handler, logging.StreamHandler)
+    handler.close()
+
+
+def test_file_handler_delay_true_does_not_crash(tmp_path: pathlib.Path) -> None:
+    """SanitizedFileHandler with delay=True must not crash on first emit."""
+    log_file = tmp_path / "delayed.log"
+    handler = SanitizedFileHandler(str(log_file), delay=True)
+    handler.setLevel(logging.DEBUG)
+
+    logger = logging.getLogger("test_delay_true")
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
+    logger.addHandler(handler)
+
+    pubkey = "4Nd1mBQtrMJVYVfKf2PX98fDUiZmJpmEJBYYLiMF1TLe"
+    try:
+        logger.debug("key=%s", pubkey)
+    finally:
+        handler.close()
+        logger.removeHandler(handler)
+
+    contents = log_file.read_text(encoding="utf-8")
+    assert pubkey not in contents
+    assert REDACTED in contents
 
 
 # ---------------------------------------------------------------------------

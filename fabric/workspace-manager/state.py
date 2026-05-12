@@ -33,6 +33,10 @@ class NotFoundError(Exception):
     pass
 
 
+class CapacityExceededError(Exception):
+    pass
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -64,7 +68,7 @@ class StateStore:
     # ------------------------------------------------------------------
 
     def _write_raw(self, data: dict[str, Any]) -> None:
-        """Write data atomically: tempfile + fsync + rename."""
+        """Write data atomically: tempfile + fsync + rename + dir fsync."""
         dir_ = self._path.parent
         fd, tmp_path = tempfile.mkstemp(dir=str(dir_), prefix=".state-tmp-")
         try:
@@ -79,6 +83,12 @@ class StateStore:
             except OSError:
                 pass
             raise
+        # fsync the containing directory so the rename is durable on crash.
+        dir_fd = os.open(str(dir_), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
 
     def _read_raw(self) -> dict[str, Any]:
         if not self._path.exists():
@@ -104,14 +114,24 @@ class StateStore:
     # Public API
     # ------------------------------------------------------------------
 
-    def add(self, info: WorktreeInfo) -> WorktreeInfo:
+    def add(self, info: WorktreeInfo, capacity_total: int | None = None) -> WorktreeInfo:
         """
-        Add a new entry.  Raises AlreadyExistsError if task_id is present.
+        Add a new entry.
+
+        Raises AlreadyExistsError if task_id is already present.
+        Raises CapacityExceededError if capacity_total is given and already reached.
+
+        Both checks are performed inside the flock so the capacity gate is
+        atomic — concurrent POSTs cannot both pass the check simultaneously.
         Thread-safe / process-safe via flock.
         """
         fh = self._acquire()
         try:
             data = self._read_raw()
+            if capacity_total is not None and len(data) >= capacity_total:
+                raise CapacityExceededError(
+                    f"capacity limit of {capacity_total} reached"
+                )
             if info.task_id in data:
                 raise AlreadyExistsError(info.task_id)
             data[info.task_id] = info.model_dump(mode="json")

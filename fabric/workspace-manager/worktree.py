@@ -46,9 +46,17 @@ def _run(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess
 def worktree_path(task_id: str, worktrees_root: Path, repo: str) -> Path:
     """
     Deterministic path: <worktrees_root>/<task_id>/<repo>
-    task_id is already validated by the API layer (^[A-Z0-9-]{3,40}$);
-    no further sanitisation needed here.
+
+    task_id and repo are validated by the API layer before reaching here.
+    We perform a final containment check to guarantee the resolved path cannot
+    escape worktrees_root even if validation is bypassed by future code paths.
     """
+    candidate = (worktrees_root / task_id / repo).resolve()
+    root = worktrees_root.resolve()
+    if not str(candidate).startswith(str(root) + "/") and candidate != root:
+        raise WorktreeError(
+            f"resolved path escapes worktrees_root: {candidate}"
+        )
     return worktrees_root / task_id / repo
 
 
@@ -72,8 +80,10 @@ def create_worktree(
     target = worktree_path(task_id, worktrees_root, repo)
     target.parent.mkdir(parents=True, exist_ok=True)
 
+    # Pass `--` to terminate option parsing so a base_ref that starts with `-`
+    # cannot be misinterpreted as a git flag (argument injection defence).
     _run(
-        ["git", "worktree", "add", "--detach", str(target), base_ref],
+        ["git", "worktree", "add", "--detach", "--", str(target), base_ref],
         cwd=repo_path,
     )
 

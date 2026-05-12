@@ -123,9 +123,15 @@ def mock_git(tmp_dirs: dict[str, Path]):
     """Patch worktree._run to avoid real git calls; actually creates directories."""
 
     def fake_run(cmd: list[str], cwd=None):
-        # Simulate `git worktree add --detach <path> <ref>`
+        # Simulate `git worktree add --detach -- <path> <ref>`
+        # cmd: ['git', 'worktree', 'add', '--detach', '--', '<path>', '<ref>']
         if len(cmd) >= 4 and cmd[1] == "worktree" and cmd[2] == "add":
-            path_arg = cmd[4]
+            # path is the first non-flag argument after `--` (if present) or at index 4
+            try:
+                sep_idx = cmd.index("--")
+                path_arg = cmd[sep_idx + 1]
+            except (ValueError, IndexError):
+                path_arg = cmd[4]
             Path(path_arg).mkdir(parents=True, exist_ok=True)
         # Simulate `git worktree remove --force <path>`
         elif len(cmd) >= 4 and cmd[1] == "worktree" and cmd[2] == "remove":

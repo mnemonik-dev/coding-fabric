@@ -856,6 +856,21 @@ Code quality lens:
 
 **Upstream PR status:** mnemonic-tg-bridge (S-size, approved feature) is PR-pending merge to `pavel-molyanov/telegram-ai-agent`. Role gracefully pins to fork until PR merges, then switches via variable flip and re-apply.
 
+**Round 2 — fix:** commit `ea75e44`
+
+Findings addressed:
+- [reliability HIGH] mutable pin "main" — changed `telegram_ai_agent_pin` default from `"main"` to `"v0.0.0-mnemonic.1"` (placeholder tag); added operator action comment: "before first deploy, replace this with actual commit SHA from mnemonic-org/telegram-ai-agent fork that contains the cwd:DYNAMIC patch from feature mnemonic-tg-bridge". Failing fast on placeholder is better than silent drift.
+- [reliability HIGH] DYNAMIC pre-flight gate too weak — replaced stat+grep fallback with actual pytest collection: `uv run --project {{ telegram_ai_agent_home }} pytest tests/test_dynamic_cwd.py --co -q`. Expects exit code 0 AND non-empty stdout (test must exist and be collectible). Detailed error message includes expected path and command output on failure.
+- [reliability HIGH] `changed_when` self-ref bug in git fetch — refactored into three separate tasks: (1) `git fetch --all` with `changed_when: false`, (2) `git checkout <pin>` with proper `changed_when` checking stdout, (3) `git rev-parse HEAD` with `changed_when: false`, then (4) assert that checked-out HEAD matches the pinned version. Fixes undefined-variable error on second run.
+- [reliability MEDIUM] uv version not enforced at download — added `UV_VERSION` env variable and version arg to installer: `curl -LsSf https://astral.sh/uv/install.sh | sh -s {{ telegram_ai_agent_uv_version }}`. Both env var and shell arg passed to ensure version pinning.
+- [reliability MEDIUM] T08 dependency missing from meta — added `workspace-manager` role to `meta/main.yml` dependencies list. Added pre-flight check task: `uri` GET to `http://{{ tailscale_ip }}:8080/health` with timeout=10. Fails loudly if T08 unreachable, with actionable error message pointing to T08 status/logs.
+- [reliability MEDIUM] required secrets not asserted before template render — added `assert` block before `.env.j2` template: validates `telegram_bot_token` (>= 40 chars) and `anthropic_api_key` (>= 20 chars) are defined. Fails with clear message pointing to sops decryption step if missing. Wrapped in `no_log: true`.
+
+Findings deferred (passing):
+- [info] git fetch rc check — already handled by the refactored git fetch task; `command` module defaults to `failed_when: rc != 0`, so any fetch/checkout error fails the role immediately
+- [info] idempotency confirmed — second run still yields 0 changed (git conditional on repo_stat.exists, uv conditional on Synced keyword, templates conditional on content change)
+- [info] FQCN compliance — verified all modules use `ansible.builtin.*` and `community.sops.*` FQCN notation
+
 ---
 
 ## Task 08 — fabric/workspace-manager FastAPI service + tests
@@ -926,6 +941,45 @@ Reliability-engineer lens:
 - [x] test_path_traversal_blocked — PASS (8 parametrized inputs)
 - [x] test_concurrent_post_same_task_id_returns_409 — PASS
 - [x] test_delete_unknown_task_id_returns_404 — PASS
+
+### Round 2 — security + reliability fixes (workspace-manager agent)
+
+**Status:** complete | **Test results:** 72 passed, 0 failed
+
+**Fixes applied:**
+
+1. **Path traversal via `repo`/`topic` (security critical):** Added `Annotated[str, Field(pattern=...)]` with `^[a-z0-9-]{1,64}$` on `repo` and `^[a-z][a-z0-9-]{0,32}$` on `topic`. Added `@field_validator` double-check rejecting `..`, `/`, `\`. Also added containment assertion in `worktree_path()` that `resolve()`d path stays inside `worktrees_root`.
+
+2. **git argument injection via `base_ref` (security critical):** Added `^[a-zA-Z0-9._/][a-zA-Z0-9._/-]{0,63}$` pattern on `base_ref` (first char must be non-dash). Changed subprocess call to `git worktree add --detach -- <path> <ref>` with explicit `--` end-of-options separator.
+
+3. **Capacity TOCTOU race (reliability high):** Moved capacity check inside `StateStore.add()` under the flock. Added `CapacityExceededError`. Route handler no longer does a pre-check — single atomic gate. `store.add(info, capacity_total)` is the authoritative barrier.
+
+4. **Sanitizer hard failure (security major):** `logging_setup.py` now raises `ImportError` and prints an actionable message to stderr if `SanitizedFileHandler` cannot be imported and `WORKSPACE_MANAGER_REQUIRE_SANITIZER != false`. Tests run with that env var set to `false`.
+
+5. **Orphan directory after rollback (reliability high):** On git-worktree-create failure, rollback now calls `shutil.rmtree(target)` after `remove_env()` to eliminate the directory materialised by vault's `dir_.mkdir()`.
+
+6. **POST 200 → 201 (code review):** `status_code=201` on `@app.post("/worktree")`.
+
+7. **vault_unreachable 409 → 503 (code review + reliability):** VaultUnreachableError now maps to HTTP 503 Service Unavailable.
+
+8. **Blocking event loop (code review medium):** All `store.*` calls in route handlers wrapped in `asyncio.to_thread()`.
+
+9. **systemd hardening (security major):** Added `PrivateDevices=yes`, `ProtectKernelTunables=yes`, `ProtectKernelModules=yes`, `ProtectControlGroups=yes`, `ProtectClock=yes`, `ProtectHostname=yes`, `ProtectProc=invisible`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, `SystemCallFilter=@system-service`, `SystemCallArchitectures=native`, `MemoryDenyWriteExecute=yes`. Added `OnFailure=workspace-manager-notify-failure@%n.service` to `[Unit]`.
+
+10. **DoS via /health (security minor → medium):** `_cached_vault_reachable()` caches the `bw status` result for 30 seconds with a `time.monotonic()` TTL. /health no longer spawns a subprocess on every call.
+
+11. **Bare `except Exception` (code review):** `vault.check_reachable` now catches `(subprocess.SubprocessError, json.JSONDecodeError, OSError, ValueError)`.
+
+12. **fsync after rename (security minor):** Both `state.py._write_raw()` and `vault.materialise_env()` now open the parent directory fd and call `os.fsync()` after `os.replace()`.
+
+**New tests added (26 new, total 72):**
+- `test_repo_traversal_rejected` (9 parametrized inputs)
+- `test_topic_traversal_rejected` (8 parametrized inputs)
+- `test_base_ref_injection_rejected` (5 parametrized inputs)
+- `test_vault_unreachable_returns_503`
+- `test_vault_failure_rolls_back_state`
+- `test_git_failure_rollback_removes_orphan_directory`
+- `test_toctou_capacity_race` (6 concurrent POSTs against cap=3)
 
 ---
 

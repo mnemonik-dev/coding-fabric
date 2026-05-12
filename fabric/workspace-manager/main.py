@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
 
@@ -35,11 +36,30 @@ from models import (
     WorktreeInfo,
     WorktreeListResponse,
 )
-from state import AlreadyExistsError, NotFoundError, StateStore
+from state import AlreadyExistsError, CapacityExceededError, NotFoundError, StateStore
 from vault import VaultUnreachableError, check_reachable, materialise_env, remove_env
 from worktree import WorktreeError, create_worktree, destroy_worktree, worktree_path
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Vault reachability cache (30-second TTL) — avoids spawning `bw status` on
+# every /health call, which would be a trivial DoS vector.
+# ---------------------------------------------------------------------------
+
+_vault_cache: dict[str, object] = {"value": None, "expires": 0.0}
+_VAULT_CACHE_TTL = 30.0
+
+
+async def _cached_vault_reachable(credential_path: Path) -> bool:
+    now = time.monotonic()
+    if now < float(_vault_cache["expires"]):
+        return bool(_vault_cache["value"])
+    result = await asyncio.to_thread(check_reachable, credential_path)
+    _vault_cache["value"] = result
+    _vault_cache["expires"] = now + _VAULT_CACHE_TTL
+    return result
+
 
 # ---------------------------------------------------------------------------
 # Application factory
@@ -103,9 +123,10 @@ def _validate_task_id_path_param(task_id: str) -> str:
 @app.post(
     "/worktree",
     response_model=CreateWorktreeResponse,
-    status_code=200,
+    status_code=201,
     responses={
         409: {"model": ErrorResponse, "description": "Capacity exceeded or task already exists"},
+        503: {"model": ErrorResponse, "description": "Vault unreachable"},
         400: {"model": ErrorResponse, "description": "Invalid request"},
     },
 )
@@ -115,13 +136,6 @@ async def post_worktree(
     store: Annotated[StateStore, Depends(get_state_store)],
 ) -> CreateWorktreeResponse:
     """Create a git worktree and materialise per-worktree .env from Vaultwarden."""
-
-    # Capacity check (pre-lock, advisory — the store.add() call is the authoritative gate)
-    if store.count() >= settings.capacity_total:
-        raise HTTPException(
-            status_code=409,
-            detail={"error": "capacity", "detail": f"Maximum {settings.capacity_total} worktrees reached"},
-        )
 
     target = worktree_path(body.task_id, settings.worktrees_root, body.repo)
     env_path = target / ".env"
@@ -138,14 +152,20 @@ async def post_worktree(
         status="active",
     )
 
-    # Atomically register in state first.  Concurrent POST for same task_id
-    # will hit AlreadyExistsError here (flock ensures mutual exclusion).
+    # Atomically register in state.  Capacity check is performed inside the
+    # flock in store.add() so it is race-free (no TOCTOU window).
+    # Concurrent POST for same task_id will hit AlreadyExistsError.
     try:
-        store.add(info)
+        await asyncio.to_thread(store.add, info, settings.capacity_total)
+    except CapacityExceededError:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "capacity", "detail": f"Maximum {settings.capacity_total} worktrees reached"},
+        )
     except AlreadyExistsError:
         raise HTTPException(
             status_code=409,
-            detail={"error": "already_exists", "detail": f"task_id {body.task_id!r} already registered"},
+            detail={"error": "already_exists", "detail": "task_id already registered"},
         )
 
     # Materialise .env from Vaultwarden
@@ -160,13 +180,13 @@ async def post_worktree(
     except VaultUnreachableError as exc:
         # Roll back state entry on vault failure
         try:
-            store.remove(body.task_id)
+            await asyncio.to_thread(store.remove, body.task_id)
         except NotFoundError:
             pass
         logger.error("vault unreachable during POST /worktree", extra={"task_id": body.task_id})
         raise HTTPException(
-            status_code=409,
-            detail={"error": "vault_unreachable", "detail": str(exc)},
+            status_code=503,
+            detail={"error": "vault_unreachable", "detail": "vault unavailable"},
         )
 
     # Create git worktree (best-effort; vault already succeeded)
@@ -181,16 +201,26 @@ async def post_worktree(
             settings.sccache_dir,
         )
     except WorktreeError as exc:
-        # Roll back: remove .env and state
+        # Roll back: remove .env, remove orphan worktree directory, remove state.
         remove_env(actual_env)
+        # Remove the worktree directory itself (created by materialise_env via
+        # dir_.mkdir in vault.py) to avoid ghost directories blocking future retries.
         try:
-            store.remove(body.task_id)
+            if target.exists():
+                shutil.rmtree(str(target), ignore_errors=False)
+        except OSError as rm_exc:
+            logger.warning(
+                "could not remove orphan worktree directory",
+                extra={"path": str(target), "error": str(rm_exc)},
+            )
+        try:
+            await asyncio.to_thread(store.remove, body.task_id)
         except NotFoundError:
             pass
-        logger.error("git worktree create failed", extra={"task_id": body.task_id, "error": str(exc)})
+        logger.error("git worktree create failed", extra={"task_id": body.task_id})
         raise HTTPException(
             status_code=500,
-            detail={"error": "worktree_create_failed", "detail": str(exc)},
+            detail={"error": "worktree_create_failed", "detail": "worktree creation failed"},
         )
 
     logger.info("POST /worktree succeeded", extra={"task_id": body.task_id})
@@ -219,11 +249,11 @@ async def delete_worktree(
     task_id = _validate_task_id_path_param(task_id)
 
     try:
-        info = store.get(task_id)
+        info = await asyncio.to_thread(store.get, task_id)
     except NotFoundError:
         raise HTTPException(
             status_code=404,
-            detail={"error": "not_found", "detail": f"task_id {task_id!r} not registered"},
+            detail={"error": "not_found", "detail": "task_id not registered"},
         )
 
     # Remove .env
@@ -240,7 +270,7 @@ async def delete_worktree(
 
     # Remove from state
     try:
-        store.remove(task_id)
+        await asyncio.to_thread(store.remove, task_id)
     except NotFoundError:
         pass  # already gone; idempotent
 
@@ -263,11 +293,11 @@ async def get_worktree(
     """Look up a single worktree by task_id."""
     task_id = _validate_task_id_path_param(task_id)
     try:
-        return store.get(task_id)
+        return await asyncio.to_thread(store.get, task_id)
     except NotFoundError:
         raise HTTPException(
             status_code=404,
-            detail={"error": "not_found", "detail": f"task_id {task_id!r} not registered"},
+            detail={"error": "not_found", "detail": "task_id not registered"},
         )
 
 
@@ -280,7 +310,7 @@ async def list_worktrees(
     store: Annotated[StateStore, Depends(get_state_store)],
 ) -> WorktreeListResponse:
     """List all active worktrees."""
-    all_items = store.list_all()
+    all_items = await asyncio.to_thread(store.list_all)
     return WorktreeListResponse(
         worktrees=all_items,
         count=len(all_items),
@@ -305,11 +335,8 @@ async def health(
     Service stays up even when either subsystem is degraded.
     """
     sccache_mounted = settings.sccache_dir.exists()
-    vault_reachable = await asyncio.to_thread(
-        check_reachable,
-        settings.bw_session_credential,
-    )
-    capacity_used = store.count()
+    vault_reachable = await _cached_vault_reachable(settings.bw_session_credential)
+    capacity_used = await asyncio.to_thread(store.count)
     ok = sccache_mounted and vault_reachable
 
     return HealthResponse(

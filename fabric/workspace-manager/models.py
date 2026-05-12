@@ -1,6 +1,9 @@
 """
 Pydantic models for all request/response bodies.
 task_id regex enforced at the model level: ^[A-Z0-9-]{3,40}$
+repo: ^[a-z0-9-]{1,64}$
+topic: ^[a-z][a-z0-9-]{0,32}$
+base_ref: ^[a-zA-Z0-9._/-]{1,64}$ (no leading dash to block option injection)
 """
 
 from __future__ import annotations
@@ -12,6 +15,15 @@ from typing import Annotated
 from pydantic import BaseModel, Field, field_validator
 
 TASK_ID_RE = re.compile(r"^[A-Z0-9\-]{3,40}$")
+
+# Strict allowlists — no traversal characters, no shell metachars.
+# repo: lowercase letters, digits, hyphen only; no slash, no dot-dot.
+REPO_RE = r"^[a-z0-9-]{1,64}$"
+# topic: must start with a letter; lowercase letters, digits, hyphen.
+TOPIC_RE = r"^[a-z][a-z0-9-]{0,32}$"
+# base_ref: letters, digits, dot, slash, underscore, hyphen; NO leading dash
+# (would be interpreted as a git option flag).
+BASE_REF_RE = r"^[a-zA-Z0-9._/][a-zA-Z0-9._/-]{0,63}$"
 
 
 def _validate_task_id(v: str) -> str:
@@ -32,9 +44,16 @@ TaskId = Annotated[str, Field(min_length=3, max_length=40, pattern=r"^[A-Z0-9\-]
 
 class CreateWorktreeRequest(BaseModel):
     task_id: TaskId
-    repo: str = Field(min_length=1, max_length=200)
-    base_ref: str = Field(min_length=1, max_length=200)
-    topic: str = Field(min_length=1, max_length=100)
+    repo: Annotated[str, Field(min_length=1, max_length=64, pattern=REPO_RE)]
+    base_ref: Annotated[str, Field(min_length=1, max_length=64, pattern=BASE_REF_RE)]
+    topic: Annotated[str, Field(min_length=1, max_length=33, pattern=TOPIC_RE)]
+
+    @field_validator("repo", "topic")
+    @classmethod
+    def reject_traversal(cls, v: str) -> str:
+        if ".." in v or v.startswith("/") or "\\" in v:
+            raise ValueError("path traversal sequence rejected")
+        return v
 
 
 # ---------------------------------------------------------------------------

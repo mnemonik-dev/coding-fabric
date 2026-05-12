@@ -3,6 +3,7 @@ Description=workspace-manager — per-task git worktree lifecycle service
 Documentation=https://github.com/mnemonic-org/coding-fabric
 After=network-online.target tailscaled.service
 Wants=network-online.target
+OnFailure=workspace-manager-notify-failure@%n.service
 
 [Service]
 Type=simple
@@ -39,15 +40,25 @@ StartLimitBurst=3
 # Hardening
 NoNewPrivileges=true
 PrivateTmp=true
+PrivateDevices=yes
 ProtectSystem=strict
 ProtectHome=false
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
 ReadWritePaths=/home/op/.fabric /home/op/code/mnemonic-workspaces /home/op/.cache/sccache
 CapabilityBoundingSet=
 AmbientCapabilities=
 LockPersonality=true
-MemoryDenyWriteExecute=false
+MemoryDenyWriteExecute=yes
 RestrictRealtime=true
 RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target

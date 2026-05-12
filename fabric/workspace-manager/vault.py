@@ -132,7 +132,7 @@ def check_reachable(credential_path: Path) -> bool:
             return False
         data = json.loads(result.stdout)
         return data.get("status") == "unlocked"
-    except Exception:
+    except (subprocess.SubprocessError, json.JSONDecodeError, OSError, ValueError):
         return False
 
 
@@ -157,7 +157,7 @@ def materialise_env(
 
     env_path = worktree_path / ".env"
 
-    # Write atomically: tempfile + rename within same directory.
+    # Write atomically: tempfile + rename within same directory + dir fsync.
     dir_ = worktree_path
     dir_.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=str(dir_), prefix=".env-tmp-")
@@ -174,6 +174,12 @@ def materialise_env(
         except OSError:
             pass
         raise
+    # fsync the containing directory so the rename is durable on crash.
+    dir_fd = os.open(str(dir_), os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
 
     logger.info(
         "vault: .env materialised",

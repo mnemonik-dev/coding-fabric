@@ -1,13 +1,12 @@
 """
 Bootstrap the root logger.
 
-Attempts to use fabric.logs.sanitizer.handler.SanitizedFileHandler (Task 07).
-If the sanitizer module is not yet installed (parallel task), falls back to a
-plain RotatingFileHandler so the service stays runnable in development.
+In production the root handler MUST be fabric.logs.sanitizer.handler.SanitizedFileHandler
+(Task 07).  Failing to load that handler is a hard startup failure so that secrets are
+never written to log files without sanitisation.
 
-All log emissions — including bw CLI output captured as structured fields — are
-routed through this handler.  vault.py MUST NOT log raw secret values; only
-structured keys such as {"topic": "docs", "item_count": 3} are logged.
+In tests the WORKSPACE_MANAGER_REQUIRE_SANITIZER environment variable can be set to
+"false" to allow the plain RotatingFileHandler fallback.  The default is "true".
 """
 
 from __future__ import annotations
@@ -15,30 +14,43 @@ from __future__ import annotations
 import importlib
 import logging
 import logging.handlers
+import os
+import sys
 from pathlib import Path
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
+_REQUIRE_SANITIZER = os.environ.get("WORKSPACE_MANAGER_REQUIRE_SANITIZER", "true").lower() != "false"
 
-def _try_sanitized_handler(log_file: Path, level: int) -> logging.Handler | None:
+
+def _load_sanitized_handler(log_file: Path, level: int) -> logging.Handler:
+    """
+    Load SanitizedFileHandler.  Raises ImportError if the module is absent and
+    WORKSPACE_MANAGER_REQUIRE_SANITIZER is true (the production default).
+    """
     try:
         module = importlib.import_module("fabric.logs.sanitizer.handler")
         cls = getattr(module, "SanitizedFileHandler")
         handler: logging.Handler = cls(str(log_file))
         handler.setLevel(level)
         return handler
-    except (ImportError, AttributeError):
-        return None
-
-
-def configure_logging(log_file: Path, level_name: str = "INFO") -> None:
-    level = logging.getLevelName(level_name.upper())
-    log_file.parent.mkdir(parents=True, exist_ok=True)
-
-    handler = _try_sanitized_handler(log_file, level)
-    if handler is None:
-        fallback = logging.handlers.RotatingFileHandler(
+    except (ImportError, AttributeError) as exc:
+        if _REQUIRE_SANITIZER:
+            print(
+                "FATAL: fabric.logs.sanitizer.handler.SanitizedFileHandler could not be "
+                "imported.  workspace-manager refuses to start without the sanitizer to "
+                "prevent secrets from being written to log files in plaintext.  "
+                f"Original error: {exc}\n"
+                "Fix: ensure the fabric-logs-sanitizer package (Task 07) is installed in "
+                "the same virtualenv, or set WORKSPACE_MANAGER_REQUIRE_SANITIZER=false "
+                "only in development environments.",
+                file=sys.stderr,
+            )
+            raise ImportError(
+                "fabric.logs.sanitizer.handler not available; refusing to start"
+            ) from exc
+        # Development / test fallback — never active in production.
+        fallback: logging.Handler = logging.handlers.RotatingFileHandler(
             str(log_file),
             maxBytes=10 * 1024 * 1024,
             backupCount=5,
@@ -49,10 +61,18 @@ def configure_logging(log_file: Path, level_name: str = "INFO") -> None:
             datefmt="%Y-%m-%dT%H:%M:%S",
         )
         fallback.setFormatter(formatter)
-        handler = fallback
-        logging.getLogger().info(
-            "fabric.logs.sanitizer.handler not available; using RotatingFileHandler"
+        logging.getLogger().warning(
+            "fabric.logs.sanitizer.handler not available; "
+            "using unsanitized RotatingFileHandler (dev/test mode only)"
         )
+        return fallback
+
+
+def configure_logging(log_file: Path, level_name: str = "INFO") -> None:
+    level = logging.getLevelName(level_name.upper())
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+
+    handler = _load_sanitized_handler(log_file, level)
 
     root = logging.getLogger()
     root.setLevel(level)
