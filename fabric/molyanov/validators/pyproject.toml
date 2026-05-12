@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fabric-molyanov-validators"
+version = "0.1.0"
+description = "Molyanov validator wrappers delegating to ruflo plugins (jujutsu, security-audit, browser)"
+requires-python = ">=3.10"
+dependencies = [
+    "fabric-logs-sanitizer>=0.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+skeptic-wrapper = "fabric.molyanov.validators.skeptic_wrapper:main"
+security-auditor-wrapper = "fabric.molyanov.validators.security_auditor_wrapper:main"
+post-deploy-qa-wrapper = "fabric.molyanov.validators.post_deploy_qa_wrapper:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+
+[tool.setuptools.packages.find]
+where = ["../../.."]
+include = ["fabric.molyanov.validators*"]
