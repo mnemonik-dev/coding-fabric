@@ -1,0 +1,81 @@
+{
+  "reviewer": "reliability-engineer",
+  "round": 2,
+  "fix_commit": "ea75e44",
+  "role": "infrastructure/ansible/roles/telegram-ai-agent",
+  "timestamp": "2026-05-12",
+  "checks": {
+    "1_pin_no_longer_main": {
+      "status": "PARTIAL",
+      "severity": "MEDIUM",
+      "finding": "defaults/main.yml line 8 now reads 'v0.0.0-mnemonic.1' with an operator-action comment. This is a placeholder tag, not a commit SHA. The comment correctly states 'Failing fast on placeholder is better than silent drift' and instructs the operator to replace it before first deploy. The mutable 'main' branch ref is gone. However the assert task (lines 116-124 of tasks/main.yml) has a logic flaw: it asserts 'current_sha.stdout | trim == telegram_ai_agent_pin or telegram_ai_agent_pin in current_sha.stdout'. When pin is a tag (v0.0.0-mnemonic.1), git rev-parse HEAD returns the full 40-char SHA — the tag string will never equal or be 'in' the SHA. The assert will always fail when a tag (not a SHA) is used as pin. It would only pass if telegram_ai_agent_pin is itself a 40-char SHA or a short prefix of it.",
+      "verdict": "PARTIAL — mutable ref removed, operator comment present, but assert logic is broken for tag-based pins"
+    },
+    "2_dynamic_pytest_gate": {
+      "status": "PASS",
+      "severity": "N/A",
+      "finding": "tasks/main.yml lines 134-141: block now runs 'uv run --project ... pytest tests/test_dynamic_cwd.py --co -q' via ansible.builtin.shell. failed_when checks rc != 0 OR stdout length == 0 (empty collection). This matches the task-09.md AC requirement of 'pytest --co -q returning 0'. The stat+grep approach is fully replaced.",
+      "verdict": "PASS"
+    },
+    "3_git_fetch_refactored": {
+      "status": "PASS",
+      "severity": "N/A",
+      "finding": "The monolithic shell task is replaced with three separate ansible.builtin.command tasks: 'Fetch all branches and tags' (lines 92-98), 'Checkout pinned commit' (lines 100-106), 'Verify correct commit is checked out' (lines 108-114). The self-referencing changed_when bug ('git_fetch.stdout' before registration) is eliminated. changed_when on the checkout task correctly references git_checkout.stdout.",
+      "verdict": "PASS"
+    },
+    "4_verify_task_head_equals_pin": {
+      "status": "PARTIAL",
+      "severity": "MEDIUM",
+      "finding": "Assert task exists at lines 116-124. Uses 'git rev-parse HEAD' (full SHA). Assert condition: 'current_sha.stdout | trim == telegram_ai_agent_pin or telegram_ai_agent_pin in current_sha.stdout'. When pin is a tag (e.g. v0.0.0-mnemonic.1), rev-parse HEAD returns the commit SHA — the tag name will not equal the SHA and will not appear as substring. The assert fails for any tag-based pin. For a 40-char SHA pin, the first condition passes. For a 7-char short SHA, 'in' would match if the short SHA appears in the full SHA. The condition is correct only for SHA-based pins, broken for tag-based pins.",
+      "verdict": "PARTIAL — assertion logic incorrect for tag-based pins; would need 'git rev-parse --verify {{ pin }}^{commit}' == HEAD SHA to be tag-safe"
+    },
+    "5_uv_version_arg": {
+      "status": "PASS",
+      "severity": "N/A",
+      "finding": "tasks/main.yml lines 47-55: installer now passes 'sh -s {{ telegram_ai_agent_uv_version }}' as positional arg to the install script AND sets UV_VERSION env var. Both mechanisms enforce the version at download time. Double-enforcement is redundant but harmless and safe.",
+      "verdict": "PASS"
+    },
+    "6_meta_deps": {
+      "status": "PASS",
+      "severity": "N/A",
+      "finding": "meta/main.yml now lists: base, telegram-init, tailscale, workspace-manager (line 16). All four required dependencies are present. The round-1 finding about missing T08 is resolved.",
+      "verdict": "PASS"
+    },
+    "7_preflight_wait_for_8080": {
+      "status": "PARTIAL",
+      "severity": "MEDIUM",
+      "finding": "A uri module GET to http://{{ tailscale_ip }}:8080/health is added (lines 13-21). It uses failed_when: t08_health.status != 200 with a 10s timeout. This is a point-in-time check, not a wait_for with retries. If T08 is temporarily mid-restart, the role fails immediately rather than waiting. A wait_for or uri with retries/until would be more resilient. Also: the subsequent fail task (lines 23-34) is redundant — failed_when on the uri task already aborts execution. The when condition 'when: t08_health.status is defined and t08_health.status != 200' can never be true after a failed_when abort. Minor logic issue but no actual reliability gap since the uri task itself enforces the gate.",
+      "verdict": "PARTIAL — health gate present and functional, but uses one-shot check not wait_for; redundant fail task"
+    },
+    "8_secrets_assert": {
+      "status": "PASS",
+      "severity": "N/A",
+      "finding": "tasks/main.yml lines 251-267: assert task checks 'telegram_bot_token is defined and telegram_bot_token | length >= 40' and 'anthropic_api_key is defined and anthropic_api_key | length >= 20'. no_log: true is set on the assert task itself. Length thresholds are reasonable (BotFather tokens are ~46 chars; Anthropic keys are sk-ant-... prefixed and >40 chars but 20 is a safe lower bound). The round-1 warning about silent empty .env is resolved.",
+      "verdict": "PASS"
+    }
+  },
+  "round2_status": {
+    "blockers_resolved": [
+      "Check 4 (pin defaults to 'main'): mutable ref replaced with placeholder tag + operator comment",
+      "Check 2 (DYNAMIC gate stat+grep): replaced with pytest --co -q",
+      "Check 1 (changed_when self-reference bug): refactored into separate tasks, bug eliminated"
+    ],
+    "warnings_resolved": [
+      "Check 5 (uv version not enforced at download): UV_VERSION env + sh -s arg both set",
+      "Check 7 (T08 undeclared): meta/main.yml + uri health gate added",
+      "Check 10 (empty .env possible): secrets assert with length thresholds + no_log added"
+    ],
+    "new_issues": [
+      {
+        "severity": "MEDIUM",
+        "issue": "Assert in verify-task uses 'rev-parse HEAD == pin or pin in HEAD-SHA' — fails for tag-based pins (v0.0.0-mnemonic.1). Must use 'git rev-parse --verify {{ pin }}^{commit}' to resolve a tag to its commit SHA and compare."
+      },
+      {
+        "severity": "LOW",
+        "issue": "T08 health check is one-shot (no retries/until). Redundant fail task after failed_when is dead code."
+      }
+    ],
+    "overall": "PASS_WITH_FINDINGS"
+  },
+  "summary": "Five of six round-1 blockers and warnings are fully resolved: pytest gate, git refactor, UV_VERSION enforcement, meta deps, secrets assert. Pin moved from 'main' to placeholder tag. One medium issue: the HEAD-assert condition is broken for tag-based pins — tag string never equals or appears in a 40-char SHA. One-shot T08 health gate functional but no retry."
+}

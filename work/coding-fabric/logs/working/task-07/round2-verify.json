@@ -1,0 +1,136 @@
+{
+  "task": "07",
+  "round": 2,
+  "verdict": "approved",
+  "commit_verified": "83fcf9d",
+  "note_on_commit": "User-specified fix commit `83fcf9d` actually carries the Task 07 sanitizer source changes (commit message header references task 08 but diff stats show fabric/logs/sanitizer/{__init__.py,filter.py,handler.py,pyproject.toml,tests/...} modified). Commit `eb6df7b` only updates decisions.md. Both commits combined = full Round 2 delivery.",
+  "test_suite": {
+    "command": "pytest fabric/logs/sanitizer/tests/ -v",
+    "passed": 94,
+    "failed": 0,
+    "expected_passing": 94,
+    "match": true
+  },
+  "round1_critical_status": [
+    {
+      "id": "SEC-base58-bypass-padding",
+      "round1_severity": "critical",
+      "fix": "_PATTERN_BASE58 changed from `{32,44}` to `{32,256}` with negative look-around on both sides",
+      "manual_verification": "sanitize('x'+pubkey) -> '***REDACTED***'; sanitize(pubkey+'x') -> '***REDACTED***'",
+      "regression_tests": ["test_redacts_padded_base58_prefix", "test_redacts_padded_base58_suffix"],
+      "status": "closed"
+    },
+    {
+      "id": "SEC-base58-false-negative-88char",
+      "round1_severity": "critical",
+      "fix": "Upper bound raised from 44 to 256; 87 and 88 char base58 keypairs now redacted",
+      "manual_verification": "sanitize('A'*88) -> '***REDACTED***'; sanitize('B'*87) -> '***REDACTED***'",
+      "regression_tests": ["test_redacts_solana_88_char_keypair", "test_redacts_87_char_keypair"],
+      "status": "closed"
+    },
+    {
+      "id": "SEC-false-positive-ANTHROPIC",
+      "round1_severity": "critical",
+      "fix": "Pattern split: `_PATTERN_ANTHROPIC_TOKEN = r'\\bANTHROPIC_(?=\\S*\\d)\\S{8,256}'` — payload must contain at least one digit. All-alpha env-var NAMES no longer match.",
+      "manual_verification": "sanitize('ANTHROPIC_MODEL_NAME') -> 'ANTHROPIC_MODEL_NAME' (unchanged); sanitize('ANTHROPIC_API_KEY=sk-ant-x123456789012') -> 'ANTHROPIC_API_KEY=***REDACTED***'",
+      "regression_tests": ["test_does_not_redact_anthropic_var_name_only", "test_redacts_anthropic_assignment_with_digit"],
+      "status": "closed"
+    },
+    {
+      "id": "SEC-tg-url-greedy-terminator",
+      "round1_severity": "major",
+      "fix": "Pattern changed from `\\S+` to `[^\\s\"'<>]+` so quotes/brackets terminate the URL match",
+      "manual_verification": "sanitize('{\"url\": \"https://api.telegram.org/file/botX:Y/file.jpg\"}') -> '{\"url\": \"***REDACTED***\"}' (closing quote+brace preserved)",
+      "regression_tests": ["test_redacts_tg_url_inside_json", "test_redacts_tg_url_in_html"],
+      "status": "closed"
+    },
+    {
+      "id": "SEC-false-positive-sk-prefix",
+      "round1_severity": "major",
+      "fix": "Pattern split into `_PATTERN_SK_API_TOKEN` requiring `[A-Za-z0-9_-]{16,256}` AND lookahead for at least one digit AND at least one letter in payload. Excludes `api_v2_endpoint`, `SKU-12345`.",
+      "manual_verification": "sanitize('SKU-12345') unchanged; sanitize('api_v2_endpoint') unchanged",
+      "regression_tests": ["test_does_not_redact_sku_patterns", "test_api_token_below_16_chars_not_redacted"],
+      "status": "closed"
+    },
+    {
+      "id": "SEC-jwk-bypass-escaped-quote",
+      "round1_severity": "major",
+      "fix": "Value capture changed from `[^\"]*` to `(?:[^\"\\\\]|\\\\.)*` to honour `\\\"` escapes inside JSON strings",
+      "manual_verification": "sanitize(r'{\"d\":\"abc\\\"def\\\"ghi\"}') -> '{\"d\":\"***REDACTED***\"}' (all three abc/def/ghi gone)",
+      "regression_tests": ["test_jwk_with_escaped_quote_in_value"],
+      "status": "closed"
+    },
+    {
+      "id": "SEC-handler-error-suppression",
+      "round1_severity": "major",
+      "fix": "`except Exception` narrowed to `except (OSError, ValueError)` in both SanitizedFileHandler.emit and SanitizedStreamHandler.emit (handler.py:69 and handler.py:108)",
+      "manual_verification": "grep confirms only OSError/ValueError caught; sanitize() logic errors will now propagate",
+      "regression_tests": [],
+      "status": "closed"
+    },
+    {
+      "id": "SEC-missing-stream-handler",
+      "round1_severity": "major",
+      "fix": "New `SanitizedStreamHandler(logging.StreamHandler)` added in handler.py (defaults stream=sys.stderr); exported via __init__.py __all__",
+      "manual_verification": "SanitizedStreamHandler instantiated, confirmed isinstance(StreamHandler); writes 'key=***REDACTED***' to buffer",
+      "regression_tests": ["test_sanitized_stream_handler_stderr", "test_sanitized_stream_handler_is_drop_in"],
+      "status": "closed"
+    },
+    {
+      "id": "SEC-redos-risk",
+      "round1_severity": "minor",
+      "fix": "All payload-bearing patterns capped at 256 chars (base58 `{32,256}`, sk/api `{16,256}`, ANTHROPIC `\\S{8,256}`). 1MB adversarial line sanitized in ~25ms.",
+      "status": "closed"
+    },
+    {
+      "id": "CR-07-001-delay-true-crash",
+      "round1_severity": "medium",
+      "fix": "SanitizedFileHandler.emit now checks `if self.stream is None: self.stream = self._open()` before writing",
+      "manual_verification": "SanitizedFileHandler(path, delay=True).emit(record) writes 'key=***REDACTED***\\n' without AttributeError",
+      "regression_tests": ["test_file_handler_delay_true_does_not_crash"],
+      "status": "closed"
+    },
+    {
+      "id": "CR-07-003-invalid-build-backend",
+      "round1_severity": "medium",
+      "fix": "pyproject.toml build-backend changed to `setuptools.build_meta`",
+      "manual_verification": "pyproject.toml:3 reads `build-backend = \"setuptools.build_meta\"`",
+      "status": "closed"
+    },
+    {
+      "id": "CR-07-004-requires-python",
+      "round1_severity": "low",
+      "fix": "requires-python lowered from `>=3.12` to `>=3.10`",
+      "manual_verification": "pyproject.toml:9 reads `requires-python = \">=3.10\"`",
+      "status": "closed"
+    },
+    {
+      "id": "CR-07-002-docstring-mutation-claim",
+      "round1_severity": "medium",
+      "fix": "Removed misleading non-mutation claim; new docstring documents that Formatter may set record.exc_text as a side-effect (identical to stdlib StreamHandler)",
+      "status": "closed"
+    },
+    {
+      "id": "CR-07-005-public-api-surface",
+      "round1_severity": "low",
+      "fix": "Added `__all__ = ['sanitize', 'REDACTED']` to filter.py (line 21); BASE58_ALPHABET kept as public alias of _BASE58_ALPHABET",
+      "status": "closed"
+    }
+  ],
+  "regressions": [
+    {
+      "severity": "minor",
+      "id": "REG-base58-cap-bypass-over-256",
+      "issue": "The new `{32,256}` cap creates a narrow new bypass: a contiguous base58 run of >=257 chars surrounded by non-base58 boundaries is NOT redacted (sanitize('A'*257) returns input unchanged). Look-around requires the run to be flanked by non-base58 chars; the regex engine then refuses to match because the inner span exceeds 256. Practical impact: any single base58 token longer than 256 chars (e.g. concatenated multi-keypair dumps, large base58-encoded blobs) leaks. Real Solana pubkeys are 32-44 chars and keypairs 87-88, so this only matters for deliberately adversarial inputs or pathological log lines. Mitigation: replace `{32,256}` with two alternatives `{32,256}|{257,}` or remove the cap and rely on whitespace anchors. Severity is minor because the original {32,44} bypass class is now closed and the remaining cap bypass requires uncommon payload shapes.",
+      "file": "fabric/logs/sanitizer/filter.py",
+      "line": 54
+    }
+  ],
+  "remaining_observations": [
+    "Documented over-redaction: `ANTHROPIC_MODEL=claude-opus-4-5` (digit in value) still redacts whole assignment. Acceptable per spec.",
+    "JWK single-letter field names (`x`,`y`,`d`) can collide with non-JWK JSON; unchanged from Round 1, by design.",
+    "sanitize_outgoing remains stdlib-only and Telegram-decoupled.",
+    "ReDoS perf measured: 1MB random ANTHROPIC_-prefixed line sanitized in ~25ms (acceptable)."
+  ],
+  "final_recommendation": "merge"
+}

@@ -1,0 +1,98 @@
+{
+  "reviewer": "reliability-engineer",
+  "round": 1,
+  "commit": "9526bc7",
+  "role": "infrastructure/ansible/roles/telegram-ai-agent",
+  "timestamp": "2026-05-12",
+  "checks": {
+    "1_idempotency_git_clone": {
+      "status": "FAIL",
+      "severity": "HIGH",
+      "finding": "When repo_stat.stat.exists is true the role uses a shell task (git fetch --all && git checkout) but the changed_when condition references 'git_fetch' before the register variable is populated — it references itself in its own changed_when. The variable is registered by the same task, so 'git_fetch.stdout' is evaluated before the task runs, producing an undefined-variable error on first idempotency re-run where the directory already exists. The git module with update:yes and version:pin is only used on the initial clone (when: not repo_stat.stat.exists). The separate fetch+checkout shell task on second run is fragile: it does not verify the resulting HEAD equals the full 40-char SHA from telegram_ai_agent_pin, only short HEAD is printed by the debug task. No assert on current_commit.stdout == telegram_ai_agent_pin[:7] or similar.",
+      "recommendation": "Use ansible.builtin.git for both paths (clone and update), removing the shell fallback. Set update:yes, version:{{ telegram_ai_agent_pin }} for both branches, or drop the repo_stat gate entirely — the git module is already idempotent. Add an assert that current_commit.stdout matches the expected short SHA."
+    },
+    "2_dynamic_preflight_gate": {
+      "status": "FAIL",
+      "severity": "HIGH",
+      "finding": "The pre-flight gate does NOT run pytest as required by task-09.md ('uv run pytest tests/test_dynamic_cwd.py --co -q returning 0'). It only performs a file existence check (stat on tests/test_dynamic_cwd.py) and a grep fallback. A commit could have the test file present but a broken or removed implementation; the grep for 'DYNAMIC' in telegram_bot/*.py is a weak heuristic — any comment or string literal containing 'DYNAMIC' would pass. The gate does not actually verify the feature is functional at the pinned commit, only that a file or string exists.",
+      "recommendation": "Replace the stat+grep approach with: 'uv run --project {{ telegram_ai_agent_home }} pytest tests/test_dynamic_cwd.py --co -q' (collection-only, fast, no live network). A non-zero return code should trigger the fail task. This matches task-09.md AC exactly."
+    },
+    "3_preflight_failure_message": {
+      "status": "PASS",
+      "severity": "LOW",
+      "finding": "The fail message is actionable: it names the pin, explains the requirement (AC6), lists two resolution options, and references work/mnemonic-tg-bridge/user-spec.md §4-5. Meets the check requirement.",
+      "recommendation": "Minor: add the exact grep command an operator can run locally to reproduce the check, e.g. 'grep -r DYNAMIC {{ telegram_ai_agent_home }}/telegram_bot --include=*.py'."
+    },
+    "4_pinned_commit": {
+      "status": "FAIL",
+      "severity": "HIGH",
+      "finding": "defaults/main.yml sets telegram_ai_agent_pin: 'main' — a branch name, not a commit SHA or tag. This breaks deterministic builds: the same playbook re-run days apart will pull a different commit. The README acknowledges this ('Update to specific commit as PR progresses') but the default itself is non-deterministic. The task spec explicitly requires a pinned commit SHA or tag.",
+      "recommendation": "Set telegram_ai_agent_pin to a concrete commit SHA (e.g. 'abc1234') or tag. Use a comment to track the branch lineage. Never leave a mutable ref as the default."
+    },
+    "5_uv_version_pinned": {
+      "status": "PARTIAL",
+      "severity": "MEDIUM",
+      "finding": "telegram_ai_agent_uv_version: '0.5.3' is defined and used in the install condition. However the install mechanism is 'curl -LsSf https://astral.sh/uv/install.sh | sh' — the installer script is fetched without pinning its version or verifying its checksum. UV_INSTALL_DIR is set but there is no UV_VERSION env var passed to the script. The installer could silently install a different version of uv if astral.sh's install.sh does not respect UV_VERSION, and no checksum verification is performed on the downloaded script.",
+      "recommendation": "Pass UV_VERSION={{ telegram_ai_agent_uv_version }} in the environment block for the install shell task. Add a checksum verification step or use a direct GitHub release URL with pinned tag: 'https://github.com/astral-sh/uv/releases/download/{{ telegram_ai_agent_uv_version }}/uv-installer.sh'. Assert uv_version.stdout contains telegram_ai_agent_uv_version after install."
+    },
+    "6_systemd_unit": {
+      "status": "PASS",
+      "severity": "INFO",
+      "finding": "Restart=on-failure and RestartSec={{ telegram_ai_agent_restart_sec }} (default 5s) are present. Security hardening is solid: NoNewPrivileges=true, ProtectSystem=strict, ProtectHome=true, PrivateTmp=true, ProtectDevices=true, ProtectClock=true, ProtectHostname=true, ProtectKernelLogs=true, ProtectKernelTunables=true. ReadWritePaths is scoped to /opt/telegram-ai-agent and /etc/telegram-ai-agent. Non-root user 'op'. Meets all check requirements.",
+      "recommendation": "Consider adding RestartMaxDelaySec or StartLimitIntervalSec/StartLimitBurst to prevent infinite tight restart loops on persistent failure. Also consider adding MemoryMax for OOM protection given the VM has 16 GB shared across many services."
+    },
+    "7_cross_role_dependencies": {
+      "status": "PARTIAL",
+      "severity": "MEDIUM",
+      "finding": "meta/main.yml declares dependencies: [base, telegram-init, tailscale]. This covers T02 (base+tailscale) and T05 (telegram-init). However the dependency on T08 (workspace-manager) is not declared — the role requires workspace-manager to be running for DYNAMIC cwd resolution at runtime, and the .env template hardcodes the resolver URL pointing to T08's port 8080. A validate task checking that http://{{ tailscale_ip }}:8080/health responds before service start would make this dependency explicit and actionable. The task-09.md lists depends_on: [02, 08] but the meta only includes T02/T05.",
+      "recommendation": "Add a pre-task that performs a uri module GET against http://{{ tailscale_ip }}:8080/health with ignore_errors:no and a clear fail_msg pointing to T08. This makes the T08 runtime dependency explicit and catches ordering issues."
+    },
+    "8_fallback_path": {
+      "status": "PASS",
+      "severity": "INFO",
+      "finding": "defaults/main.yml documents the fork vs upstream toggle clearly. README §Upstream Integration explains PR-pending phase (fork), post-merge phase (upstream tag), and 30-day fallback policy with permanent fork tag. Variables telegram_ai_agent_repo and telegram_ai_agent_pin are the exact two variables to flip. Cross-references work/mnemonic-tg-bridge/user-spec.md §4.2-4.4. Meets check requirements.",
+      "recommendation": "None beyond pinning the current default to a SHA (see check 4)."
+    },
+    "9_healthcheck": {
+      "status": "PASS",
+      "severity": "INFO",
+      "finding": "Post-deployment healthcheck uses 'systemctl is-active telegram-ai-agent' and asserts stdout == 'active'. This is a real liveness check on the systemd unit state, not just 'task ran'. The install block also waits 3 seconds and asserts ActiveState == 'active' via systemd_service module before the healthcheck block runs. Both checks are redundant but complementary.",
+      "recommendation": "Consider adding a journalctl check for error-level log lines in the 10 seconds after service start, e.g. 'journalctl -u telegram-ai-agent --since \"-5s\" -p err -o cat | wc -l == 0'. The current check confirms the process is running but not that it connected to Telegram or resolved its config successfully."
+    },
+    "10_env_file_mode_sops": {
+      "status": "PASS",
+      "severity": "INFO",
+      "finding": ".env template task sets mode: '0600', owner: op, group: op, no_log: true. Mode is verified in molecule/default/verify.yml (asserts env_file_stat.stat.mode == '0600'). README §Security Considerations documents this. README §With SOPS Integration shows community.sops.load_vars usage. The template itself has a header comment noting 'Mode: 0600 (secrets — owner op only)'. SOPS integration is documented but not enforced in the role — secrets must be pre-decrypted by the caller playbook.",
+      "recommendation": "Add a pre-task asserting that telegram_bot_token and anthropic_api_key are defined and non-empty, with a fail_msg pointing to the sops decrypt step. Currently the template would silently render empty values if vars are not passed, producing a syntactically valid but functionally broken .env."
+    }
+  },
+  "blockers": [
+    {
+      "check": 4,
+      "issue": "telegram_ai_agent_pin defaults to mutable branch ref 'main' — non-deterministic builds"
+    },
+    {
+      "check": 2,
+      "issue": "DYNAMIC feature gate does not run pytest as required by task spec; stat+grep is insufficient"
+    },
+    {
+      "check": 1,
+      "issue": "changed_when self-reference bug in git fetch task will cause undefined-variable error on second run"
+    }
+  ],
+  "warnings": [
+    {
+      "check": 5,
+      "issue": "uv installer fetched without UV_VERSION env var; version pin not enforced at download time"
+    },
+    {
+      "check": 7,
+      "issue": "T08 workspace-manager runtime dependency not declared in meta or validated pre-start"
+    },
+    {
+      "check": 10,
+      "issue": "Required secrets not asserted defined before template render; empty .env possible"
+    }
+  ],
+  "summary": "Three blockers: pin defaults to mutable branch 'main' (non-deterministic); DYNAMIC gate uses stat+grep instead of pytest as task spec requires; git fetch task has a self-referencing changed_when bug. Two medium warnings: uv version not enforced at download; T08 runtime dependency undeclared. Hardening, .env permissions, fallback docs, and healthcheck are solid."
+}

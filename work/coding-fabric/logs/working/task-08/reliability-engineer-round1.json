@@ -1,0 +1,96 @@
+{
+  "review": "reliability-engineer",
+  "round": 1,
+  "task": "08",
+  "commit": "c25cd23",
+  "component": "fabric/workspace-manager",
+  "verdict": "CONDITIONAL_PASS",
+  "checks": [
+    {
+      "id": "C1",
+      "title": "Capacity cap = 10 enforcement layer",
+      "status": "FAIL",
+      "severity": "HIGH",
+      "finding": "Capacity check in post_worktree() (main.py:120) is advisory — it reads store.count() without holding the flock, creating a TOCTOU window. Under concurrent load, N workers can all read count < 10 before any of them commits, resulting in >10 active worktrees. The authoritative gate is store.add() (which holds flock), but store.add() does NOT enforce the capacity cap — it only checks for duplicate task_id. An AlreadyExistsError from store.add() will never surface as 'capacity' error; only 'already_exists' is raised there. Consequently the 409 'capacity' response is only reachable when requests arrive serially; a burst of 11 concurrent unique-task-id POSTs all pass the advisory check and all succeed, breaching the D10 cap.",
+      "location": "main.py:119-124, state.py:107-122",
+      "recommendation": "Move the capacity check inside store.add() under the same flock, after reading the current data dict: if len(data) >= capacity_total: raise CapacityExceededError(). The route handler catches CapacityExceededError and returns 409 'capacity'. This makes the flock the single authoritative gate for both uniqueness and cap enforcement."
+    },
+    {
+      "id": "C2",
+      "title": "state.json atomicity: fcntl + rename pattern",
+      "status": "PASS",
+      "severity": "INFO",
+      "finding": "_write_raw() uses tempfile.mkstemp (same directory), os.fsync before os.replace. On POSIX, os.replace is atomic. A kill -9 before os.replace leaves the original intact; after os.replace the new file is fully written. The .lock file is separate from state.json, so the rename does not invalidate any held flock. test_state_atomic_no_partial_write and test_state_survives_interrupted_write confirm this.",
+      "location": "state.py:66-81"
+    },
+    {
+      "id": "C3",
+      "title": "Concurrent POST same task_id: race-safety",
+      "status": "PASS",
+      "severity": "INFO",
+      "finding": "store.add() acquires LOCK_EX via fcntl.flock on a dedicated .lock file before reading + writing state.json. The second concurrent call sees the task_id already in data and raises AlreadyExistsError, which the route handler converts to 409 'already_exists'. test_concurrent_post_same_task_id_returns_409 (threads) and test_concurrent_add_same_task_id (multiprocessing) both exercise this path and pass.",
+      "location": "state.py:107-122, tests/test_api.py:225-244, tests/test_state.py:162-177"
+    },
+    {
+      "id": "C4",
+      "title": "DELETE idempotency: 404 vs 204",
+      "status": "PASS",
+      "severity": "INFO",
+      "finding": "DELETE /worktree/{task_id} returns 404 when the task_id is not in state (not idempotent by design — correct per HTTP semantics for a resource that was never created or already deleted). The task spec edge-case table says 'DELETE unknown → 404', and test_delete_unknown_task_id_returns_404 confirms this. The destroy_worktree call is best-effort (catch-and-log on WorktreeError); store.remove is called last. No secondary 404 on double DELETE is tested, but the flow is correct: second DELETE hits store.get() → NotFoundError → 404.",
+      "location": "main.py:221-248, tests/test_api.py:254-258"
+    },
+    {
+      "id": "C5",
+      "title": "git worktree cleanup on failed POST (state rollback when vault throws)",
+      "status": "FAIL",
+      "severity": "HIGH",
+      "finding": "The POST operation sequence is: (1) store.add, (2) materialise_env (vault), (3) create_worktree (git). On vault failure, store.remove rolls back state — correct. On git failure (step 3), remove_env and store.remove are called — correct. However, materialise_env creates the worktree directory via dir_.mkdir(parents=True, exist_ok=True) (vault.py:162) before writing the .env. On git failure rollback, remove_env deletes .env but the parent directory (<worktrees_root>/<task_id>/<repo>) remains on disk as an orphan. No directory cleanup happens in the rollback path. A subsequent POST for the same task_id will attempt 'git worktree add' into a pre-existing directory, which git rejects with exit 128, causing another failure. Additionally, the worktrees_root/<task_id>/ directory (created by target.parent.mkdir in worktree.py:73) is also not removed. This leaves ghost directories accumulating on disk.",
+      "location": "main.py:183-194, vault.py:161-163, worktree.py:73"
+    },
+    {
+      "id": "C6",
+      "title": "Vault unreachable: 409 + error message",
+      "status": "PASS_WITH_CAVEAT",
+      "severity": "MEDIUM",
+      "finding": "VaultUnreachableError raises a 409 with error='vault_unreachable' and str(exc) as detail. The exception messages in vault.py are operational ('bw CLI not found in PATH', 'bw CLI timed out', 'bw returned <N> for item <name>', 'Cannot read bw session credential at <path>'). The rollback (store.remove) runs before the 409 is returned, so state remains consistent. Caveat: the 409 status code for a transient infrastructure failure is semantically wrong (409 = Conflict); 503 Service Unavailable would be more accurate and allow callers to retry with backoff. Using 409 may cause orchestrators that treat 409 as permanent to not retry. The task spec and tech-spec prescribe 409, so this is spec-compliant but operationally sub-optimal.",
+      "location": "main.py:160-169, vault.py:64-82"
+    },
+    {
+      "id": "C7",
+      "title": "sccache: degraded health vs hard failure boundary",
+      "status": "PASS",
+      "severity": "INFO",
+      "finding": "sccache_mounted is set via settings.sccache_dir.exists() in /health. If the directory is absent, ok=False but the service continues to handle POST requests. create_worktree logs sccache_dir as metadata only; no actual sccache mount validation occurs during POST. The .env injection of SCCACHE_DIR is best-effort (vault.py:103-104). test_health_degraded_when_sccache_missing confirms the degraded-but-up behavior. Hard failure boundary is correctly absent — a missing sccache dir degrades build caching but does not block worktree creation.",
+      "location": "main.py:307-313, tests/test_api.py:134-143"
+    },
+    {
+      "id": "C8",
+      "title": "systemd unit: Restart=on-failure with rate-limiting",
+      "status": "PASS_WITH_CAVEAT",
+      "severity": "MEDIUM",
+      "finding": "The unit has Restart=on-failure, RestartSec=5s, StartLimitIntervalSec=60s, StartLimitBurst=3. This allows 3 restarts in 60 seconds before systemd gives up. After 3 failures systemd enters the failed state and the service goes dark without operator notification. There is no OnFailure= directive to page ops via the Telegram ops-topic. The burst setting is reasonable but the lack of a failure notification hook means silent outages when all 3 restart attempts are exhausted.",
+      "location": "systemd/workspace-manager.service:34-37",
+      "recommendation": "Add OnFailure=notify-ops@%n.service or an ExecStopPost hook that posts to the Telegram ops topic. Without this, a crash loop that exhausts StartLimitBurst produces no alert."
+    },
+    {
+      "id": "C9",
+      "title": "/health endpoint covers all subsystems",
+      "status": "FAIL",
+      "severity": "MEDIUM",
+      "finding": "The /health endpoint reports sccache_mounted, vault_reachable, capacity_used, capacity_total, and ok. Missing subsystems: (a) state.json accessibility — a corrupted or permission-denied state.json causes all routes to fail silently (the _read_raw fallback returns {} and logs a warning, hiding errors from /health); (b) the git binary availability is never checked — if git is missing or PATH is wrong, all POST calls fail with WorktreeError but /health reports ok=True; (c) repos_root existence is not checked — missing master clones also cause POST failures invisible to /health. The health check is thus incomplete as a readiness probe.",
+      "location": "main.py:292-321",
+      "recommendation": "Add state_readable (attempt store.count(), catch and return False), git_available (Path(shutil.which('git') or '').exists()), and repos_root_exists (settings.repos_root.exists()) to HealthResponse and health handler. ok should be False if any of these are False."
+    },
+    {
+      "id": "C10",
+      "title": "Test coverage on error paths",
+      "status": "PASS_WITH_CAVEAT",
+      "severity": "MEDIUM",
+      "finding": "Happy paths and most error paths are well covered: vault unreachable during POST (test_vault_unreachable_bw_not_found), git failure (test_create_worktree_git_failure_raises), state concurrency (test_concurrent_add_same_task_id), DELETE unknown (test_delete_unknown_task_id_returns_404), path traversal (test_path_traversal_blocked parametrized). Gaps: (1) No test for the concurrent capacity-race (11 unique task_ids posted concurrently — the flaw identified in C1 is untested and would pass today but would expose the bug in production); (2) No test for vault failure rollback verifying state is empty after the failed POST; (3) No test for orphaned directory after git failure (C5 finding); (4) No test for /health when state.json is unreadable.",
+      "location": "tests/"
+    }
+  ],
+  "summary": "Two high-severity issues: capacity cap has a TOCTOU race (only enforced advisory pre-lock, not inside flock), and git failure rollback leaks orphan directories on disk. One medium gap: /health omits state.json, git binary, and repos_root checks, making it an incomplete readiness probe. systemd unit lacks an OnFailure notification hook. All atomicity and concurrent-POST-same-task-id guarantees are sound.",
+  "required_fixes": ["C1", "C5"],
+  "recommended_fixes": ["C8", "C9"]
+}

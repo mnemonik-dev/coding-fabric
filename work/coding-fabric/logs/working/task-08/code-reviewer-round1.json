@@ -1,0 +1,159 @@
+{
+  "task": "08",
+  "service": "fabric/workspace-manager",
+  "commit": "c25cd23",
+  "reviewer": "code-reviewer-round1",
+  "verdict": "PASS_WITH_NOTES",
+  "summary": "Solid FastAPI service with correct lifespan, Annotated deps, Pydantic v2 Settings/ConfigDict, and asyncio.to_thread() wrapping for all blocking I/O. Module separation is clean. 46 tests with good fixture and dependency_overrides usage. Minor issues: POST returns 200 instead of 201; get_settings() uses a manual global singleton instead of lru_cache; DeleteWorktreeResponse model is defined but never used; vault.check_reachable has a bare except; repo/base_ref fields lack path-traversal validation; pyproject.toml deps use >= (floor-only) constraints.",
+  "checks": {
+    "fastapi_patterns": {
+      "status": "PASS",
+      "notes": [
+        "All endpoints use Annotated[T, Depends(...)] consistently.",
+        "response_model declared on all GET/POST endpoints; DELETE correctly returns None with status_code=204.",
+        "lifespan asynccontextmanager used; no deprecated startup/shutdown events.",
+        "ISSUE: POST /worktree returns status_code=200; REST convention for resource creation is 201."
+      ]
+    },
+    "pydantic_v2": {
+      "status": "PASS",
+      "notes": [
+        "BaseSettings uses model_config = SettingsConfigDict(...) — correct Pydantic v2 pattern.",
+        "field_validator with @classmethod on bind_ip validator is correct.",
+        "model_dump(mode='json') used in StateStore.add() — correct v2 idiom.",
+        "TaskId uses Annotated[str, Field(pattern=...)] — idiomatic v2.",
+        "WorktreeInfo and response models are plain BaseModel without model_config; acceptable but model_config = ConfigDict(frozen=True) would make them safer value objects."
+      ]
+    },
+    "asyncio_to_thread": {
+      "status": "PASS",
+      "notes": [
+        "materialise_env (bw CLI + file write) wrapped in asyncio.to_thread().",
+        "create_worktree and destroy_worktree (git subprocess) wrapped in asyncio.to_thread().",
+        "check_reachable (bw status subprocess) wrapped in asyncio.to_thread().",
+        "StateStore operations (fcntl.flock + JSON read/write) called directly from async endpoints WITHOUT asyncio.to_thread(). fcntl.flock is a blocking syscall and will block the event loop under contention. Should be wrapped or the store should expose an async interface."
+      ]
+    },
+    "lifespan": {
+      "status": "PASS",
+      "notes": [
+        "asynccontextmanager lifespan function used; passed to FastAPI(lifespan=lifespan).",
+        "Logging is configured in the startup branch (before yield).",
+        "No deprecated @app.on_event used anywhere."
+      ]
+    },
+    "type_hints": {
+      "status": "PASS_WITH_NOTES",
+      "notes": [
+        "All public functions and methods have return type annotations.",
+        "_acquire() return type is missing (returns file object; should be annotated as IO[str] or TextIO).",
+        "_release() and internal helpers are fully annotated.",
+        "dict return type in _bw_get_item is unparameterised: dict should be dict[str, Any].",
+        "make_bw_item in conftest.py returns dict without type annotation."
+      ]
+    },
+    "test_quality": {
+      "status": "PASS",
+      "notes": [
+        "conftest.py provides well-scoped fixtures: tmp_dirs, tmp_settings, state_store, mock_bw, mock_git, make_repo, client.",
+        "dependency_overrides correctly used for both get_settings and get_state_store in client fixture.",
+        "Overrides are cleared in fixture teardown via app.dependency_overrides.clear().",
+        "mock_bw patches both vault module namespace and main module namespace — correctly handles Python's name binding semantics.",
+        "test_concurrent_post_same_task_id_returns_409 uses threading which is correct for TestClient (sync); not a coroutine race.",
+        "test_concurrent_add_same_task_id uses multiprocessing to exercise fcntl cross-process locking — good coverage.",
+        "test_path_traversal_blocked uses parametrize well.",
+        "ISSUE: No test verifies that vault failure during POST /worktree triggers state rollback (store.remove called).",
+        "ISSUE: No test verifies that worktree creation failure after successful vault materialise triggers remove_env rollback.",
+        "ISSUE: sys.path manipulation repeated in each test file instead of centralised in conftest.py; pyproject.toml pythonpath=['.'] should make this unnecessary."
+      ]
+    },
+    "module_separation": {
+      "status": "PASS",
+      "notes": [
+        "Clean five-module separation: models / state / vault / worktree / main, plus config and logging_setup.",
+        "models.py has no side-effects on import.",
+        "state.py imports from models only; no upward deps.",
+        "vault.py has no dependency on state or worktree — correct.",
+        "worktree.py has no dependency on vault or state — correct.",
+        "main.py is the integration point; all cross-module composition happens here."
+      ]
+    },
+    "error_handling": {
+      "status": "PASS_WITH_NOTES",
+      "notes": [
+        "HTTPException raised with specific status codes: 400 (validation), 404 (not found), 409 (conflict/capacity), 500 (git failure).",
+        "No bare except clauses in main.py, state.py, worktree.py, or models.py.",
+        "ISSUE: vault.check_reachable has a bare 'except Exception: return False' at line 136. This silently swallows unexpected errors (e.g. MemoryError, KeyboardInterrupt). Should catch specific exceptions: (subprocess.SubprocessError, json.JSONDecodeError, OSError, ValueError).",
+        "ISSUE: vault failure during POST /worktree raises HTTPException with status 409 ('vault_unreachable'). A 503 Service Unavailable would be more semantically correct for a dependency outage.",
+        "ISSUE: worktree creation failure (git error) raises 500 correctly, but the client receives raw git stderr in the detail field which may expose internal path information.",
+        "DeleteWorktreeResponse model is defined in models.py but the DELETE endpoint returns None (204). The model is dead code."
+      ]
+    },
+    "config_pydantic_settings": {
+      "status": "PASS_WITH_NOTES",
+      "notes": [
+        "All configuration via pydantic-settings BaseSettings with env_file and SettingsConfigDict.",
+        "No hardcoded values in endpoint logic; all paths and limits come from Settings.",
+        "bind_ip has a validator rejecting wildcard addresses.",
+        "ISSUE: get_settings() implements a manual global singleton with a module-level _settings variable. The idiomatic Pydantic/FastAPI pattern is @lru_cache() from functools, which is also imported in main.py but not applied to get_settings.",
+        "ISSUE: The lru_cache import in main.py is unused (line 21: 'from functools import lru_cache')."
+      ]
+    },
+    "pyproject_toml": {
+      "status": "PASS_WITH_NOTES",
+      "notes": [
+        "requires-python = '>=3.12' is correct.",
+        "Build system uses setuptools>=68 — appropriate.",
+        "pytest.ini_options present with pythonpath=['.'] and asyncio_mode='auto'.",
+        "Coverage configuration present.",
+        "ISSUE: All runtime dependencies use floor-only constraints (>=). Production packages should use compatible-release (~=) or upper bounds to prevent accidental breakage on major version bumps: e.g. 'fastapi~=0.111' or 'fastapi>=0.111,<1'.",
+        "ISSUE: httpx is listed in both [project.dependencies] and [project.optional-dependencies].dev — redundant; it belongs only in dev extras since it is a test transport dependency, not required at runtime.",
+        "ISSUE: setuptools.packages.find include=['workspace_manager*'] will not find the flat-layout modules (config, main, models, etc.) since none are named workspace_manager. This means 'pip install .' produces an empty package. The service is run directly, not installed, so this is low-risk but misleading."
+      ]
+    }
+  },
+  "critical_issues": [
+    {
+      "severity": "MEDIUM",
+      "location": "state.py StateStore.add/remove, main.py endpoints",
+      "issue": "fcntl.flock is blocking; StateStore methods are called directly from async endpoint handlers without asyncio.to_thread(). Under lock contention this blocks the uvicorn event loop.",
+      "fix": "Wrap store.add(), store.remove(), store.get(), store.list_all(), store.count() calls in asyncio.to_thread() at the call sites in main.py, or make StateStore async using asyncio.Lock + run_in_executor."
+    },
+    {
+      "severity": "LOW",
+      "location": "vault.py check_reachable line 136",
+      "issue": "Bare 'except Exception' swallows KeyboardInterrupt and other non-recoverable exceptions.",
+      "fix": "Replace with 'except (subprocess.SubprocessError, json.JSONDecodeError, OSError, ValueError)'."
+    },
+    {
+      "severity": "LOW",
+      "location": "main.py post_worktree, line 169",
+      "issue": "VaultUnreachableError raises HTTPException(409). 503 better signals transient dependency failure.",
+      "fix": "Change status_code to 503 for vault_unreachable error."
+    },
+    {
+      "severity": "LOW",
+      "location": "main.py post_worktree status_code=200",
+      "issue": "Resource creation should return 201 Created per HTTP semantics.",
+      "fix": "Change @app.post(..., status_code=200) to status_code=201."
+    },
+    {
+      "severity": "LOW",
+      "location": "config.py get_settings()",
+      "issue": "Manual global singleton instead of @lru_cache; lru_cache is imported in main.py but never applied.",
+      "fix": "Add @lru_cache() decorator to get_settings() in config.py; remove unused import from main.py."
+    }
+  ],
+  "positive_observations": [
+    "Correct use of asynccontextmanager lifespan — no deprecated event hooks.",
+    "All blocking I/O (subprocess, file ops) wrapped with asyncio.to_thread() except StateStore.",
+    "Pydantic v2 patterns used correctly throughout (model_config, field_validator, model_dump).",
+    "dependency_overrides used properly in tests; no monkey-patching of app internals.",
+    "Atomic write pattern (tempfile + fsync + os.replace) in both state.py and vault.py.",
+    "Cross-process flock test using multiprocessing is thorough and correct.",
+    "Path traversal guard applied at both model validation (Pydantic pattern field) and path-param re-validation layers.",
+    "Secrets never logged — only structured metadata fields emitted by vault.py.",
+    "systemd LoadCredential used for bw session token — no secrets in env vars or files.",
+    "Module graph is acyclic and has clear single-responsibility boundaries."
+  ]
+}

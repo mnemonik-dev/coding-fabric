@@ -1,0 +1,178 @@
+{
+  "reviewer": "code-reviewer",
+  "task": "07",
+  "commit": "6d38308",
+  "round": 1,
+  "verdict": "approve_with_issues",
+  "summary": "All 73 tests pass. Module structure, regex compilation, and docstrings are excellent. Three issues require attention: SanitizedFileHandler.emit silently crashes with delay=True (stream=None), the build-backend in pyproject.toml is invalid, and pyproject.toml declares requires-python>=3.12 while the repo runs CPython 3.10. No thread-safety, import, or type-hint gaps.",
+  "findings": [
+    {
+      "id": "CR-07-001",
+      "severity": "medium",
+      "category": "handler_correctness",
+      "file": "fabric/logs/sanitizer/handler.py",
+      "line_range": [45, 54],
+      "title": "SanitizedFileHandler.emit crashes silently when delay=True is used",
+      "detail": "SanitizedFileHandler.emit() bypasses the parent FileHandler.emit() and writes directly to self.stream. When the handler is constructed with delay=True, self.stream is None until the first record arrives. The parent FileHandler.emit() handles this by calling self._open() when stream is None; the override never does. Result: stream.write() raises AttributeError, which is caught by handleError() and printed to stderr — the record is silently dropped. Fix: either call super().emit(record) from a record copy, or mirror the FileHandler.emit() null-stream guard.",
+      "reproduction": "SanitizedFileHandler('/tmp/x.log', delay=True).emit(record)  # AttributeError: 'NoneType' has no attribute 'write'",
+      "recommendation": "Replace the direct stream.write() approach with makeLogRecord + super().emit(), or add the stream guard: if self.stream is None: self.stream = self._open()"
+    },
+    {
+      "id": "CR-07-002",
+      "severity": "medium",
+      "category": "handler_correctness",
+      "file": "fabric/logs/sanitizer/handler.py",
+      "line_range": [45, 54],
+      "title": "Handler docstring claims record is not mutated but self.format(record) can mutate record.exc_text",
+      "detail": "The docstring states 'The original record is not mutated; we create a copy.' However, no copy is created anywhere in the implementation. Additionally, logging.Formatter.format() unconditionally sets record.exc_text when exception info is present. The claim about non-mutation is therefore false for records with exc_info. This is a documentation accuracy issue; the actual behavior is identical to StreamHandler.emit() which also mutates exc_text.",
+      "recommendation": "Either remove the misleading non-mutation claim from the docstring, or implement an actual copy: import copy; r = copy.copy(record); formatted = self.format(r)"
+    },
+    {
+      "id": "CR-07-003",
+      "severity": "medium",
+      "category": "pyproject_correctness",
+      "file": "fabric/logs/sanitizer/pyproject.toml",
+      "line_range": [3, 3],
+      "title": "Invalid build-backend: setuptools.backends.legacy:build does not exist",
+      "detail": "The build-backend is set to 'setuptools.backends.legacy:build'. This module path does not exist in any released version of setuptools (confirmed: ModuleNotFoundError on setuptools 65.5). The correct legacy build backend is 'setuptools.build_meta:__legacy__', or simply 'setuptools.build_meta' for the standard backend. The package cannot be built with pip install -e . or python -m build as-is.",
+      "recommendation": "Change build-backend to \"setuptools.build_meta\" (or \"setuptools.build_meta:__legacy__\" if legacy namespace packages are needed)"
+    },
+    {
+      "id": "CR-07-004",
+      "severity": "low",
+      "category": "pyproject_correctness",
+      "file": "fabric/logs/sanitizer/pyproject.toml",
+      "line_range": [9, 9],
+      "title": "requires-python = '>=3.12' but runtime is CPython 3.10; __pycache__ confirms 3.10",
+      "detail": "pyproject.toml declares requires-python = '>=3.12'. The __pycache__ directories contain cpython-310 bytecode, and all 73 tests pass under Python 3.10.16. The code uses only PEP 585 built-in generics (tuple[...]) which are runtime-valid in 3.10+, and no 3.12-specific features. The mismatch means pip will refuse to install the package on the actual deployment Python if the host still runs 3.10.",
+      "recommendation": "Set requires-python = '>=3.10' to match the actual minimum verified version, or upgrade the deploy Python to 3.12 and document that."
+    },
+    {
+      "id": "CR-07-005",
+      "severity": "low",
+      "category": "api_surface",
+      "file": "fabric/logs/sanitizer/filter.py",
+      "line_range": [23, 23],
+      "title": "BASE58_ALPHABET and REDACTED are unintentionally public; no __all__ defined",
+      "detail": "filter.py exposes BASE58_ALPHABET and REDACTED as public names (no leading underscore, no __all__). BASE58_ALPHABET is an internal regex fragment; only REDACTED is intentionally public (imported in tests). Without __all__, star-imports and linters treat all uppercase names as part of the public API. __init__.py correctly re-exports only the three intended public symbols but filter.py itself has no __all__.",
+      "recommendation": "Add __all__ = ['sanitize', 'REDACTED'] to filter.py, or rename BASE58_ALPHABET to _BASE58_ALPHABET."
+    },
+    {
+      "id": "CR-07-006",
+      "severity": "low",
+      "category": "error_handling",
+      "file": "fabric/logs/sanitizer/filter.py",
+      "line_range": [118, 135],
+      "title": "sanitize() raises TypeError on None or bytes input; no guard or documented contract",
+      "detail": "sanitize(None) raises TypeError('expected string or bytes-like object') from re.sub. sanitize(b'secret') raises TypeError('cannot use a string pattern on a bytes-like object'). The function's type hint (line: str) documents the contract, but there is no runtime guard and the exception message is opaque to callers. In practice the SanitizedFileHandler calls self.format(record) which always returns str, so this is not a live bug — but it is a defensive-programming gap for direct callers.",
+      "recommendation": "Either add a guard 'if not isinstance(line, str): return str(line)' or document explicitly in the docstring that non-str input raises TypeError."
+    },
+    {
+      "id": "CR-07-007",
+      "severity": "low",
+      "category": "false_positive",
+      "file": "fabric/logs/sanitizer/filter.py",
+      "line_range": [84, 86],
+      "title": "ANTHROPIC_ pattern redacts non-secret env var references like ANTHROPIC_MODEL=claude-opus-4-5",
+      "detail": "The pattern r'\\b(ANTHROPIC_)\\S{8,}' matches any contiguous non-whitespace sequence of >=8 chars after the ANTHROPIC_ prefix, including 'ANTHROPIC_MODEL=claude-opus-4-5' (a non-secret log line). This is a design tradeoff (over-redaction preferred over under-redaction per AC40/R2), but it is undocumented. A log line like 'model=ANTHROPIC_MODEL=claude-opus-4-5' becomes 'model=***REDACTED***', which can obscure operational diagnostics.",
+      "recommendation": "Document this known false-positive class in the pattern comment (e.g. 'ANTHROPIC_MODEL= will be redacted; this is intentional — prefer over-redaction')."
+    },
+    {
+      "id": "CR-07-008",
+      "severity": "pass",
+      "category": "type_hints",
+      "file": "fabric/logs/sanitizer/filter.py",
+      "line_range": [1, 135],
+      "title": "Type hints are complete and correct on all public functions",
+      "detail": "sanitize(line: str) -> str and the _PATTERNS tuple annotation tuple[tuple[re.Pattern[str], str], ...] are precise. sanitize_outgoing(message: str) -> str in tg_middleware.py and emit(record: logging.LogRecord) -> None in handler.py are also correctly annotated. PEP 585 generics used throughout are valid for Python 3.10+.",
+      "recommendation": "No action required."
+    },
+    {
+      "id": "CR-07-009",
+      "severity": "pass",
+      "category": "regex_compilation",
+      "file": "fabric/logs/sanitizer/filter.py",
+      "line_range": [41, 115],
+      "title": "All four patterns compiled at module load; no per-call compilation",
+      "detail": "All four re.compile() calls are at module top level. _PATTERNS is a module-level tuple. Compiled Pattern objects are thread-safe for concurrent matching per Python re documentation. No mutable shared state exists outside of the handler stream (which is protected by Handler.acquire/release in Handler.handle).",
+      "recommendation": "No action required."
+    },
+    {
+      "id": "CR-07-010",
+      "severity": "pass",
+      "category": "module_structure",
+      "file": "fabric/logs/sanitizer/",
+      "line_range": [1, 1],
+      "title": "Module separation is clean: filter / handler / tg_middleware",
+      "detail": "filter.py contains all regex logic and sanitize(); handler.py contains only the logging.Handler subclass with a single import from filter; tg_middleware.py is a thin passthrough with no Telegram coupling. __init__.py re-exports all three public symbols. Circular import risk is zero.",
+      "recommendation": "No action required."
+    },
+    {
+      "id": "CR-07-011",
+      "severity": "pass",
+      "category": "logging_handler_subclassing",
+      "file": "fabric/logs/sanitizer/handler.py",
+      "line_range": [24, 54],
+      "title": "SanitizedFileHandler does not define __init__; parent __init__ called implicitly",
+      "detail": "No __init__ is defined, so FileHandler.__init__ is called directly when constructing SanitizedFileHandler. This is correct: the class inherits all constructor arguments (filename, mode, encoding, delay, errors) from FileHandler without needing to call super().__init__ explicitly. The super().__init__ question is therefore moot — there is nothing to override.",
+      "recommendation": "No action required."
+    },
+    {
+      "id": "CR-07-012",
+      "severity": "pass",
+      "category": "test_quality",
+      "file": "fabric/logs/sanitizer/tests/test_filter.py",
+      "line_range": [1, 387],
+      "title": "Test quality is high: parametrize used throughout, corpus coverage, boundary tests present",
+      "detail": "pytest.mark.parametrize is applied to all four pattern classes and to neutral strings. Boundary tests exist for base58 (31 chars, 45 chars, excluded alphabet chars). All nine TDD anchors from task spec are present and passing. Corpus parametrization generates 22 individual test cases. load_corpus() is a plain function — not a fixture — which means it runs at collection time, but this is acceptable for a small static file.",
+      "recommendation": "Consider converting load_corpus() into a @pytest.fixture(scope='module') to make the collection-time dependency explicit, but this is cosmetic."
+    },
+    {
+      "id": "CR-07-013",
+      "severity": "pass",
+      "category": "stdlib_only",
+      "file": "fabric/logs/sanitizer/pyproject.toml",
+      "line_range": [10, 10],
+      "title": "Production dependencies are stdlib-only (re, logging); pytest only in dev extras",
+      "detail": "dependencies = [] with pytest in [project.optional-dependencies] dev. Correct.",
+      "recommendation": "No action required."
+    }
+  ],
+  "action_items": [
+    {
+      "priority": 1,
+      "id": "CR-07-001",
+      "action": "Fix SanitizedFileHandler.emit to handle delay=True / stream=None"
+    },
+    {
+      "priority": 2,
+      "id": "CR-07-003",
+      "action": "Fix build-backend in pyproject.toml to setuptools.build_meta"
+    },
+    {
+      "priority": 3,
+      "id": "CR-07-002",
+      "action": "Remove or correct the non-mutation claim in handler.py docstring"
+    },
+    {
+      "priority": 4,
+      "id": "CR-07-004",
+      "action": "Align requires-python with actual minimum supported version (3.10 or upgrade deploy)"
+    },
+    {
+      "priority": 5,
+      "id": "CR-07-005",
+      "action": "Add __all__ to filter.py or rename BASE58_ALPHABET to _BASE58_ALPHABET"
+    },
+    {
+      "priority": 6,
+      "id": "CR-07-006",
+      "action": "Document or guard against None/bytes input in sanitize()"
+    },
+    {
+      "priority": 7,
+      "id": "CR-07-007",
+      "action": "Document ANTHROPIC_MODEL= false-positive in pattern comment"
+    }
+  ]
+}

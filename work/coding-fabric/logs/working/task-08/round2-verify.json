@@ -1,0 +1,64 @@
+{
+  "status": "approved",
+  "summary": {
+    "totalFindings": 1,
+    "critical": 0,
+    "major": 0,
+    "minor": 1
+  },
+  "fix_verification": {
+    "fix_commit": "83fcf9d8664527ef486ba3f49571af9da64e7303",
+    "check_1_repo_topic_regex": {
+      "result": "PASS",
+      "evidence": "models.py:21-26 defines REPO_RE='^[a-z0-9-]{1,64}$', TOPIC_RE='^[a-z][a-z0-9-]{0,32}$', BASE_REF_RE='^[a-zA-Z0-9._/][a-zA-Z0-9._/-]{0,63}$'. CreateWorktreeRequest (models.py:45-56) applies pattern= constraints via Annotated[Field(..., pattern=...)] and a field_validator that rejects '..', leading '/', and '\\\\' for repo and topic. Tests test_repo_traversal_rejected and test_topic_traversal_rejected cover ../etc, /etc/passwd, foo/bar, UPPERCASE, has space, has.dot, has_underscore, oversize, and 1starts-with-digit — all PASS."
+    },
+    "check_2_base_ref_validation_and_separator": {
+      "result": "PASS",
+      "evidence": "BASE_REF_RE in models.py:26 forbids leading dash; pattern enforced via Field(pattern=BASE_REF_RE) on CreateWorktreeRequest.base_ref (models.py:48). worktree.py:85-88 passes 'git worktree add --detach -- <target> <base_ref>' with the explicit '--' end-of-options terminator. test_base_ref_injection_rejected covers -malicious-flag, --lock, ;rm -rf /, ref with space, oversize — all PASS."
+    },
+    "check_3_capacity_toctou_inside_flock": {
+      "result": "PASS",
+      "evidence": "state.py:117-142 — StateStore.add() now accepts capacity_total and performs the count check (len(data) >= capacity_total -> CapacityExceededError) inside the flock-protected block before the duplicate check and write. main.py:159 calls store.add(info, settings.capacity_total). Old TOCTOU pattern (count() then add()) is gone. test_toctou_capacity_race PASSES."
+    },
+    "check_4_sanitizer_hard_error": {
+      "result": "PASS",
+      "evidence": "logging_setup.py:23 reads WORKSPACE_MANAGER_REQUIRE_SANITIZER (default 'true'). _load_sanitized_handler (lines 26-68) prints a FATAL stderr message and raises ImportError when the handler cannot be loaded and the flag is true. Confirmed empirically: running pytest without the env var produced 'ImportError: fabric.logs.sanitizer.handler not available; refusing to start' and the documented FATAL banner to stderr."
+    },
+    "check_5_orphan_dir_removed_on_rollback": {
+      "result": "PASS",
+      "evidence": "main.py:204-215 — on WorktreeError after vault succeeded, it calls remove_env(actual_env), then shutil.rmtree(str(target), ignore_errors=False) inside a try/except OSError, then store.remove(). test_git_failure_rollback_removes_orphan_directory PASSES."
+    },
+    "check_6_status_codes": {
+      "result": "PASS",
+      "evidence": "main.py:126 — @app.post('/worktree', status_code=201). main.py:186-190 — VaultUnreachableError now raises HTTPException(status_code=503, error='vault_unreachable'). test_vault_unreachable_returns_503 PASSES."
+    },
+    "check_7_asyncio_to_thread_wrapping": {
+      "result": "PASS",
+      "evidence": "main.py wraps every blocking store/git/vault call: line 159 store.add, 173 materialise_env, 183 store.remove (vault rollback), 194 create_worktree, 217 store.remove (git rollback), 252 store.get (delete), 263 destroy_worktree, 273 store.remove, 296 store.get, 313 store.list_all, 338 check_reachable (cached), 339 store.count. No blocking call left synchronous in async handlers."
+    },
+    "check_8_systemd_hardening": {
+      "result": "PASS",
+      "evidence": "systemd/workspace-manager.service:41-61 contains NoNewPrivileges=true, PrivateTmp=true, PrivateDevices=yes, ProtectSystem=strict, ProtectKernelTunables=yes, ProtectKernelModules=yes, ProtectControlGroups=yes, ProtectClock=yes, ProtectHostname=yes, ProtectProc=invisible, CapabilityBoundingSet=, AmbientCapabilities=, LockPersonality=true, MemoryDenyWriteExecute=yes, RestrictRealtime=true, RestrictSUIDSGID=true, RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6, SystemCallFilter=@system-service, SystemCallArchitectures=native, OnFailure= (line 6). All requested directives present."
+    },
+    "check_9_health_bw_status_cached": {
+      "result": "PASS",
+      "evidence": "main.py:50-61 — _vault_cache dict + _VAULT_CACHE_TTL=30.0 + _cached_vault_reachable() returns cached value when now < expires, else refreshes via asyncio.to_thread(check_reachable). /health (line 338) consults _cached_vault_reachable. Effectively avoids 'bw status' spawn-per-request DoS vector."
+    },
+    "check_10_tests_72_pass": {
+      "result": "PASS",
+      "evidence": "WORKSPACE_MANAGER_REQUIRE_SANITIZER=false python -m pytest fabric/workspace-manager/tests/ -v → '72 passed, 1 warning in 0.38s'. All 26 new Round-2 tests (repo/topic/base_ref traversal+injection, 503 vault, vault rollback state, orphan dir rollback, TOCTOU race) PASS."
+    }
+  },
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "best-practice",
+      "title": "Test suite requires WORKSPACE_MANAGER_REQUIRE_SANITIZER=false but conftest does not export it",
+      "description": "Running `pytest fabric/workspace-manager/tests/ -v` directly (without setting WORKSPACE_MANAGER_REQUIRE_SANITIZER=false) fails 44 tests with ImportError because the production-hard-fail kicks in. The fix commit message claims '72/72 pass' but this is only true when the env var is exported externally. conftest.py should set os.environ.setdefault('WORKSPACE_MANAGER_REQUIRE_SANITIZER', 'false') (or use monkeypatch at session scope) so CI runs work out of the box without operator knowledge. This is a developer-experience issue, not a security regression: the production default remains hard-fail.",
+      "location": "fabric/workspace-manager/tests/conftest.py",
+      "impact": "CI pipelines or new contributors running the suite without the env var see misleading ImportError failures; could mask real regressions if someone disables the check incorrectly.",
+      "recommendation": "Add `os.environ.setdefault('WORKSPACE_MANAGER_REQUIRE_SANITIZER', 'false')` near the top of conftest.py (before any imports of logging_setup or main), or set it in pyproject.toml's [tool.pytest.ini_options] env section.",
+      "cwe": "CWE-1188"
+    }
+  ]
+}

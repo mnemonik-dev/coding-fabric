@@ -1,0 +1,127 @@
+{
+  "task": "07",
+  "reviewer": "security-auditor",
+  "round": 1,
+  "commit_reviewed": "6d3830822cdcad3090b6b9d365400d12b6a7f38c",
+  "overall_verdict": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "area": "base58-bypass",
+      "file": "fabric/logs/sanitizer/filter.py",
+      "line": "41-45",
+      "issue": "Trivial bypass of the base58 redactor. The {32,44} length quantifier together with negative look-behind/look-ahead means that ANY 44-char Solana pubkey leaks if a single base58 character is prepended OR appended. Proof: sanitize('x' + '4Nd1mBQtrMJVYVfKf2PX98fDUiZmJpmEJBYYLiMF1TLe') returns the input unchanged — total 45 chars exceeds the max, so the whole sequence is rejected, and the look-behind on the inner 44 forbids matching the suffix. An attacker (or even an over-eager log statement that concatenates a key with an adjacent base58 token, e.g. `f\"{prefix}{pubkey}\"` where prefix ends with `[1-9A-HJ-NP-Za-km-z]`) leaks the entire secret. Violates user-spec R2 (sanitizer must not pass a known secret form) and AC40.",
+      "fix_recommendation": "Replace the rigid {32,44} bound with {32,} (match runs of 32+ base58 chars and redact). Then add a second pass on the substring to chop it down to the first 32-44 run only if needed. Concretely: `_PATTERN_BASE58 = re.compile(r'(?<![1-9A-HJ-NP-Za-km-z])([1-9A-HJ-NP-Za-km-z]{32,})(?![1-9A-HJ-NP-Za-km-z])')`. Add tests: `assert sanitize('x'+pubkey) does not contain pubkey`, `assert sanitize(pubkey+'x') does not contain pubkey`, `assert sanitize('A'*88) == REDACTED` (covers Solana secret keys).",
+      "cwe": "CWE-185"
+    },
+    {
+      "severity": "critical",
+      "area": "base58-false-negative",
+      "file": "fabric/logs/sanitizer/filter.py",
+      "line": "43",
+      "issue": "Solana SECRET KEYS (the 64-byte keypair) base58-encode to 87–88 characters — well above the {32,44} upper bound. The module docstring (lines 28-34) claims the pattern catches `64-byte (keypair, ~87 chars)` values, but the regex does not: an 88-char base58 string leaks entirely. Demonstration: `sanitize('A'*88)` returns `'A'*88` unchanged. This is the highest-value secret class the sanitizer is supposed to redact and it is not redacted. AC40 violation.",
+      "fix_recommendation": "Change quantifier to {32,} as in finding above (eliminates the upper bound). Add fixture line in `secret_corpus.txt` for an 88-char base58 keypair sample and a test that asserts it is redacted.",
+      "cwe": "CWE-1287"
+    },
+    {
+      "severity": "critical",
+      "area": "false-positive-ANTHROPIC",
+      "file": "fabric/logs/sanitizer/filter.py",
+      "line": "84-86",
+      "issue": "The `ANTHROPIC_` arm of `_PATTERN_API_TOKEN` over-redacts legitimate environment-variable NAMES. Any token starting with `ANTHROPIC_` followed by ≥8 non-whitespace chars matches. Proof: `sanitize('ANTHROPIC_MODEL_NAME=opus-4')` → `'***REDACTED***'`; `sanitize('using ANTHROPIC_VERSION_2024')` → `'using ***REDACTED***'`. This destroys legitimate config logs (e.g., `ANTHROPIC_BETA_FEATURES`, `ANTHROPIC_MODEL_ID`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_LOG_LEVEL`) and harms operability/debuggability — a violation of OWASP A09 (security logging) by reducing signal/noise.",
+      "fix_recommendation": "Require an `=` separator or value-like delimiter so only assignments are redacted, not bare names. E.g. `r'\\bANTHROPIC_[A-Z_]+\\s*[:=]\\s*(\\S{8,})'` and only redact the captured value; preserve the name. Or, more narrowly, redact only when the suffix matches a credential-shaped string (e.g., starts with `sk-` or has high entropy). At minimum exclude all-uppercase suffixes (which are env-var conventions, not secrets).",
+      "cwe": "CWE-693"
+    },
+    {
+      "severity": "major",
+      "area": "tg-url-greedy-terminator",
+      "file": "fabric/logs/sanitizer/filter.py",
+      "line": "99-101",
+      "issue": "`_PATTERN_TG_FILE_URL = r'https://api\\.telegram\\.org/file/\\S+'` is greedy on `\\S+`, so it eats every non-whitespace character including closing quotes, brackets, parentheses, and trailing punctuation. Proof: `sanitize('{\"url\": \"https://api.telegram.org/file/botX:Y/file.jpg\"}')` → `'{\"url\": \"***REDACTED***'` — the closing `\"}` is consumed. This (a) produces malformed JSON/HTML/Markdown downstream (parser breakage, possible secondary injection if a downstream consumer trusts structure), and (b) over-redacts following text on the same line if there is no whitespace.",
+      "fix_recommendation": "Restrict the URL character class to standard URL-safe characters: `r'https://api\\.telegram\\.org/file/[A-Za-z0-9._~:/?#\\[\\]@!$&\\'()*+,;=%-]+'`. Or, more conservatively, terminate at whitespace OR any of `\"'<>(){}` (`r'[^\\s\"\\'<>(){}]+'`). Add tests covering URL in JSON value, HTML href, and Markdown link contexts to assert surrounding structure is preserved.",
+      "cwe": "CWE-20"
+    },
+    {
+      "severity": "major",
+      "area": "false-positive-sk-prefix",
+      "file": "fabric/logs/sanitizer/filter.py",
+      "line": "84-86",
+      "issue": "`sk-` matched with `\\b...\\S{8,}` aggressively redacts non-secret strings whose only crime is starting with `sk-`. Examples that get redacted: `sk-internal-svc.default` (kubernetes service name pattern), `sk-12345-PRODUCT` (a SKU), any product/internal naming convention using `sk-` prefix. Same for `api_` (`api_gateway_metrics`, `api_v2_endpoint`, etc.). False positives in logs damage observability and may mask real secrets when reviewers stop trusting REDACTED hits.",
+      "fix_recommendation": "Tighten the sk-/api_ patterns by also requiring the payload to contain at least one digit AND one letter, and exclude payloads that contain `-` followed by lowercase-alpha (typical hyphenated identifier). Better: replace prefix-based heuristics with a high-entropy detector for the body, or require the payload to match the known shape of OpenAI/Anthropic keys (e.g., `sk-(ant-)?[A-Za-z0-9_-]{20,}` with stricter bounds). Document which key formats are in-scope.",
+      "cwe": "CWE-1188"
+    },
+    {
+      "severity": "major",
+      "area": "jwk-bypass-via-escaped-quote",
+      "file": "fabric/logs/sanitizer/filter.py",
+      "line": "62-64",
+      "issue": "The JWK value capture `[^\"]*` stops at the FIRST quote, even when that quote is an escaped one inside a JSON string. Proof: `sanitize(r'{\"d\":\"abc\\\"def\\\"ghi\"}')` → `'{\"d\":\"***REDACTED***\"def\\\"ghi\"}'` — only the prefix `abc\\` is redacted, the remaining `def`, `ghi` portions of the private key value LEAK. JSON `\\\"` is a legal in-string escape; libraries can produce such payloads if a key contains a literal quote character (rare but possible) or if logged via json.dumps over arbitrary data.",
+      "fix_recommendation": "Either parse the JSON properly (e.g., scan with a state machine that honours `\\\\` and `\\\"` escapes) or strengthen the regex to handle escapes: `r'\"(kty|crv|x|y|d)\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"'`. Add a test using a JWK whose `d` value contains `\\\"`.",
+      "cwe": "CWE-697"
+    },
+    {
+      "severity": "major",
+      "area": "handler-error-suppression",
+      "file": "fabric/logs/sanitizer/handler.py",
+      "line": "45-54",
+      "issue": "`emit()` swallows ALL exceptions via `except Exception: self.handleError(record)`. If `sanitize()` ever raises (e.g., adversarial input triggers a regex catastrophic backtracking via interaction between the four patterns, or a custom Formatter raises), the fallback `handleError` path may print the UNSANITIZED record to stderr (logging.raiseExceptions default behavior in development is to print `record.msg` raw). This is a silent-failure secret-leak pathway.",
+      "fix_recommendation": "(a) Narrow the except to only filesystem errors; let logic errors in `sanitize` propagate during development. (b) If keeping broad except, log a sentinel like `***SANITIZER_ERROR***` to the stream instead of relying on `handleError`. (c) Add a regression test that monkey-patches `sanitize` to raise and asserts no secret reaches the file or stderr.",
+      "cwe": "CWE-755"
+    },
+    {
+      "severity": "major",
+      "area": "missing-stdout-stderr-handler",
+      "file": "fabric/logs/sanitizer/__init__.py",
+      "line": "1-19",
+      "issue": "Only a FileHandler subclass is shipped. The threat model (AC40, tech-spec §2.7) requires sanitization at every log site. Loggers in fabric components routinely attach `logging.StreamHandler` for console/journal/syslog output (e.g., systemd captures stdout/stderr to the journal, which is queryable by anyone who can read journald). A developer or operator who attaches a plain `StreamHandler` alongside `SanitizedFileHandler` leaks secrets to stderr/journal/console even though the file is clean. There is no `SanitizedStreamHandler` or `logging.Filter`-based approach that would sanitize regardless of handler choice.",
+      "fix_recommendation": "Either: (a) Provide `SanitizedStreamHandler` as well, OR (b) prefer a `logging.Filter` subclass that mutates `record.msg`/`record.args` before formatting — this attaches to the LOGGER and applies to every handler. Document the deployment guidance to use the filter form. Add a test that demonstrates a logger with multiple handlers — all output streams are sanitized.",
+      "cwe": "CWE-532"
+    },
+    {
+      "severity": "minor",
+      "area": "tg-url-scheme-coverage",
+      "file": "fabric/logs/sanitizer/filter.py",
+      "line": "99-101",
+      "issue": "Pattern only matches `https://`. Bot tokens also leak in `http://` (test environments / proxies), `api.telegram.org/bot<TOKEN>/...` (the WEBHOOK / send paths, not just /file/), and the raw bot token shape `\\d{8,10}:[A-Za-z0-9_-]{35}` itself. A log line that logs the full Bot API URL (e.g., `https://api.telegram.org/bot123:ABC/sendMessage?...`) or the bare token leaks the same secret.",
+      "fix_recommendation": "Add a generic Telegram bot-token pattern: `r'\\b\\d{8,10}:[A-Za-z0-9_-]{35}\\b'` and broaden the URL pattern to match `bot<token>` anywhere in `api.telegram.org` URLs regardless of scheme/path. Update corpus fixture accordingly.",
+      "cwe": "CWE-200"
+    },
+    {
+      "severity": "minor",
+      "area": "newline-aware-jwk",
+      "file": "fabric/logs/sanitizer/filter.py",
+      "line": "9-11, 62-64",
+      "issue": "Module docstring warns that callers must compact JSON to single line, but in practice loggers receive multi-line strings (e.g., traceback contexts with embedded JSON dumps). Empirically the current JWK regex DOES handle multi-line because `[^\"]*` accepts newlines, but the field/value match on the SAME line is still required — if a developer writes `{\\n  \"d\": \"secret\"\\n}` and `\"d\":` plus newline plus `\"secret\"` are split, the regex still matches (it does), but ANY whitespace between key and `:` or value containing newlines is currently fine. The constraint is sound but the docstring is misleading.",
+      "fix_recommendation": "Update CAVEAT comment (lines 9-11) to reflect reality: the regex tolerates whitespace including newlines between the key, colon, and value; only the value contents are bounded to non-quote chars. Add an explicit test for pretty-printed JWK to lock-in behavior.",
+      "cwe": "CWE-1059"
+    },
+    {
+      "severity": "minor",
+      "area": "no-tests-for-bypass-attempts",
+      "file": "fabric/logs/sanitizer/tests/test_filter.py",
+      "line": "120-138",
+      "issue": "Existing tests only cover the happy path and the documented boundary (31 chars / 45 chars / excluded characters). There is no adversarial test that asserts a 44-char Solana pubkey with one extra base58 char prepended IS still redacted, no test for an 88-char keypair, no test for URLs in JSON/HTML quoting contexts, no test for JWK with escaped quotes, no test for ANTHROPIC_-prefixed env var NAMES not being redacted, no test for sanitize() being idempotent on a pre-padded bypass attempt. The test corpus has 100% pass rate but offers no defense against R2.",
+      "fix_recommendation": "Add a `test_redacts_padded_base58` (currently FAILS), `test_redacts_solana_88_char_keypair` (currently FAILS), `test_redacts_tg_url_in_json` asserting structural preservation, `test_jwk_with_escaped_quote` asserting full value redaction, `test_does_not_redact_anthropic_env_var_names` asserting `ANTHROPIC_MODEL_NAME=value` keeps the NAME visible. Make these failing tests the AC for round-2 fixes.",
+      "cwe": "CWE-1110"
+    },
+    {
+      "severity": "minor",
+      "area": "regex-redos-risk",
+      "file": "fabric/logs/sanitizer/filter.py",
+      "line": "84-86",
+      "issue": "`\\b(sk-|api_|ANTHROPIC_)\\S{8,}` over a very long line with many prefix matches is unbounded — `\\S{8,}` is greedy and can engage in backtracking when followed by no anchor; combined with the look-behind/look-ahead in the base58 pattern, an adversarial 1MB log line crafted with many prefixes may cause measurable CPU spikes. Not a classic ReDoS (no nested quantifier alternation), but still a DoS amplifier for an attacker who can influence log line contents.",
+      "fix_recommendation": "Cap the payload at a sane upper bound: `\\S{8,256}` (any real key is <256 chars). Apply the same cap to base58 and tg-url patterns. Add a perf-smoke test: sanitize a 1MB random line completes in <100ms.",
+      "cwe": "CWE-1333"
+    }
+  ],
+  "positive_notes": [
+    "Patterns compiled once at module load (line 41-101) — correct performance pattern.",
+    "JWK replacement keeps field names visible and only redacts values (line 108) — preserves debuggability of legitimate JWK shapes.",
+    "Pattern ordering (JWK before base58 in _PATTERNS tuple, line 110-115) is intentional and correct — prevents JWK base64url coordinates from being double-hit.",
+    "Idempotency tested on the corpus (test_idempotent_corpus) and on combined inputs (test_idempotent).",
+    "SanitizedFileHandler avoids mutating the original LogRecord (docstring line 38-40), which is correct for handler chaining.",
+    "sanitize_outgoing has zero Telegram-library coupling (tg_middleware.py:14) — meets the decoupling AC.",
+    "Module ships stdlib-only — no third-party CVE surface (pyproject.toml has no deps)."
+  ],
+  "scope_observations": "Code is read-only review. No production deployment yet (Phase 0). The leak surface in production will widen significantly once Tasks 08+ ship — workspace-manager, watchdog, swarm-bridge will all funnel through this module. Fixing the base58 length bound and the ANTHROPIC_ false-positive is BLOCKING before any of those tasks land. Note tech-spec §2.7 says 'Unchanged from v0.1.1' — if v0.1.1 had the same {32,44} regex, the original spec also has the bypass; recommend updating tech-spec / decisions.md to reflect the corrected pattern bounds."
+}

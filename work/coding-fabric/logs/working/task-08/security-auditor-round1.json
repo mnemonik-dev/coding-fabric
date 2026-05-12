@@ -1,0 +1,121 @@
+{
+  "status": "changes_required",
+  "summary": {
+    "totalFindings": 11,
+    "critical": 2,
+    "major": 5,
+    "minor": 4
+  },
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "A01: Broken Access Control / A03: Injection (Path Traversal)",
+      "title": "`repo` field is not validated against path traversal",
+      "description": "`CreateWorktreeRequest.repo` is constrained only by `Field(min_length=1, max_length=200)` (models.py:35). It then flows into `repos_root / repo` and `worktrees_root / task_id / repo` in worktree.py:68, worktree.py:72/100. Python's `pathlib.Path /` operator does NOT collapse `..` segments and, if `repo` is an absolute path (e.g. `/etc/passwd`) or contains `../..`, the resulting target escapes the intended root. The worktree path is then used as the cwd for an unrelated `git worktree add` (could fail), AND as the parent dir into which `.env` is materialised via `os.replace(tmp_path, str(env_path))`. An attacker with HTTP reach to the tailnet IP can POST `{\"task_id\":\"AAA-1\",\"repo\":\"../../../tmp/pwn\",\"base_ref\":\"main\",\"topic\":\"docs\"}` and have a 0600-mode `.env` written outside `worktrees_root` (anywhere the `op` user can write). Similarly `repos_root / repo` with `repo=\"../../etc\"` resolves into `/etc` which exists, allowing the existence-check to pass and `git worktree add` to be invoked with `cwd=/etc`. Same problem for `topic` (vault.py:153 builds `mnemonic/topic/{topic}` for `bw get item`; while argv list prevents shell injection, control of the bw item identifier is still a bug).",
+      "location": "fabric/workspace-manager/models.py:33-37, fabric/workspace-manager/worktree.py:68-72,99-100, fabric/workspace-manager/vault.py:153",
+      "impact": "Arbitrary file write (0600 .env containing decrypted Vaultwarden secrets) anywhere the `op` user can write. Forced reads from arbitrary Bitwarden items by manipulating `topic`. Bypass of the `worktrees_root` confinement that the systemd `ReadWritePaths` is designed to enforce.",
+      "recommendation": "Apply strict regex validators on every path-bearing field at the Pydantic model layer. Suggested:\n```python\nREPO_RE = r\"^[a-zA-Z0-9._-]{1,100}$\"   # must NOT contain '/' or '..'\nTOPIC_RE = r\"^[a-z0-9-]{1,50}$\"\nBASE_REF_RE = r\"^[A-Za-z0-9._/-]{1,200}$\"   # allow refs like refs/heads/main\n\nclass CreateWorktreeRequest(BaseModel):\n    task_id: TaskId\n    repo: str = Field(min_length=1, max_length=100, pattern=REPO_RE)\n    base_ref: str = Field(min_length=1, max_length=200, pattern=BASE_REF_RE)\n    topic: str = Field(min_length=1, max_length=50, pattern=TOPIC_RE)\n\n    @field_validator('repo', 'topic')\n    @classmethod\n    def reject_traversal(cls, v: str) -> str:\n        if '..' in v or v.startswith('/') or '\\\\' in v:\n            raise ValueError('path traversal sequence rejected')\n        return v\n```\nAlso add post-construction containment check in `worktree_path()`:\n```python\nresolved = (worktrees_root / task_id / repo).resolve()\nroot = worktrees_root.resolve()\nif not resolved.is_relative_to(root):\n    raise WorktreeError(f'path escapes worktrees_root: {resolved}')\n```",
+      "cwe": "CWE-22"
+    },
+    {
+      "severity": "critical",
+      "category": "A03: Injection (argument injection / A01: Access Control)",
+      "title": "`base_ref` passed to `git worktree add` without `--` separator or ref-name validation",
+      "description": "worktree.py:75-78 invokes `git worktree add --detach <target> <base_ref>` where `base_ref` is user-supplied and bounded only by length (models.py:36). git arg parsing is positional, so a value starting with `-` could be re-interpreted (e.g. `--lock`, `--reason=...`, or hypothetically `-c core.fsmonitor=...`). Even without leading `-`, attacker-controlled refspecs include `;`-free but still semantically dangerous strings like `HEAD:../../foo`, `..`, or remote refs that point at attacker-controlled commits in the repo (note `repos_root` repos are local clones — but a tech-spec D24 vector exists if push access is granted later). Lack of `--` end-of-options separator is the main concrete bug.",
+      "location": "fabric/workspace-manager/worktree.py:75-78",
+      "impact": "Argument injection altering `git worktree add` behaviour, potentially overwriting metadata, creating worktrees at attacker-chosen paths, or attaching to attacker-supplied commit shas. Combined with finding #1 (uncontrolled `repo`), this widens to RCE if an attacker can stage a malicious post-checkout hook in a sibling clone.",
+      "recommendation": "1) Add a `--` end-of-options separator and place the path before the ref:\n```python\n_run([\n    'git', 'worktree', 'add', '--detach', '--',\n    str(target), base_ref,\n], cwd=repo_path)\n```\n2) Validate `base_ref` against `^[A-Za-z0-9._/-]{1,200}$` and explicitly reject leading `-` / `+` / `:`.\n3) Optionally resolve the ref to a commit sha via `git rev-parse --verify <ref>` first and pass the sha (sha is hex, no injection surface).",
+      "cwe": "CWE-88"
+    },
+    {
+      "severity": "major",
+      "category": "A04: Insecure Design",
+      "title": "Capacity check is racy: TOCTOU between `store.count()` and `store.add()`",
+      "description": "main.py:120 reads `store.count()` outside the flock, then `store.add()` only enforces uniqueness — it does NOT re-check capacity inside the lock. The code comment on line 119 acknowledges the check is \"advisory\". Two (or 20) concurrent POSTs whose count() returns 9 will all pass the capacity gate and then succeed in `add()` because `add()` only rejects duplicate task_ids. AC `test_capacity_cap` is sequential so it does not catch this.",
+      "location": "fabric/workspace-manager/main.py:119-124, fabric/workspace-manager/state.py:107-122",
+      "impact": "Capacity cap (D10) is bypassable under concurrency. >10 concurrent worktrees consume disk, fd, and sccache resources beyond the documented limit; a sustained burst could trigger a DoS on the host.",
+      "recommendation": "Move the capacity check INSIDE `StateStore.add()` while the flock is held:\n```python\ndef add(self, info: WorktreeInfo, capacity_total: int) -> WorktreeInfo:\n    fh = self._acquire()\n    try:\n        data = self._read_raw()\n        if len(data) >= capacity_total:\n            raise CapacityExceededError()\n        if info.task_id in data:\n            raise AlreadyExistsError(info.task_id)\n        data[info.task_id] = info.model_dump(mode='json')\n        self._write_raw(data)\n        return info\n    finally:\n        self._release(fh)\n```\nThen map `CapacityExceededError` to 409 `capacity` in main.py. Drop the advisory pre-check.",
+      "cwe": "CWE-367"
+    },
+    {
+      "severity": "major",
+      "category": "A05: Security Misconfiguration",
+      "title": "Sanitizer dependency silently falls back to a non-sanitizing RotatingFileHandler",
+      "description": "logging_setup.py:24-32 attempts to import `fabric.logs.sanitizer.handler.SanitizedFileHandler` (Task 07). On ImportError or AttributeError, it falls back to `logging.handlers.RotatingFileHandler` (logging_setup.py:39-55) with only a generic INFO log noting the fallback. AC explicitly requires \"All logs go through sanitizer\". Production systemd unit has no health gate that verifies the sanitizer was loaded. If Task 07 ships broken or Python import path differs after deploy, raw vault.py error messages (e.g. bw stderr fragments containing tokens) reach the log file unsanitized.",
+      "location": "fabric/workspace-manager/logging_setup.py:24-55",
+      "impact": "Secrets / session-token fragments may be written to log files in plaintext when the sanitizer cannot be imported, defeating the AC and Task 07's purpose.",
+      "recommendation": "1) In production, REQUIRE the sanitizer: raise on ImportError instead of falling back, OR fail healthcheck if `_try_sanitized_handler` returned None. 2) Add a feature flag like `REQUIRE_SANITIZER=true` (default true) checked at startup; reject fallback in that mode. 3) Add a /health field `\"sanitizer_active\": bool` for observability.",
+      "cwe": "CWE-778"
+    },
+    {
+      "severity": "major",
+      "category": "A09: Security Logging Failures",
+      "title": "`item_name` and free-form exception messages flow into log records without confirmed sanitization",
+      "description": "vault.py:71-74 logs `extra={\"item\": item_name, ...}` where `item_name = f\"mnemonic/topic/{topic}\"`; `topic` is user-controlled and unvalidated (see finding #1). worktree.py:36-39 logs `extra={\"cmd\": shlex.join(cmd), ...}` where `cmd` includes user-controlled `base_ref` and `target` path. main.py:190 logs `extra={\"task_id\": ..., \"error\": str(exc)}` where the WorktreeError message is built from `result.stderr.strip()` (worktree.py:42) — git's stderr is generally safe but can contain repo file paths. If the sanitizer (finding #4) is absent or the fields don't match its redaction patterns, attacker-controlled strings reach disk. Specifically, an attacker can use `topic=\"PASSWORD=abc123\"` to bait pattern-based redactors.",
+      "location": "fabric/workspace-manager/vault.py:71-77, fabric/workspace-manager/worktree.py:35-43, fabric/workspace-manager/main.py:166,190",
+      "impact": "Log injection / log forging; potential disclosure of partial git stderr containing internal paths; defeats sanitizer pattern-matching by attacker-supplied bait strings.",
+      "recommendation": "1) Apply the regex validators from finding #1 so `topic` and `repo` can only contain safe charset before they reach loggers. 2) In worktree._run, never include raw `result.stderr` in WorktreeError's message; log a redacted summary and use a generic message for the exception that propagates to the HTTP layer. 3) Add an explicit test that confirms SanitizedFileHandler scrubs bw stderr-shaped strings.",
+      "cwe": "CWE-117"
+    },
+    {
+      "severity": "major",
+      "category": "A05: Security Misconfiguration / A07: Auth Failures",
+      "title": "No authentication on any API endpoint; relies entirely on tailnet network ACL",
+      "description": "main.py exposes POST/DELETE/GET endpoints with no auth, token check, mTLS, or signed-request validation. The systemd unit binds to a tailnet IP (D9) which is the only access control. Any host on the tailnet, or any local-network user if the tailnet boundary is misconfigured, or any process on the host can `curl` /worktree and create/destroy worktrees, exfiltrate secret-bearing `.env` paths via GET /worktrees, etc. Defense-in-depth is missing.",
+      "location": "fabric/workspace-manager/main.py (all routes)",
+      "impact": "Single misconfiguration of tailscale ACL → full unauthenticated control of worktree lifecycle and indirect access to Vaultwarden-derived secrets. No second factor beyond network reachability.",
+      "recommendation": "Add a shared-secret bearer token check in middleware, loaded via systemd LoadCredential the same way as the bw session:\n```python\nfrom fastapi import Header\nasync def require_token(authorization: str = Header(None), settings: Settings = Depends(get_settings)):\n    expected = settings.api_token_credential.read_text().strip()\n    if not authorization or not hmac.compare_digest(authorization.removeprefix('Bearer '), expected):\n        raise HTTPException(401, 'unauthorized')\n```\nApply to all routes except /health (or protect /health too). Token rotated by Ansible alongside bw-session.",
+      "cwe": "CWE-306"
+    },
+    {
+      "severity": "major",
+      "category": "A05: Security Misconfiguration",
+      "title": "systemd unit hardening incomplete: missing PrivateDevices, PrivateNetwork, RestrictAddressFamilies, SystemCallFilter",
+      "description": "The unit (systemd/workspace-manager.service) sets `NoNewPrivileges`, `PrivateTmp`, `ProtectSystem=strict`, `CapabilityBoundingSet=`, `AmbientCapabilities=`, `LockPersonality`, `RestrictRealtime`, `RestrictSUIDSGID`. Missing high-value directives: `PrivateDevices=true`, `ProtectKernelTunables=true`, `ProtectKernelModules=true`, `ProtectKernelLogs=true`, `ProtectControlGroups=true`, `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`, `SystemCallFilter=@system-service @network-io`, `SystemCallArchitectures=native`, `RestrictNamespaces=true`, `ProtectClock=true`, `ProtectHostname=true`, `ProtectProc=invisible`, `ProcSubset=pid`. `ProtectHome=false` is acceptable because `ReadWritePaths` covers it, but it's worth using `ProtectHome=tmpfs` with explicit ReadWritePaths if compatible with the `op` home setup. `MemoryDenyWriteExecute=false` is permissive — switch to `true` unless a confirmed JIT dep needs it.",
+      "location": "fabric/workspace-manager/systemd/workspace-manager.service",
+      "impact": "Larger blast radius if RCE or process compromise occurs (finding #1, #2). Attacker process retains access to /dev, kernel tunables, raw sockets, and full syscall surface.",
+      "recommendation": "Add to [Service]:\n```\nPrivateDevices=true\nProtectKernelTunables=true\nProtectKernelModules=true\nProtectKernelLogs=true\nProtectControlGroups=true\nProtectClock=true\nProtectHostname=true\nProtectProc=invisible\nProcSubset=pid\nRestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX\nRestrictNamespaces=true\nSystemCallArchitectures=native\nSystemCallFilter=@system-service\nSystemCallFilter=~@privileged @resources @debug @mount @cpu-emulation @obsolete @raw-io @reboot @swap\nMemoryDenyWriteExecute=true\nUMask=0077\n```\nVerify with `systemd-analyze security workspace-manager.service` → target exposure <2.0.",
+      "cwe": "CWE-250"
+    },
+    {
+      "severity": "minor",
+      "category": "A04: Insecure Design",
+      "title": "Health endpoint runs `bw status` synchronously on every call — unauthenticated DoS vector",
+      "description": "main.py:308-311 calls `check_reachable` on every /health call, which spawns `bw status` (subprocess) with a 10s timeout (vault.py:124-130). Unauthenticated (finding #6) callers can flood /health to fork-bomb bw processes and exhaust the LoadCredential session.",
+      "location": "fabric/workspace-manager/main.py:296-321, fabric/workspace-manager/vault.py:113-136",
+      "impact": "DoS via process exhaustion; potential rate-limiting on Bitwarden CLI / vault server.",
+      "recommendation": "Cache the vault reachability result for ~30s with an async-safe TTL cache; or short-circuit /health to return cached values and refresh in a background task. Also pair with finding #6 to add auth.",
+      "cwe": "CWE-770"
+    },
+    {
+      "severity": "minor",
+      "category": "A08: Software and Data Integrity",
+      "title": "`_read_raw` silently returns empty dict on JSON parse error — masks corruption",
+      "description": "state.py:83-91 catches `json.JSONDecodeError, OSError` and returns `{}`. If the file becomes partially corrupted (despite atomic write — possible via external corruption / disk fault), the service silently treats it as empty, then `add()` writes a new empty-derived state, ERASING ALL EXISTING ENTRIES. Coupled with the worktree files remaining on disk, this orphans worktrees and their `.env` secrets.",
+      "location": "fabric/workspace-manager/state.py:83-91",
+      "impact": "Silent data loss; orphaned worktrees with live secret files left on disk; auditability gap.",
+      "recommendation": "On JSON parse failure: rename the corrupt file to `<state>.corrupt-<ts>` and log CRITICAL; then refuse to start (raise) rather than continuing with `{}`. At minimum, expose this state in /health (e.g. `state_loaded: false`) so ops are alerted.",
+      "cwe": "CWE-755"
+    },
+    {
+      "severity": "minor",
+      "category": "A02: Cryptographic Failures",
+      "title": "`.env` write uses tempfile in target dir but does not fsync the directory",
+      "description": "vault.py:163-170 writes the temp file with `os.fsync(fh.fileno())` then `os.replace(tmp_path, env_path)`. For atomic durability across power loss, the containing directory also needs `os.fsync(dir_fd)`. Without it, a crash between rename and dir-sync can leave the new .env invisible. (Same applies to state.py:67-81.) Not a confidentiality issue, but the spec promises atomicity and this gap can produce inconsistent state files containing secrets.",
+      "location": "fabric/workspace-manager/vault.py:163-170, fabric/workspace-manager/state.py:67-81",
+      "impact": "Crash-window where state.json / .env updates are lost despite returning 200, leading to orphaned worktrees with stale `.env` content.",
+      "recommendation": "After `os.replace`, open the parent directory and fsync it:\n```python\ndir_fd = os.open(str(dir_), os.O_DIRECTORY)\ntry:\n    os.fsync(dir_fd)\nfinally:\n    os.close(dir_fd)\n```",
+      "cwe": "CWE-755"
+    },
+    {
+      "severity": "minor",
+      "category": "Best Practice",
+      "title": "Error responses embed user-supplied `task_id`/`detail` strings — light info disclosure",
+      "description": "Error JSON bodies include `task_id {body.task_id!r} already registered` and bw error messages stringified into 409 / 500 responses (main.py:148, 169, 193). For an unauthenticated endpoint (finding #6), this lets an attacker probe internal state (which task IDs exist) and read parts of git/bw error strings.",
+      "location": "fabric/workspace-manager/main.py:148,169,193,226,270",
+      "impact": "Information disclosure: enumeration of task_ids, leakage of internal repo paths via git error messages.",
+      "recommendation": "Return generic detail strings to clients (`'task_id already registered'`, `'vault unavailable'`, `'worktree create failed'`) and reserve the verbose context for the (sanitized) server log only. Pair with finding #6 (add auth).",
+      "cwe": "CWE-209"
+    }
+  ]
+}
