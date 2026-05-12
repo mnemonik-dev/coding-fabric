@@ -1,0 +1,13 @@
+---
+galaxy_info:
+  author: "Mnemonic Protocol"
+  description: "Install ruflo full CLI and per-topic cohabitation matrix"
+  company: "Mnemonic Protocol"
+  license: "MIT"
+  min_ansible_version: "2.10"
+  galaxy_tags:
+    - ruflo
+    - substrate
+    - fabric
+
+dependencies: []

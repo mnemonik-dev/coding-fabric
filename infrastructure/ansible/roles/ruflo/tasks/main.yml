@@ -1,0 +1,79 @@
+---
+- name: "Create ruflo config directories"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0750"
+  loop:
+    - "~/.fabric/ruflo"
+    - "~/.fabric/ruflo/topics"
+  become: true
+  become_user: "{{ ansible_user }}"
+
+- name: "Download ruflo installer"
+  ansible.builtin.get_url:
+    url: "https://install.ashwinchat.ai/ruflo"
+    dest: "/tmp/ruflo-installer.sh"
+    mode: "0755"
+  register: ruflo_installer_download
+
+- name: "Install ruflo at pinned version {{ ruflo_version }}"
+  ansible.builtin.shell:
+    cmd: |
+      set -e
+      export RUFLO_VERSION="{{ ruflo_version }}"
+      bash /tmp/ruflo-installer.sh
+  no_log: true
+  register: ruflo_install_result
+  changed_when: "'successfully' in ruflo_install_result.stdout | lower"
+
+- name: "Verify ruflo installation"
+  ansible.builtin.command:
+    cmd: "ruflo --version"
+  register: ruflo_version_check
+  failed_when: "'{{ ruflo_version }}' not in ruflo_version_check.stdout"
+  changed_when: false
+
+- name: "Display ruflo version verification"
+  ansible.builtin.debug:
+    msg: "ruflo installed and verified: {{ ruflo_version_check.stdout }}"
+
+- name: "Render global config template"
+  ansible.builtin.template:
+    src: "global.yml.j2"
+    dest: "~/.fabric/ruflo/global.yml"
+    mode: "0640"
+  become: true
+  become_user: "{{ ansible_user }}"
+  notify: "validate ruflo matrix"
+
+- name: "Render per-topic config files from matrix"
+  ansible.builtin.template:
+    src: "topics/topic.yml.j2"
+    dest: "~/.fabric/ruflo/topics/{{ item.topic }}.yml"
+    mode: "0640"
+  loop: "{{ ruflo_topic_matrix }}"
+  become: true
+  become_user: "{{ ansible_user }}"
+  notify: "validate ruflo matrix"
+
+- name: "Install matrix validation script"
+  ansible.builtin.copy:
+    src: "validate_matrix.py"
+    dest: "~/.fabric/ruflo/validate_matrix.py"
+    mode: "0750"
+  become: true
+  become_user: "{{ ansible_user }}"
+
+- name: "Run matrix validation"
+  ansible.builtin.command:
+    cmd: "python ~/.fabric/ruflo/validate_matrix.py"
+  become: true
+  become_user: "{{ ansible_user }}"
+  register: ruflo_matrix_validation
+  changed_when: false
+  failed_when: ruflo_matrix_validation.rc != 0
+
+- name: "Display matrix validation result"
+  ansible.builtin.debug:
+    msg: "Matrix validation passed: {{ ruflo_matrix_validation.stdout }}"

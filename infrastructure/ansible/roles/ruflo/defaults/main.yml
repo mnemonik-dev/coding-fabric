@@ -1,0 +1,75 @@
+---
+# Canonical per-topic configuration matrix (§2.4, tech-spec)
+# Used to render all 8 per-topic config files and validate on-disk state
+ruflo_version: "0.20.0"  # Pinned upstream version
+
+ruflo_topic_matrix:
+  - topic: core
+    engine: claude-code
+    autopilot: "off"
+    aidefence: "off"
+    rag_memory: "on"
+    mnemonic_mode: "local"
+    memory_namespace: "mnemonic-core"
+
+  - topic: mcp
+    engine: claude-code
+    autopilot: "off"
+    aidefence: "off"
+    rag_memory: "on"
+    mnemonic_mode: "local"
+    memory_namespace: "mnemonic-mcp"
+
+  - topic: wasm
+    engine: claude-code
+    autopilot: "off"
+    aidefence: "on"
+    rag_memory: "on"
+    mnemonic_mode: "local"
+    memory_namespace: "mnemonic-wasm"
+
+  - topic: demo-client
+    engine: codex
+    autopilot: "on"
+    aidefence: "on"
+    rag_memory: "on"
+    mnemonic_mode: "local"
+    memory_namespace: "mnemonic-demo-client"
+
+  - topic: docs
+    engine: claude-code
+    autopilot: "on"
+    aidefence: "on"
+    rag_memory: "on"
+    mnemonic_mode: "local"
+    memory_namespace: "mnemonic-docs"
+
+  - topic: loop
+    engine: claude-code
+    autopilot: "off"
+    aidefence: "on"
+    rag_memory: "on"
+    mnemonic_mode: "local"
+    memory_namespace: "mnemonic-loop"
+
+  - topic: protocol-qa
+    engine: claude-code
+    autopilot: "off"
+    aidefence: "on"
+    rag_memory: "off"
+    mnemonic_mode: "full"
+    memory_namespace: "mnemonic-qa"
+
+  - topic: ops
+    engine: claude-code
+    autopilot: "off"
+    aidefence: "on"
+    rag_memory: "on"
+    mnemonic_mode: "local"
+    memory_namespace: "mnemonic-ops"
+
+# Global defaults applied to all topics
+ruflo_global_defaults:
+  log_level: "info"
+  strict_mode: true
+  timeout_seconds: 300

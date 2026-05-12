@@ -1,0 +1,42 @@
+---
+- name: Verify
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: "Verify global config exists"
+      ansible.builtin.stat:
+        path: /home/mnemonic/.fabric/ruflo/global.yml
+      register: ruflo_global_config
+      failed_when: not ruflo_global_config.stat.exists
+
+    - name: "Verify all 8 per-topic configs exist"
+      ansible.builtin.stat:
+        path: "/home/mnemonic/.fabric/ruflo/topics/{{ item }}.yml"
+      loop:
+        - core
+        - mcp
+        - wasm
+        - demo-client
+        - docs
+        - loop
+        - protocol-qa
+        - ops
+      register: ruflo_topic_configs
+      failed_when: not ruflo_topic_configs.stat.exists
+
+    - name: "Verify validator script exists"
+      ansible.builtin.stat:
+        path: /home/mnemonic/.fabric/ruflo/validate_matrix.py
+      register: ruflo_validator_script
+      failed_when: not ruflo_validator_script.stat.exists
+
+    - name: "Run matrix validation"
+      ansible.builtin.command:
+        cmd: "python /home/mnemonic/.fabric/ruflo/validate_matrix.py"
+      register: ruflo_validation_result
+      changed_when: false
+      failed_when: ruflo_validation_result.rc != 0
+
+    - name: "Display validation output"
+      ansible.builtin.debug:
+        msg: "{{ ruflo_validation_result.stdout }}"

@@ -1,0 +1,20 @@
+---
+- name: Converge
+  hosts: all
+  pre_tasks:
+    - name: "Ensure Python is installed"
+      ansible.builtin.raw: "apt-get update && apt-get install -y python3"
+      changed_when: false
+
+    - name: "Create ansible user"
+      ansible.builtin.user:
+        name: mnemonic
+        state: present
+        shell: /bin/bash
+
+  tasks:
+    - name: "Include ruflo role"
+      ansible.builtin.include_role:
+        name: ruflo
+      vars:
+        ansible_user: mnemonic

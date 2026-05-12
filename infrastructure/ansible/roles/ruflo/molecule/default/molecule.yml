@@ -1,0 +1,22 @@
+---
+dependency:
+  name: galaxy
+
+driver:
+  name: docker
+
+platforms:
+  - name: ruflo-test
+    image: geerlingguy/docker-ubuntu2404-ansible
+    pre_build_image: true
+    command: /lib/systemd/systemd-cgroups-agent
+
+provisioner:
+  name: ansible
+  lint:
+    name: ansible-lint
+
+verifier:
+  name: ansible
+  lint:
+    name: ansible-lint
