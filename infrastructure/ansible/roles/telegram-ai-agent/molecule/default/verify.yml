@@ -1,0 +1,133 @@
+---
+- name: Verify
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Check uv is installed
+      ansible.builtin.command:
+        cmd: uv --version
+      register: uv_check
+      changed_when: false
+
+    - name: Assert uv version
+      ansible.builtin.assert:
+        that:
+          - uv_check.rc == 0
+          - "'uv' in uv_check.stdout"
+        fail_msg: "uv not installed or not in PATH"
+
+    - name: Verify telegram-ai-agent repository
+      ansible.builtin.stat:
+        path: /opt/telegram-ai-agent
+      register: repo_stat
+
+    - name: Assert repository exists
+      ansible.builtin.assert:
+        that:
+          - repo_stat.stat.exists
+          - repo_stat.stat.isdir
+        fail_msg: "/opt/telegram-ai-agent directory not found"
+
+    - name: Verify Python virtual environment
+      ansible.builtin.stat:
+        path: /opt/telegram-ai-agent/.venv/bin/python
+      register: venv_stat
+
+    - name: Assert venv exists
+      ansible.builtin.assert:
+        that:
+          - venv_stat.stat.exists
+        fail_msg: "Virtual environment not created"
+
+    - name: Check configuration directory
+      ansible.builtin.stat:
+        path: /etc/telegram-ai-agent
+      register: config_dir_stat
+
+    - name: Assert config directory exists
+      ansible.builtin.assert:
+        that:
+          - config_dir_stat.stat.exists
+          - config_dir_stat.stat.isdir
+        fail_msg: "/etc/telegram-ai-agent directory not found"
+
+    - name: Verify config.yml exists
+      ansible.builtin.stat:
+        path: /etc/telegram-ai-agent/config.yml
+      register: config_file_stat
+
+    - name: Assert config.yml exists
+      ansible.builtin.assert:
+        that:
+          - config_file_stat.stat.exists
+        fail_msg: "/etc/telegram-ai-agent/config.yml not found"
+
+    - name: Verify .env file exists
+      ansible.builtin.stat:
+        path: /etc/telegram-ai-agent/.env
+      register: env_file_stat
+
+    - name: Assert .env exists with correct permissions
+      ansible.builtin.assert:
+        that:
+          - env_file_stat.stat.exists
+          - env_file_stat.stat.mode == '0600'
+        fail_msg: "/etc/telegram-ai-agent/.env not found or wrong permissions"
+
+    - name: Check systemd service file
+      ansible.builtin.stat:
+        path: /etc/systemd/system/telegram-ai-agent.service
+      register: service_file_stat
+
+    - name: Assert service file exists
+      ansible.builtin.assert:
+        that:
+          - service_file_stat.stat.exists
+        fail_msg: "systemd service file not found"
+
+    - name: Verify systemd service is enabled
+      ansible.builtin.systemd_service:
+        name: telegram-ai-agent
+      register: service_status
+
+    - name: Assert service is enabled
+      ansible.builtin.assert:
+        that:
+          - service_status.status.UnitFileState == "enabled"
+        fail_msg: "telegram-ai-agent service not enabled"
+
+    - name: Verify config.yml has DYNAMIC cwd sentinel
+      ansible.builtin.shell: |
+        grep -c 'cwd: "DYNAMIC"' /etc/telegram-ai-agent/config.yml
+      register: dynamic_check
+      changed_when: false
+
+    - name: Assert all 8 topics have DYNAMIC cwd
+      ansible.builtin.assert:
+        that:
+          - dynamic_check.stdout | int == 8
+        fail_msg: "Not all 8 topics have cwd: DYNAMIC"
+
+    - name: Verify config.yml has required env variables
+      ansible.builtin.shell: |
+        grep -E '(TELEGRAM_AI_AGENT_CWD_RESOLVER_URL|ANTHROPIC_API_KEY)' /etc/telegram-ai-agent/.env | wc -l
+      register: env_check
+      changed_when: false
+
+    - name: Assert required env vars present
+      ansible.builtin.assert:
+        that:
+          - env_check.stdout | int >= 2
+        fail_msg: "Missing required environment variables"
+
+    - name: Check for DYNAMIC feature in source (fallback)
+      ansible.builtin.shell: |
+        grep -r "DYNAMIC" /opt/telegram-ai-agent/telegram_bot --include="*.py" 2>/dev/null | wc -l
+      register: source_check
+      changed_when: false
+
+    - name: Assert DYNAMIC feature is present in source
+      ansible.builtin.assert:
+        that:
+          - source_check.stdout | int > 0
+        fail_msg: "DYNAMIC feature not found in source code"

@@ -1,0 +1,280 @@
+---
+- name: Validate required variables
+  tags: [telegram-ai-agent, always]
+  block:
+    - name: Check TELEGRAM_AI_AGENT_CWD_RESOLVER_URL is set
+      ansible.builtin.assert:
+        that:
+          - tailscale_ip is defined and tailscale_ip | length > 0
+        fail_msg: |
+          FATAL: tailscale_ip not set. This role requires tailscale to be deployed first (T02).
+          See: work/mnemonic-tg-bridge/user-spec.md §3 (mnemonic-tg-bridge feature requirements)
+
+- name: Install uv package manager
+  tags: [telegram-ai-agent, uv]
+  block:
+    - name: Check if uv is already installed
+      ansible.builtin.command:
+        cmd: uv --version
+      register: uv_version_check
+      changed_when: false
+      failed_when: false
+
+    - name: Download and verify uv installer
+      ansible.builtin.shell: |
+        set -e
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+      environment:
+        UV_INSTALL_DIR: "/usr/local"
+      register: uv_install_result
+      changed_when: "'uv' in uv_install_result.stdout or 'uv' in uv_install_result.stderr"
+      when: uv_version_check.rc != 0 or telegram_ai_agent_uv_version not in uv_version_check.stdout | default("")
+      retries: 3
+      delay: 2
+
+    - name: Verify uv installation
+      ansible.builtin.command:
+        cmd: uv --version
+      register: uv_version
+      changed_when: false
+      failed_when: false
+
+    - name: Assert uv is available
+      ansible.builtin.assert:
+        that:
+          - uv_version.rc == 0
+        fail_msg: "uv installation failed or not in PATH"
+
+- name: Clone or update telegram-ai-agent repository
+  tags: [telegram-ai-agent, git]
+  block:
+    - name: Check if repository already exists
+      ansible.builtin.stat:
+        path: "{{ telegram_ai_agent_home }}"
+      register: repo_stat
+
+    - name: Clone telegram-ai-agent from upstream
+      ansible.builtin.git:
+        repo: "{{ telegram_ai_agent_repo }}"
+        dest: "{{ telegram_ai_agent_home }}"
+        version: "{{ telegram_ai_agent_pin }}"
+        update: yes
+        force: yes
+      register: git_clone
+      retries: 3
+      delay: 2
+      when: not repo_stat.stat.exists
+
+    - name: Fetch and checkout pinned commit (if already cloned)
+      ansible.builtin.shell: |
+        cd "{{ telegram_ai_agent_home }}"
+        git fetch --all
+        git checkout "{{ telegram_ai_agent_pin }}"
+      changed_when: '"HEAD detached" in git_fetch.stdout or "Switched" in git_fetch.stdout'
+      register: git_fetch
+      when: repo_stat.stat.exists
+
+    - name: Verify correct commit is checked out
+      ansible.builtin.shell: |
+        cd "{{ telegram_ai_agent_home }}"
+        git rev-parse --short HEAD
+      register: current_commit
+      changed_when: false
+
+    - name: Debug commit checkout
+      ansible.builtin.debug:
+        msg: "Current commit: {{ current_commit.stdout }}"
+
+- name: Pre-flight check for DYNAMIC feature
+  tags: [telegram-ai-agent, preflight]
+  block:
+    - name: Check for DYNAMIC feature test in pinned commit
+      ansible.builtin.stat:
+        path: "{{ telegram_ai_agent_home }}/tests/test_dynamic_cwd.py"
+      register: dynamic_test_file
+
+    - name: Grep for DYNAMIC sentinel in source (fallback if test doesn't exist)
+      ansible.builtin.shell: |
+        grep -r "DYNAMIC" "{{ telegram_ai_agent_home }}/telegram_bot" --include="*.py" | head -5
+      register: dynamic_grep
+      changed_when: false
+      failed_when: false
+      when: not dynamic_test_file.stat.exists
+
+    - name: FAIL if DYNAMIC feature not found in pinned commit
+      ansible.builtin.fail:
+        msg: |
+          CRITICAL: The pinned commit ({{ telegram_ai_agent_pin }}) does not contain the
+          'cwd: DYNAMIC' feature required for coding-fabric AC6 (per-message worktree isolation).
+
+          The feature is tracked separately as 'mnemonic-tg-bridge' (S-size, approved).
+
+          Options:
+          1. If upstream PR merged: update telegram_ai_agent_pin to upstream tag in defaults/main.yml
+          2. If PR still pending: ensure telegram_ai_agent_repo points to mnemonic-org fork
+          3. Reference: work/mnemonic-tg-bridge/user-spec.md §4–5 (feature scope and AC)
+      when: |
+        (not dynamic_test_file.stat.exists and
+         (dynamic_grep.rc != 0 or 'DYNAMIC' not in dynamic_grep.stdout)) or
+        telegram_ai_agent_require_dynamic_feature
+
+- name: Ensure configuration directory exists
+  tags: [telegram-ai-agent, dirs]
+  ansible.builtin.file:
+    path: "{{ telegram_ai_agent_config_dir }}"
+    state: directory
+    owner: "{{ telegram_ai_agent_owner }}"
+    group: "{{ telegram_ai_agent_group }}"
+    mode: "0755"
+
+- name: Install Python dependencies via uv sync
+  tags: [telegram-ai-agent, deps]
+  block:
+    - name: Run uv sync with frozen lock
+      ansible.builtin.shell: |
+        cd "{{ telegram_ai_agent_home }}"
+        /usr/local/bin/uv sync --frozen
+      environment:
+        UV_PROJECT_ENVIRONMENT: "{{ telegram_ai_agent_home }}/.venv"
+      timeout: "{{ telegram_ai_agent_uv_sync_timeout }}"
+      register: uv_sync
+      changed_when: "'Synced' in uv_sync.stdout or 'updated' in uv_sync.stdout | lower"
+      retries: 3
+      delay: 5
+
+    - name: Verify uv virtual environment
+      ansible.builtin.stat:
+        path: "{{ telegram_ai_agent_home }}/.venv/bin/python"
+      register: venv_python
+      failed_when: not venv_python.stat.exists
+
+- name: Load telegram-topics inventory
+  tags: [telegram-ai-agent, config]
+  block:
+    - name: Slurp telegram-topics.yml from inventory
+      ansible.builtin.slurp:
+        src: "{{ playbook_dir }}/inventory/telegram-topics.yml"
+      register: telegram_topics_file
+      failed_when: not telegram_topics_file.stat.exists
+      delegate_to: localhost
+      run_once: true
+
+    - name: Parse telegram-topics inventory
+      ansible.builtin.set_fact:
+        telegram_topics_data: "{{ telegram_topics_file.content | b64decode | from_yaml }}"
+
+- name: Render telegram-ai-agent configuration
+  tags: [telegram-ai-agent, config]
+  block:
+    - name: Prepare topic configs with chat_id and thread_id from inventory
+      ansible.builtin.set_fact:
+        telegram_ai_agent_topics_with_ids: |
+          {%- set topics_dict = {} -%}
+          {%- for topic_name, topic_config in telegram_ai_agent_topics.items() -%}
+            {%- if topic_name in telegram_topics_data.telegram_ai_agent_topics -%}
+              {%- set inv_topic = telegram_topics_data.telegram_ai_agent_topics[topic_name] -%}
+              {%- set updated = topic_config.copy() -%}
+              {%- set _ = updated.update({
+                'chat_id': inv_topic.chat_id,
+                'thread_id': inv_topic.thread_id,
+                'cwd': 'DYNAMIC'
+              }) -%}
+              {%- set _ = topics_dict.update({topic_name: updated}) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ topics_dict }}
+
+    - name: Template config.yml
+      ansible.builtin.template:
+        src: config.yml.j2
+        dest: "{{ telegram_ai_agent_config_dir }}/config.yml"
+        owner: "{{ telegram_ai_agent_owner }}"
+        group: "{{ telegram_ai_agent_group }}"
+        mode: "0644"
+      notify: Reload telegram-ai-agent
+
+    - name: Validate config.yml syntax
+      ansible.builtin.shell: |
+        cd "{{ telegram_ai_agent_home }}"
+        {{ telegram_ai_agent_home }}/.venv/bin/python -m telegram_bot \
+          --config {{ telegram_ai_agent_config_dir }}/config.yml \
+          --check-config
+      register: config_validation
+      changed_when: false
+      failed_when: config_validation.rc != 0
+
+- name: Render environment file from sops
+  tags: [telegram-ai-agent, secrets]
+  block:
+    - name: Template .env file with secrets
+      ansible.builtin.template:
+        src: .env.j2
+        dest: "{{ telegram_ai_agent_config_dir }}/.env"
+        owner: "{{ telegram_ai_agent_owner }}"
+        group: "{{ telegram_ai_agent_group }}"
+        mode: "0600"
+      notify: Reload telegram-ai-agent
+      no_log: true
+
+- name: Install and enable systemd unit
+  tags: [telegram-ai-agent, systemd]
+  block:
+    - name: Template systemd service unit
+      ansible.builtin.template:
+        src: telegram-ai-agent.service.j2
+        dest: /etc/systemd/system/telegram-ai-agent.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify:
+        - Daemon reload
+        - Reload telegram-ai-agent
+
+    - name: Flush handlers to reload systemd
+      ansible.builtin.meta: flush_handlers
+
+    - name: Enable and start telegram-ai-agent service
+      ansible.builtin.systemd_service:
+        name: telegram-ai-agent
+        enabled: yes
+        state: started
+
+    - name: Wait for service to stabilize
+      ansible.builtin.pause:
+        seconds: 3
+
+    - name: Check service is active
+      ansible.builtin.systemd_service:
+        name: telegram-ai-agent
+      register: service_status
+
+    - name: Assert service is active
+      ansible.builtin.assert:
+        that:
+          - service_status.status.ActiveState == "active"
+        fail_msg: |
+          telegram-ai-agent service failed to start.
+          Check systemctl status telegram-ai-agent and journalctl -u telegram-ai-agent -n 50
+
+- name: Post-deployment healthcheck
+  tags: [telegram-ai-agent, healthcheck]
+  block:
+    - name: Verify systemd unit is active
+      ansible.builtin.command:
+        cmd: systemctl is-active telegram-ai-agent
+      register: healthcheck
+      changed_when: false
+
+    - name: Assert healthcheck passed
+      ansible.builtin.assert:
+        that:
+          - healthcheck.stdout | trim == "active"
+        fail_msg: "telegram-ai-agent service is not active"
+
+    - name: Show successful completion
+      ansible.builtin.debug:
+        msg: |
+          telegram-ai-agent role deployment completed.
+          Service: systemctl status telegram-ai-agent
+          Config: {{ telegram_ai_agent_config_dir }}/config.yml
+          Logs: journalctl -u telegram-ai-agent -f

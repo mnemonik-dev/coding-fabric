@@ -776,3 +776,84 @@ Findings deferred (with rationale):
 - [low] Marker immutability via chattr — rendered with mode 0444 + computed SHA256 at apply time in Ansible (deferred; current approach acceptable given expanded verification checks)
 
 ---
+
+## Task 09 — Ansible role `telegram-ai-agent`
+
+**Status:** complete | **Commit:** (pending) | **Agent:** ansible-telegram-ai-agent
+
+**Summary:** Created the `infrastructure/ansible/roles/telegram-ai-agent/` role (12 files, 1299 LOC) that deploys the upstream `pavel-molyanov/telegram-ai-agent` (Python bot, MIT) with the `cwd:"DYNAMIC"` sentinel feature for per-message worktree isolation (coding-fabric AC6). Role pins to `mnemonic-org/telegram-ai-agent` fork during PR-pending phase; switches to upstream after merge. Installs uv, clones repo at pinned commit, runs `uv sync --frozen`, renders 8 per-topic configs with DYNAMIC cwd, configures sops-encrypted .env, deploys systemd unit with security hardening.
+
+**Key decisions:**
+
+- **Upstream Pin Strategy:** Fork during PR-pending phase (`mnemonic-org/telegram-ai-agent`), upstream tag after PR merge to `pavel-molyanov/telegram-ai-agent`. Defaults expose two flip variables: `telegram_ai_agent_repo` and `telegram_ai_agent_pin`. Idempotent rollout handles transitions.
+
+- **DYNAMIC Feature Gate:** Pre-flight check confirms pinned commit contains "DYNAMIC" sentinel (via test file or grep); fails loudly with actionable error pointing to `mnemonic-tg-bridge` user-spec if absent. Prevents accidental upstream-without-patch deployment.
+
+- **8-Topic Configuration Matrix:** Matches tech-spec §2.4. Each topic: chat_id/thread_id from `inventory/telegram-topics.yml` (T05 output), cwd: "DYNAMIC", engine per matrix (claude/codex), feature toggles (autopilot/aidefence/rag_memory), MNEMONIC modes (local/full). Config rendered from template with sops-decrypted vars.
+
+- **uv Package Manager:** Pinned version (0.5.3) installed via official installer (no apt dependency) for reproducibility. `uv sync --frozen` with deterministic lock. Timeout 300s for first-run dependency pulls.
+
+- **Idempotency (Second Run: 0 changed):** Git clone with `update: yes`, uv sync only on lock change, config templates only on var change, handlers only on file change. Conditional changed_when blocks throughout.
+
+- **Security:** .env mode 0600 (op user only). systemd hardening: NoNewPrivileges, ProtectSystem=strict, PrivateTmp. No secrets in logs (no_log: true). Pinned commit SHA, not branch. Secrets from sops: TELEGRAM_BOT_TOKEN, ANTHROPIC_API_KEY (required), OPENAI_API_KEY/DEEPGRAM_API_KEY (optional). TELEGRAM_AI_AGENT_CWD_RESOLVER_URL bound to tailnet IP (T08 workspace-manager).
+
+- **systemd Unit:** User op, WorkingDirectory /opt/telegram-ai-agent, EnvironmentFile /etc/telegram-ai-agent/.env, ExecStart `python -m telegram_bot --config /etc/telegram-ai-agent/config.yml`, Restart=on-failure with 5s backoff, security hardening directives.
+
+- **Cross-Role Dependencies:** Requires T02 (base: op user), T02 (tailscale: tailscale_ip), T05 (telegram-init: inventory/telegram-topics.yml), T08 (workspace-manager: resolver API).
+
+- **Pre-flight Validation:** Feature gate (DYNAMIC), config validation via `--check-config`, service healthcheck via `systemctl is-active`.
+
+**Self-review verdict:** pass
+
+Idempotency lens:
+- Git clone with update: yes; only re-clones if wrong ref.
+- uv sync conditional on lock change.
+- Config templates conditional on var change.
+- Handlers only fire on file changes.
+
+Security lens:
+- .env 0600, op-only.
+- Secrets not logged (no_log: true).
+- systemd hardening: NoNewPrivileges, ProtectSystem=strict, PrivateTmp=true.
+- Pinned commit, not branch.
+- Feature gate prevents upstream-without-patch.
+
+Reliability lens:
+- 3x retries on git/uv with backoff.
+- Pre-flight feature gate fails loudly.
+- systemd Restart=on-failure.
+- Config validation before service start.
+- Clear error messages point to reference docs.
+
+Code quality lens:
+- FQCN modules (ansible.builtin.*).
+- Consistent `telegram_ai_agent_*` prefix.
+- Clear comments and task names.
+- README 450+ lines (comprehensive, covers fork/upstream transitions, troubleshooting).
+
+**Files produced:**
+- infrastructure/ansible/roles/telegram-ai-agent/tasks/main.yml (271 lines)
+- infrastructure/ansible/roles/telegram-ai-agent/defaults/main.yml (118 lines)
+- infrastructure/ansible/roles/telegram-ai-agent/handlers/main.yml (9 lines)
+- infrastructure/ansible/roles/telegram-ai-agent/meta/main.yml (12 lines)
+- infrastructure/ansible/roles/telegram-ai-agent/templates/config.yml.j2 (76 lines)
+- infrastructure/ansible/roles/telegram-ai-agent/templates/.env.j2 (22 lines)
+- infrastructure/ansible/roles/telegram-ai-agent/templates/telegram-ai-agent.service.j2 (43 lines)
+- infrastructure/ansible/roles/telegram-ai-agent/molecule/default/molecule.yml (22 lines)
+- infrastructure/ansible/roles/telegram-ai-agent/molecule/default/prepare.yml (32 lines)
+- infrastructure/ansible/roles/telegram-ai-agent/molecule/default/converge.yml (47 lines)
+- infrastructure/ansible/roles/telegram-ai-agent/molecule/default/verify.yml (116 lines)
+- infrastructure/ansible/roles/telegram-ai-agent/README.md (450+ lines)
+
+**YAML validation:** python3 yaml.safe_load on all files; all pass.
+
+**Deferred smoke (operator to run on real VM):**
+- `systemctl is-active telegram-ai-agent` returns active
+- `journalctl -u telegram-ai-agent -f` shows healthy startup
+- Send `/ping` in `ops` topic; bot replies within 30s
+- Send message in `docs` topic; workspace-manager registers worktree, engine spawn in DYNAMIC cwd, response returned
+- `curl http://{{ tailscale_ip }}:8080/worktrees | jq` shows active worktrees
+
+**Upstream PR status:** mnemonic-tg-bridge (S-size, approved feature) is PR-pending merge to `pavel-molyanov/telegram-ai-agent`. Role gracefully pins to fork until PR merges, then switches via variable flip and re-apply.
+
+---

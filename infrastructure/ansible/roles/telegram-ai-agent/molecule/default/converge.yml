@@ -1,0 +1,53 @@
+---
+- name: Converge
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Load sops secrets for testing
+      block:
+        - name: Set test secrets (no-op in molecule; use fixed values)
+          ansible.builtin.set_fact:
+            telegram_bot_token: "test-bot-token-12345"
+            anthropic_api_key: "test-anthropic-key"
+            openai_api_key: "test-openai-key"
+            deepgram_api_key: "test-deepgram-key"
+            tailscale_ip: "100.64.0.1"
+          no_log: true
+
+    - name: Create mock telegram-topics inventory
+      ansible.builtin.copy:
+        dest: "{{ playbook_dir }}/inventory/telegram-topics.yml"
+        content: |
+          ---
+          telegram_ai_agent_topics:
+            core:
+              chat_id: "-1001234567890"
+              thread_id: 1
+            mcp:
+              chat_id: "-1001234567890"
+              thread_id: 2
+            wasm:
+              chat_id: "-1001234567890"
+              thread_id: 3
+            demo-client:
+              chat_id: "-1001234567890"
+              thread_id: 4
+            docs:
+              chat_id: "-1001234567890"
+              thread_id: 5
+            loop:
+              chat_id: "-1001234567890"
+              thread_id: 6
+            protocol-qa:
+              chat_id: "-1001234567890"
+              thread_id: 7
+            ops:
+              chat_id: "-1001234567890"
+              thread_id: 8
+        mode: "0644"
+      delegate_to: localhost
+      run_once: true
+
+    - name: Include telegram-ai-agent role
+      ansible.builtin.include_role:
+        name: telegram-ai-agent

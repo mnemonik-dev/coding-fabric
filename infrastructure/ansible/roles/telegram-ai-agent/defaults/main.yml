@@ -1,0 +1,125 @@
+---
+# Upstream pin configuration
+# Defaults to mnemonic-org fork during PR-pending phase; switch to upstream after PR merge
+telegram_ai_agent_repo: "https://github.com/mnemonic-org/telegram-ai-agent.git"
+telegram_ai_agent_pin: "main"  # Commit SHA or tag; replace with upstream tag after PR merge
+
+# Installation paths
+telegram_ai_agent_home: "/opt/telegram-ai-agent"
+telegram_ai_agent_config_dir: "/etc/telegram-ai-agent"
+telegram_ai_agent_owner: "op"
+telegram_ai_agent_group: "op"
+
+# uv installer version (pinned for reproducibility)
+telegram_ai_agent_uv_version: "0.5.3"
+
+# Timeout for uv sync (first-run pulls many dependencies)
+telegram_ai_agent_uv_sync_timeout: 300
+
+# Pre-flight check: whether to require DYNAMIC feature in pinned commit
+telegram_ai_agent_require_dynamic_feature: true
+
+# Topic configuration matrix (8 topics from tech-spec §2.4)
+# Each topic maps to: engine, autopilot, aidefence, rag_memory, mnemonic_mode, memory_namespace
+telegram_ai_agent_topics:
+  core:
+    chat_id: ""  # Populated from telegram-topics.yml at runtime
+    thread_id: ""
+    engine: "claude"
+    autopilot: false
+    aidefence: false
+    rag_memory: true
+    mnemonic_mode: "local"
+    memory_namespace: "mnemonic-core"
+    exec_mode: "subprocess"
+    stream_mode: "live"
+    mode: "default"
+  mcp:
+    chat_id: ""
+    thread_id: ""
+    engine: "claude"
+    autopilot: false
+    aidefence: false
+    rag_memory: true
+    mnemonic_mode: "local"
+    memory_namespace: "mnemonic-mcp"
+    exec_mode: "subprocess"
+    stream_mode: "live"
+    mode: "default"
+  wasm:
+    chat_id: ""
+    thread_id: ""
+    engine: "claude"
+    autopilot: false
+    aidefence: true
+    rag_memory: true
+    mnemonic_mode: "local"
+    memory_namespace: "mnemonic-wasm"
+    exec_mode: "subprocess"
+    stream_mode: "live"
+    mode: "default"
+  demo-client:
+    chat_id: ""
+    thread_id: ""
+    engine: "codex"
+    autopilot: true
+    aidefence: true
+    rag_memory: true
+    mnemonic_mode: "local"
+    memory_namespace: "mnemonic-demo-client"
+    exec_mode: "subprocess"
+    stream_mode: "live"
+    mode: "default"
+  docs:
+    chat_id: ""
+    thread_id: ""
+    engine: "claude"
+    autopilot: true
+    aidefence: true
+    rag_memory: true
+    mnemonic_mode: "local"
+    memory_namespace: "mnemonic-docs"
+    exec_mode: "subprocess"
+    stream_mode: "live"
+    mode: "default"
+  loop:
+    chat_id: ""
+    thread_id: ""
+    engine: "claude"
+    autopilot: false
+    aidefence: true
+    rag_memory: true
+    mnemonic_mode: "local"
+    memory_namespace: "mnemonic-loop"
+    exec_mode: "subprocess"
+    stream_mode: "live"
+    mode: "default"
+  protocol-qa:
+    chat_id: ""
+    thread_id: ""
+    engine: "claude"
+    autopilot: false
+    aidefence: true
+    rag_memory: false
+    mnemonic_mode: "full"
+    memory_namespace: "mnemonic-qa"
+    exec_mode: "subprocess"
+    stream_mode: "live"
+    mode: "default"
+  ops:
+    chat_id: ""
+    thread_id: ""
+    engine: "claude"
+    autopilot: false
+    aidefence: true
+    rag_memory: true
+    mnemonic_mode: "local"
+    memory_namespace: "mnemonic-ops"
+    exec_mode: "subprocess"
+    stream_mode: "live"
+    mode: "default"
+
+# Systemd service parameters
+telegram_ai_agent_restart_policy: "on-failure"
+telegram_ai_agent_restart_sec: 5
+telegram_ai_agent_log_level: "info"

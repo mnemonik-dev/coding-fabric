@@ -1,0 +1,53 @@
+[Unit]
+Description=telegram-ai-agent — AI-powered Telegram bot for coding-fabric
+Documentation=work/mnemonic-tg-bridge/user-spec.md
+After=network-online.target tailscaled.service
+
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ telegram_ai_agent_owner }}
+Group={{ telegram_ai_agent_group }}
+
+# Working directory and environment
+WorkingDirectory={{ telegram_ai_agent_home }}
+EnvironmentFile={{ telegram_ai_agent_config_dir }}/.env
+
+# Main process: run telegram-ai-agent with config
+ExecStart={{ telegram_ai_agent_home }}/.venv/bin/python -m telegram_bot \
+  --config {{ telegram_ai_agent_config_dir }}/config.yml
+
+# Restart policy: on-failure with backoff
+Restart={{ telegram_ai_agent_restart_policy }}
+RestartSec={{ telegram_ai_agent_restart_sec }}
+
+# Timeout for start/stop (default 90s is usually sufficient)
+TimeoutStartSec=120
+TimeoutStopSec=30
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectDevices=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelTunables=true
+
+# Allow read-only access to /etc and /opt
+ReadWritePaths={{ telegram_ai_agent_home }} {{ telegram_ai_agent_config_dir }}
+
+# Standard output / error logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=telegram-ai-agent
+
+# Resource limits (optional, adjust if needed)
+# LimitNOFILE=65536
+# MemoryLimit=1G
+
+[Install]
+WantedBy=multi-user.target

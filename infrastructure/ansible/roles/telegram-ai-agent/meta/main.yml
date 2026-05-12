@@ -1,0 +1,15 @@
+---
+galaxy_info:
+  author: Mnemonic Protocol
+  company: Mnemonic
+  license: MIT
+  min_ansible_version: 2.15
+  platforms:
+    - name: Ubuntu
+      versions:
+        - "24.04"
+
+dependencies:
+  - role: base
+  - role: telegram-init
+  - role: tailscale

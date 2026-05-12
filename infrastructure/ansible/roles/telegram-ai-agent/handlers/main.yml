@@ -1,0 +1,13 @@
+---
+- name: Daemon reload
+  ansible.builtin.systemd_service:
+    daemon_reload: yes
+  listen: Daemon reload
+
+- name: Reload telegram-ai-agent
+  ansible.builtin.systemd_service:
+    name: telegram-ai-agent
+    state: reloaded
+  listen: Reload telegram-ai-agent
+  register: reload_result
+  changed_when: reload_result.changed
