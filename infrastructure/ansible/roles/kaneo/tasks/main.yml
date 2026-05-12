@@ -36,6 +36,7 @@
   become: true
   changed_when: caddyfile_snippet.changed
   when: caddyfile_snippet.changed
+  notify: Reload caddy
 
 - name: Run docker compose to start kaneo stack
   community.docker.docker_compose_v2:
@@ -97,12 +98,13 @@
     body:
       name: "{{ item.name }}"
       description: "{{ item.description }}"
-    status_code: [200, 201, 409]
+    status_code: [200, 201, 409, 429, 500, 502, 503, 504]
     return_content: true
   register: project_create_result
-  retries: 3
-  delay: 2
+  retries: 5
+  delay: 3
   until: project_create_result.status in [200, 201, 409]
+  failed_when: project_create_result.status not in [200, 201, 409, 429, 500, 502, 503, 504]
   when: item.name not in existing_project_names
   loop: "{{ kaneo_default_projects }}"
   no_log: true

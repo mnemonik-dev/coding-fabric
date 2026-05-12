@@ -142,17 +142,30 @@ Currently **SQLite only**. The database file is stored at `/opt/kaneo/data/kaneo
 The kaneo role:
 1. Generates `/opt/kaneo/Caddyfile.snippet` with the kaneo vhost config
 2. Copies the snippet into the Caddy container at `/etc/caddy/conf.d/kaneo.conf`
-3. Reloads Caddy to apply the new config
+3. Notifies the Caddy reload handler to apply the new config
 
-**Requirements:**
-- The `vaultwarden` role must set the `vaultwarden_caddy_container_name` variable (defaults to `vaultwarden-caddy-1`)
-- The Caddy container must have a `/etc/caddy/conf.d` directory (typically configured in the vaultwarden role's Caddyfile with `import /etc/caddy/conf.d/*`)
-- The `vaultwarden` role should be run BEFORE the kaneo role in your playbook
+**CRITICAL Requirements:**
+- The `vaultwarden` role **MUST be applied first** and its Caddyfile **MUST include** `import /etc/caddy/conf.d/*.conf` at the end (added in vaultwarden/templates/Caddyfile.j2)
+- The Caddy container name must match `vaultwarden_caddy_container_name` (defaults to `vaultwarden-caddy-1`)
+- The Caddy container must have a `/etc/caddy/conf.d` directory (created by vaultwarden role)
+- If the vaultwarden Caddyfile does NOT include the import directive, the kaneo vhost snippet will be ignored by Caddy
 
-**If you change the Caddy container name or structure in the vaultwarden role:**
+**Playbook ordering:**
+```yaml
+- name: Deploy Mnemonic Fabric
+  hosts: fabric
+  roles:
+    - base
+    - tailscale
+    - vaultwarden     # MUST run first; ensures /etc/caddy/conf.d exists and Caddyfile includes import
+    - kaneo           # Runs second; injects vhost into conf.d/kaneo.conf
+```
+
+**If you change the Caddy container name or vaultwarden Caddyfile structure:**
 - Update `vaultwarden_caddy_container_name` in your playbook or group_vars
-- Ensure the kaneo role is re-run after Caddy configuration changes
-- Test with: `docker exec <container-name> caddy validate -c /etc/caddy/Caddyfile`
+- Verify the vaultwarden Caddyfile contains `import /etc/caddy/conf.d/*.conf`
+- Ensure the kaneo role is re-run after vaultwarden changes
+- Test with: `docker exec vaultwarden-caddy-1 caddy validate -c /etc/caddy/Caddyfile`
 
 ## Testing
 
