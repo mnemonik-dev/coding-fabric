@@ -432,6 +432,35 @@ Deferred findings:
 
 ---
 
+**Round 3 — fix:** commit `a356a76` | **Agent:** ansible-kaneo (Round 3 fix for Task 04)
+
+Findings addressed (final residual criticals):
+
+CRITICAL:
+- [V2-02] **Caddy include contract unverified (PARTIAL high risk)** — Two-part fix:
+  - (a) Added `import /etc/caddy/conf.d/*.conf` directive at end of `infrastructure/ansible/roles/vaultwarden/templates/Caddyfile.j2`. This makes Caddy parse any `.conf` files dropped into `/etc/caddy/conf.d/` directory (e.g., kaneo.conf from kaneo role).
+  - (b) Added `notify: Reload caddy` to the "Copy Caddy snippet into Caddy container" task in kaneo/tasks/main.yml. Reload handler now triggers automatically when snippet changes.
+  - (c) **Cross-role contract explicitly documented** in kaneo README under new "Cross-Role Contract: Caddy Integration" section. Emphasizes that vaultwarden role MUST be applied first with import directive, provides playbook ordering example, and documents recovery steps.
+
+- [V2-05] **Project seeding retries on 429/5xx (FAIL blocking)** — Expanded to handle transient errors:
+  - `status_code` list expanded from `[200, 201, 409]` → `[200, 201, 409, 429, 500, 502, 503, 504]`. Allows URI module to not throw on 5xx/429 errors.
+  - `until` condition remains `in [200, 201, 409]` (success states only).
+  - Added explicit `failed_when: project_create_result.status not in [200, 201, 409, 429, 500, 502, 503, 504]` to gate final failure (prevents false positives from other HTTP errors).
+  - Increased `retries: 3 → 5` and `delay: 2 → 3` for better 429 throttle recovery window (15-second total budget vs 6 seconds before).
+
+MEDIUM:
+- [V2-03] **kaneo_image still :latest with TODO (medium residual)** — Upgraded TODO comment:
+  - Changed from generic TODO to explicit `TODO before first apply: pin to actual stable tag from kaneo-app/kaneo releases page`.
+  - Added reference to GitHub releases page in comment.
+  - Added note to add to bootstrap-checklist.md operator todos.
+  - Rationale: :latest is dangerous in production; operator must pin to a known release before first deployment.
+
+**Cross-role impact:** Changes touch both kaneo and vaultwarden roles. Vaultwarden's Caddyfile now exports an import directive that kaneo (and future roles) can inject into. Kaneo's README explicitly documents this dependency and ordering.
+
+**Idempotency preserved:** All changes maintain idempotency. Caddy reload handler only fires on snippet change, not on every run.
+
+---
+
 ## Task 05 — Ansible role `telegram-init`
 
 **Status:** complete | **Commit:** (pending) | **Agent:** ansible-telegram-init (ansible-automation)
