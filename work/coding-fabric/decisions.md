@@ -928,3 +928,63 @@ Reliability-engineer lens:
 - [x] test_delete_unknown_task_id_returns_404 — PASS
 
 ---
+
+## Task 07 — `fabric/logs/sanitizer/` Python module + tests
+
+**Status:** complete | **Commit:** 6d38308 | **Agent:** sanitizer (python-alchemist)
+
+**Summary:** Created the single point of trust for log redaction under `fabric/logs/sanitizer/`. Implements four compiled regex patterns (base58 Solana keys 32–44 chars, JWK field values, sk-/api_/ANTHROPIC_ tokens, Telegram file URLs) using stdlib only (`re`, `logging`). `SanitizedFileHandler` is a drop-in for `logging.FileHandler`; `sanitize_outgoing` wraps the same logic for the Telegram bot send path without coupling to any bot library.
+
+**Key decisions:**
+
+- Patterns compiled once at module load, not per call.
+- `_JWK_REPLACEMENT = '"\\1":"' + REDACTED + '"'` — non-raw string ensures `\1` is a single-backslash re.sub group backreference, not a literal. Raw string `r'"\\1":"'` would produce `\\1` (escaped backslash + "1") which re.sub writes as a literal backslash, leaking field names. Verified with explicit `repr()` and round-trip test.
+- JWK pattern is per-line by design. Multi-line pretty-printed JSON is documented as a limitation in both filter.py and README.md; callers must compact with `json.dumps(obj, separators=(',', ':'))`.
+- Base58 length window 32–44: Solana pubkeys are 32 bytes = 43–44 base58 chars. Lower bound 32 catches rare 32-char valid addresses; upper bound 44 avoids false positives on longer alphanumeric strings. Negative look-ahead/look-behind prevent matching when surrounded by base58 chars (handles substring-in-longer-key correctly).
+- `ANTHROPIC_*` env vars with 8+ char payload are redacted — intentionally catches `ANTHROPIC_API_KEY=<value>` but also false-positives `ANTHROPIC_MODEL=claude` (12-char payload). Trade-off accepted: any `ANTHROPIC_` variable with a long value is a potential secret leak; log callers should strip env dumps before logging.
+- `SanitizedFileHandler.emit()` formats the record via `self.format(record)`, sanitizes the formatted string, then writes directly to `self.stream` — does not re-call `super().emit()` to avoid double-formatting.
+- `sanitize_outgoing` is a thin `sanitize()` delegate with its own docstring; no Telegram-library imports, fully decoupled.
+
+**Self-review verdict:** pass
+
+Correctness:
+- [x] All 4 patterns compile at module load (`_PATTERN_*` module-level constants)
+- [x] base58 alphabet correctly EXCLUDES 0, O, I, l (verified with dedicated test cases)
+- [x] Length anchor 32–44 enforced with look-behind/look-ahead negative assertions
+- [x] JWK per-line limitation documented inline and in README.md
+
+Security:
+- [x] `sanitize()` always applies all 4 patterns in sequence; no bypass path
+- [x] Greedy `\S+` on API tokens and TG URLs consume the full token; base58 look-ahead/look-behind prevent partial-key leakage
+- [x] Idempotency guaranteed: REDACTED sentinel does not match any of the 4 patterns
+
+Code quality:
+- [x] Type hints on all public functions
+- [x] Docstrings on each pattern constant with rationale + example match
+- [x] Named constants for all patterns and sentinel
+- [x] Tests use `pytest.mark.parametrize` for corpus iteration
+
+**Test results:** 73 passed, 0 failed, 0 skipped (pytest 9.0.3, Python 3.10.16)
+
+**False-positive risks identified:**
+- `ANTHROPIC_MODEL=claude` redacted (by design; 12-char payload after `ANTHROPIC_`)
+- Any 32–44 char base58-alphabet identifier in code comments will be redacted
+- Single-char JWK fields `"x":"val"`, `"y":"val"`, `"d":"val"` in non-JWK JSON will be redacted
+
+**Files produced:**
+- fabric/__init__.py (2 lines)
+- fabric/logs/__init__.py (2 lines)
+- fabric/logs/sanitizer/__init__.py (17 lines)
+- fabric/logs/sanitizer/filter.py (135 lines)
+- fabric/logs/sanitizer/handler.py (57 lines)
+- fabric/logs/sanitizer/tg_middleware.py (35 lines)
+- fabric/logs/sanitizer/tests/__init__.py (2 lines)
+- fabric/logs/sanitizer/tests/test_filter.py (388 lines)
+- fabric/logs/sanitizer/tests/fixtures/secret_corpus.txt (49 lines)
+- fabric/logs/sanitizer/pyproject.toml (22 lines)
+- fabric/logs/sanitizer/README.md (118 lines)
+- fabric/logs/sanitizer/.gitignore (7 lines)
+
+Total: 12 files, 834 lines
+
+---
