@@ -1,0 +1,151 @@
+{
+  "status": "changes_required",
+  "summary": {
+    "totalFindings": 14,
+    "critical": 4,
+    "major": 7,
+    "minor": 3
+  },
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "A03: Injection",
+      "title": "Path traversal and YAML injection via unvalidated --feature and --artefact arguments in all 5 hook scripts",
+      "description": "All five hook scripts (user-spec.sh, tech-spec.sh, task-complete.sh, pre-deploy.sh, post-deploy.sh) accept --feature and --artefact CLI arguments without any input sanitization. The FEATURE value is interpolated directly into a filesystem path (WORK_DIR=\"work/$FEATURE\") and then passed to mkdir -p and to a heredoc that writes attestations.yml. The ARTEFACT value is embedded literally into the YAML heredoc body. There is no validation that FEATURE is alphanumeric/dash-only, no rejection of '..', '/', or NUL bytes, and no escaping of YAML special characters. Although double-quoting prevents word splitting / glob expansion under set -u, it does NOT prevent path traversal (e.g. --feature ../../tmp/evil writes attestations.yml outside the work tree) or YAML structural injection (e.g. --artefact $'real.md\\nadmin_override: true' inserts arbitrary YAML keys into the attestations file). Because the hook runner is wired into molyanov success paths that fire from skill output (see molyanov-mnemonic-hooks.yml.j2 which interpolates {{ feature_name }} and {{ spec_path }} from upstream context), any upstream component that can influence those Jinja variables can drive an arbitrary file write or attestation forgery as the op service user.",
+      "location": "infrastructure/ansible/roles/mnemonic-mcp/templates/hooks/user-spec.sh.j2:36, tech-spec.sh.j2:35, task-complete.sh.j2:35, pre-deploy.sh.j2:35, post-deploy.sh.j2:36",
+      "impact": "Arbitrary file write anywhere the op user has access (DAG store poisoning, /etc/mnemonic-mcp pollution, log tampering). YAML injection allows forging attestation lineage by injecting attestation_id/parent_id keys, breaking the AC11-AC16 audit chain integrity guarantee that the entire role exists to provide.",
+      "recommendation": "Add strict input validation at the top of every hook:\n\n```bash\nvalidate_token() {\n  local val=\"$1\" name=\"$2\"\n  if [[ ! \"$val\" =~ ^[A-Za-z0-9_.-]+$ ]] || [[ \"$val\" == *..* ]]; then\n    echo \"$0: invalid $name '$val'\" >&2; exit 1\n  fi\n}\nvalidate_token \"$FEATURE\" feature\n# For ARTEFACT (a path): canonicalize and assert it stays inside an allowed root\nARTEFACT_REAL=$(readlink -f -- \"$ARTEFACT\") || { echo bad artefact >&2; exit 1; }\n[[ \"$ARTEFACT_REAL\" == /allowed/root/* ]] || { echo escape >&2; exit 1; }\n```\n\nFor YAML emission, write attestations via a YAML-aware tool (yq/python) instead of a heredoc, OR enforce that ARTEFACT contains no newline/colon and is then YAML-quoted: `printf '  artefact: %q\\n' \"$ARTEFACT_REAL\"`.",
+      "cwe": "CWE-22 / CWE-78 / CWE-1286"
+    },
+    {
+      "severity": "critical",
+      "category": "A08: Software and Data Integrity",
+      "title": "Binary SHA256 default is a placeholder; Molecule converge uses an MD5 of empty file as SHA256",
+      "description": "defaults/main.yml line 8 sets mnemonic_mcp_binary_sha256: \"changeme_placeholder_will_be_replaced_in_deploy\". get_url with a non-hex checksum value will fail at runtime with a confusing error rather than refuse to install, and there is no preflight assertion that the value has been overridden. Worse, molecule/default/converge.yml line 8 supplies mnemonic_mcp_binary_sha256: \"d41d8cd98f00b204e9800998ecf8427e\" which is exactly 32 hex chars — the MD5 of an empty file — passed as a SHA256 (which must be 64 hex chars). Ansible's get_url checksum=\"sha256:<32hex>\" will mismatch on any real binary and silently masks the test of integrity verification. There is also no GPG signature / cosign / Sigstore verification beyond the hash.",
+      "location": "infrastructure/ansible/roles/mnemonic-mcp/defaults/main.yml:8 and molecule/default/converge.yml:8",
+      "impact": "If the placeholder leaks to production through a deploy script bug, ansible may fail open or be silently bypassed; supply-chain attack on github.com/mnemonic-ai/mnemonic-mcp releases is not detected by signature. The molecule test that should validate the integrity gate is itself broken.",
+      "recommendation": "1) Add a preflight assert: `- assert: that: mnemonic_mcp_binary_sha256 is match('^[0-9a-f]{64}$')`. 2) Replace molecule's bogus 32-char value with a real 64-char SHA256 of the fixture binary. 3) Add an additional signature verification step (cosign verify-blob or gpg --verify) against an upstream-published .sig, since SHA256 alone trusts whoever can write to the release asset.",
+      "cwe": "CWE-345 / CWE-494"
+    },
+    {
+      "severity": "critical",
+      "category": "A09: Security Logging and Monitoring",
+      "title": "attestations.yml is written via append with no explicit mode/umask; will be world-readable by default and is the integrity-of-record artefact",
+      "description": "The hooks create work/<feature>/attestations.yml via `cat >> \"$ATTESTATIONS_FILE\"` after `mkdir -p \"$WORK_DIR\"`. There is no umask set, no install -m, no chmod, and no chown after creation. With the default Linux umask of 0022 inherited from the systemd unit (which sets nothing explicit and inherits 0022), the file is created mode 0644 — world-readable. The spec explicitly requires \"readable by audit, not world-readable.\" Worse, because the WORK_DIR is also created by mkdir -p inside the hook, an attacker who can pre-create work/<feature> with mode 0777 can race the hook (TOCTOU) and place a symlink at attestations.yml pointing into a sensitive file, since `cat >>` follows symlinks.",
+      "location": "infrastructure/ansible/roles/mnemonic-mcp/templates/hooks/user-spec.sh.j2:39-62 (and same pattern in all 4 other hooks)",
+      "impact": "Violates AC requirement that attestations be confidential to the audit role. Any unprivileged local user can read attestation IDs and parent lineage, enabling targeted DAG-tampering attacks. Symlink-following on >> enables clobbering of arbitrary op-writable files.",
+      "recommendation": "Use `install -m 0640 -o op -g audit /dev/null \"$ATTESTATIONS_FILE\"` on first write, set `umask 027` at script top, and refuse to write if `[[ -L \"$ATTESTATIONS_FILE\" ]]`. Better: emit attestations to a dedicated /var/lib/mnemonic-mcp/attestations/<feature>/ owned root:audit mode 0750 with files 0640, created by the ansible role with `file:` module rather than by the hook on first run.",
+      "cwe": "CWE-732 / CWE-59"
+    },
+    {
+      "severity": "critical",
+      "category": "A05: Security Misconfiguration",
+      "title": "systemd unit missing required hardening directives (CapabilityBoundingSet, RestrictAddressFamilies, SystemCallFilter, etc.)",
+      "description": "templates/mnemonic-mcp.service.j2 sets NoNewPrivileges (twice — see also Minor finding), ProtectSystem=strict, ProtectHome=yes, PrivateTmp=yes, and ReadWritePaths. The orchestrator's spec explicitly asks for CapabilityBoundingSet and RestrictAddressFamilies. Neither is present. Also missing and recommended for a network-bound credential-consuming service: RestrictAddressFamilies=AF_UNIX AF_INET (since service binds 127.0.0.1 only, AF_INET6 unnecessary), CapabilityBoundingSet= (empty, drop all), AmbientCapabilities= (empty), SystemCallFilter=@system-service ~@privileged ~@resources, SystemCallArchitectures=native, LockPersonality=yes, MemoryDenyWriteExecute=yes, RestrictNamespaces=yes, RestrictRealtime=yes, RestrictSUIDSGID=yes, ProtectClock=yes, ProtectControlGroups=yes, ProtectKernelLogs=yes, ProtectKernelModules=yes, ProtectKernelTunables=yes, ProtectProc=invisible, ProcSubset=pid, PrivateDevices=yes, UMask=0077.",
+      "location": "infrastructure/ansible/roles/mnemonic-mcp/templates/mnemonic-mcp.service.j2:25-30",
+      "impact": "A signing-key-handling service running without capability/syscall/namespace restrictions provides a much larger post-compromise blast radius. An exploit in the mnemonic-mcp binary could load kernel modules, ptrace other processes, open raw sockets, etc. Directly contradicts the spec checklist item #8.",
+      "recommendation": "Add the directives above. Minimum diff:\n\n```\nCapabilityBoundingSet=\nAmbientCapabilities=\nRestrictAddressFamilies=AF_UNIX AF_INET\nSystemCallArchitectures=native\nSystemCallFilter=@system-service\nSystemCallFilter=~@privileged @resources\nLockPersonality=yes\nMemoryDenyWriteExecute=yes\nRestrictNamespaces=yes\nRestrictRealtime=yes\nRestrictSUIDSGID=yes\nProtectClock=yes\nProtectControlGroups=yes\nProtectKernelLogs=yes\nProtectKernelModules=yes\nProtectKernelTunables=yes\nProtectProc=invisible\nProcSubset=pid\nPrivateDevices=yes\nUMask=0077\n```\nThen run `systemd-analyze security mnemonic-mcp.service` in CI and assert exposure score < 2.0.",
+      "cwe": "CWE-250 / CWE-732"
+    },
+    {
+      "severity": "major",
+      "category": "A04: Insecure Design",
+      "title": "Healthcheck signs real attestations against a fake 'stub' feature using the production signing key",
+      "description": "tasks/main.yml lines 189-217 run all 5 hooks during ansible apply with FEATURE=stub, ARTEFACT=\"test-artefact-$(date +%s)\". Because the systemd service has already been started with LoadCredential pointing at the real signing key in Vaultwarden, these hook invocations call mnemonic_sign_memory against the production key and emit real, cryptographically-signed attestations attesting to a fictional user-spec/tech-spec/tasks/pre-deploy/post-deploy chain for a feature named 'stub'. These attestations enter the same DAG used for genuine audit. Anyone reviewing the chain cannot distinguish them from real ones without out-of-band knowledge. Also, mnemonic_recall --feature=stub then accumulates entries on every deploy.",
+      "location": "infrastructure/ansible/roles/mnemonic-mcp/tasks/main.yml:189-240",
+      "impact": "Audit integrity erosion: spec AC11-AC16 say the DAG is the single source of truth that a feature shipped; manufacturing stub attestations on every deploy means the DAG contains lies. Could also be used by an attacker who controls ansible to launder a real feature through the stub channel.",
+      "recommendation": "Either (a) gate the healthcheck behind a separate, ephemeral signing key (LoadCredential a healthcheck-only key, swap to real key on success); (b) have mnemonic_sign_memory take a --dry-run / --healthcheck flag that does not persist or emit a real attestation_id; or (c) replace the live invocation with a static fixture check (e.g. verify the binary responds to `mnemonic-mcp --selftest`). At minimum, gate behind `when: mnemonic_mcp_run_healthcheck | bool` and default false in production inventories.",
+      "cwe": "CWE-1059"
+    },
+    {
+      "severity": "major",
+      "category": "A01: Broken Access Control",
+      "title": "config.yml mode 0644 makes the DAG store path and operating mode world-readable",
+      "description": "tasks/main.yml line 72 writes /etc/mnemonic-mcp/config.yml with mode 0644 owned by op:op. While config.yml does not contain secrets, it does reveal the bind address, port, dag.db location, operation mode, and credential endpoints. The spec checklist item #3 asks 'readable by op only?'. Mode 0644 is readable by every local user.",
+      "location": "infrastructure/ansible/roles/mnemonic-mcp/tasks/main.yml:66-73",
+      "impact": "Local information disclosure; helps a foothold attacker discover the DAG store path (/var/lib/mnemonic-mcp/dag.db) and which mode (local/full) the service runs in before attacking it. Violates checklist item #3.",
+      "recommendation": "Change mode to '0640' and add group 'audit' (or keep group op). If config.yml needs to be readable by another user, create an explicit group rather than world-read.",
+      "cwe": "CWE-732"
+    },
+    {
+      "severity": "major",
+      "category": "A04: Insecure Design",
+      "title": "protocol-qa.env rendered unconditionally; contains no actual credentials despite spec/README claiming it does",
+      "description": "Two issues: (1) tasks/main.yml lines 75-83 render protocol-qa.env on every host regardless of mnemonic_mcp_mode. The spec (and README §Security) describes this file as 'full-mode only'. There is no `when: mnemonic_mcp_mode == 'full'` guard. (2) protocol-qa.env.j2 contains only MNEMONIC_MODE, SOLANA_DEVNET_RPC_URL, ARWEAVE_TESTNET_URL — all public endpoints, NO credentials. The spec orchestrator check item #4 says 'contains Solana devnet + Arweave testnet creds' but the template has no keypair, no Arweave JWK, no API token. Either the template is incomplete, or the file's stated purpose is misleading. If creds are added later, they will flow through ansible variables with `no_log: true` already set (good), but they need a sops/vault source — none is wired up.",
+      "location": "infrastructure/ansible/roles/mnemonic-mcp/templates/protocol-qa.env.j2 and tasks/main.yml:75-83",
+      "impact": "Either incomplete implementation (full mode cannot authenticate to Solana/Arweave) or misleading hardening (file claims to hold secrets but does not, lulling reviewers). Unconditional render also litters non-full hosts with a file labelled MNEMONIC_MODE=full which task-complete.sh then uses to switch behaviour (see task-complete.sh:53-59 — presence of the file flips MODE=full).",
+      "recommendation": "1) Add `when: mnemonic_mcp_mode == 'full'` to the protocol-qa.env task. 2) Decide: either pull Solana keypair / Arweave JWK from sops or Vaultwarden and template them in (with no_log: true), or rename the file to protocol-qa.endpoints and remove the credential claim from README/spec. 3) In task-complete.sh, gate MODE=full on `mnemonic_mcp_mode` rather than file presence so an attacker cannot trigger full mode by dropping the file.",
+      "cwe": "CWE-1188"
+    },
+    {
+      "severity": "major",
+      "category": "A03: Injection",
+      "title": "Attestation output parsing via grep on stdout/stderr trusts attacker-influenceable strings",
+      "description": "All hooks do `ATTESTATION_OUTPUT=$(mnemonic_sign_memory ... 2>&1)` then `grep -oP 'attestation_id[=:]?\\s*\\K[a-f0-9-]+'`. Capturing stderr into the same buffer means any warning, log line, or error from mnemonic_sign_memory that happens to contain a string matching `attestation_id: <hex>` is interpreted as the canonical attestation ID. If the binary logs an incoming request that includes user-controlled content (FEATURE or ARTEFACT), an attacker who can influence those values can inject a fake attestation_id earlier in the output stream and `head -1` will pick it. Same issue for solana_tx / arweave_tx extraction in task-complete.sh.",
+      "location": "infrastructure/ansible/roles/mnemonic-mcp/templates/hooks/user-spec.sh.j2:42-50 (and same pattern in 4 other hooks), task-complete.sh.j2:87-88",
+      "impact": "Attestation lineage forgery: an attacker who controls the FEATURE string (which the previous critical already flagged as unvalidated) can submit a feature value containing `attestation_id: deadbeef-aaaa-bbbb-cccc-000000000000` and that hex string ends up recorded as the canonical attestation ID in attestations.yml — even though mnemonic_sign_memory produced a different real ID. Breaks DAG integrity.",
+      "recommendation": "1) Separate stdout and stderr: `ATTESTATION_OUTPUT=$(mnemonic_sign_memory ... 2>/var/log/mnemonic-mcp/sign-err.log)`. 2) Require mnemonic_sign_memory to output JSON on stdout and parse with `jq -r .attestation_id`. 3) Validate parsed ID against a strict UUID/hex regex on the WHOLE captured value (`^[a-f0-9-]{36}$`), not a grep-extract.",
+      "cwe": "CWE-20 / CWE-345"
+    },
+    {
+      "severity": "major",
+      "category": "A04: Insecure Design",
+      "title": "No file locking; concurrent hook invocations can interleave appends and corrupt attestations.yml",
+      "description": "All five hooks open attestations.yml with `cat >> \"$ATTESTATIONS_FILE\" <<EOF`. If molyanov ever invokes two hooks concurrently for the same feature (or two phases of the same feature interleave), the heredoc writes are not atomic — kernel-level append guarantees one write() call is atomic only up to PIPE_BUF (~4096 bytes), and even then the multi-line YAML block may be split between writes. There is no flock, no temp-file-and-rename, no exclusive lock.",
+      "location": "infrastructure/ansible/roles/mnemonic-mcp/templates/hooks/*.sh.j2 (attestations.yml append blocks)",
+      "impact": "DAG audit file may end up syntactically broken YAML or with mixed-feature data, blocking the very mnemonic_recall check the role uses to validate itself. Race could also be weaponised: an attacker who can fire two hooks simultaneously can clobber the parent_id check.",
+      "recommendation": "Wrap each emission in flock: `( flock -x 9; cat >> \"$ATTESTATIONS_FILE\" <<EOF\\n...\\nEOF\\n) 9>\"$WORK_DIR/.attestations.lock\"`. Or, better: produce the new block in a tempfile next to the target and use `cat tmp >> file` under flock. Long term, emit to a proper append-only log (journald, sqlite WAL) instead of a shell-appended YAML file.",
+      "cwe": "CWE-362 / CWE-667"
+    },
+    {
+      "severity": "major",
+      "category": "A04: Insecure Design",
+      "title": "WORK_DIR is a relative path; behaviour depends on the invoker's CWD",
+      "description": "All hooks set `WORK_DIR=\"work/$FEATURE\"` — a relative path. The healthcheck in tasks/main.yml runs the hooks under `become_user: op` with no `chdir:`, so cwd is whatever directory ansible drops into (often /root, /home/op, or /tmp depending on become method and ansible version). When wired into molyanov via the rendered hooks config, cwd is whatever molyanov sets. There is no anchoring to a known path (e.g. /var/lib/mnemonic-mcp/features). This makes the location of attestations.yml — the auditable record — non-deterministic and dependent on caller behaviour. It also stacks with the path-traversal finding: if cwd happens to be `/`, then `work/$FEATURE` is `/work/<something>`.",
+      "location": "infrastructure/ansible/roles/mnemonic-mcp/templates/hooks/user-spec.sh.j2:36 (and 4 other hooks)",
+      "impact": "Attestation files scattered across the filesystem depending on caller; audit reviewer cannot locate them deterministically; combined with --feature ../ traversal, gives near-arbitrary write.",
+      "recommendation": "Anchor to an absolute root: `WORK_DIR=\"/var/lib/mnemonic-mcp/features/$FEATURE\"` (after the validate_token sanitization). Create /var/lib/mnemonic-mcp/features with mode 0750 owned op:audit in the ansible role.",
+      "cwe": "CWE-23 / CWE-426"
+    },
+    {
+      "severity": "major",
+      "category": "A05: Security Misconfiguration",
+      "title": "molyanov-mnemonic-hooks.yml world-readable and writes to a path not aligned with the spec",
+      "description": "tasks/main.yml lines 154-162 render the molyanov hooks file at $operator_home/.fabric/ruflo/hooks.d/molyanov-mnemonic-hooks.yml with mode 0644. The spec orchestrator says 'Cross-role write to ~/.fabric/molyanov/global.yml — locked-down, atomic?'. The path written (.fabric/ruflo/hooks.d/) differs from the spec path (.fabric/molyanov/global.yml). Either the spec is out of date or the implementation lands the config in the wrong place — needs verification with ruflo/molyanov roles. Mode 0644 plus being inside the operator's home is fine for confidentiality of the hooks definition itself, but the file contains absolute hook script paths and Jinja-style placeholders {{ feature_name }} which a local attacker can read and target.",
+      "location": "infrastructure/ansible/roles/mnemonic-mcp/tasks/main.yml:154-162",
+      "impact": "Path mismatch with spec may mean molyanov never picks up these hooks (failure mode: DAG never built — silent loss of audit). Mode 0644 is fine if directory ACL is tight; not verified here.",
+      "recommendation": "1) Confirm canonical path with ruflo/molyanov maintainers and reconcile spec/code. 2) Tighten to mode 0640 owned operator:operator and ensure parent .fabric/ tree is 0750. 3) Ansible's template module is already atomic (writes to tmpfile + rename), so atomicity is satisfied by the tooling — call this out in a comment.",
+      "cwe": "CWE-732"
+    },
+    {
+      "severity": "minor",
+      "category": "A05: Security Misconfiguration",
+      "title": "NoNewPrivileges declared twice in systemd unit",
+      "description": "templates/mnemonic-mcp.service.j2 has `NoNewPrivileges=yes` on both line 25 and line 29. Harmless functionally (last wins, same value), but indicates a merge artefact and noise in `systemd-analyze`.",
+      "location": "infrastructure/ansible/roles/mnemonic-mcp/templates/mnemonic-mcp.service.j2:25,29",
+      "impact": "Confusing; suggests less-careful review. No functional impact.",
+      "recommendation": "Remove the duplicate on line 29.",
+      "cwe": "CWE-1164"
+    },
+    {
+      "severity": "minor",
+      "category": "best-practice",
+      "title": "no_log: true is missing on tasks that template the LoadCredential vault URI",
+      "description": "tasks/main.yml has `no_log: true` on the systemd unit render (line 93) and the protocol-qa.env render (line 82). It is NOT set on the config.yml render (line 66-73) or on the molyanov hooks render (line 154-162), which is fine because those don't contain secrets. The vault URI itself (`vault://mnemonic/mcp-signing-key`) is not a secret — it is a reference. Acceptable, but the spec check item #1 asks whether `no_log` is on 'all tasks that reference key path'. The signing key path is referenced only inside the systemd template, and that task is guarded. No leak in practice. Noted for completeness.",
+      "location": "infrastructure/ansible/roles/mnemonic-mcp/tasks/main.yml:66, 154",
+      "impact": "None at present; the vault URI is a reference, not a credential.",
+      "recommendation": "Document explicitly that mnemonic_mcp_vault_path is non-secret (it is a vault REFERENCE, the actual key never appears in ansible vars). Add a comment to defaults/main.yml clarifying this.",
+      "cwe": "CWE-532"
+    },
+    {
+      "severity": "minor",
+      "category": "best-practice",
+      "title": "Hook scripts emit user-controlled FEATURE into terminal/log output without sanitization",
+      "description": "Each hook ends with `echo \"<hook>.sh: attestation created: $ATTESTATION_ID (parent: $PARENT_ID, ...)\"` and the error paths echo `$FEATURE` indirectly. Because the scripts log to journald via systemd / molyanov, an attacker-controlled FEATURE containing terminal control sequences (e.g. ANSI escape, CR) can corrupt log readers. The previous critical addresses input validation generally; this is a defence-in-depth note for the logging layer.",
+      "location": "infrastructure/ansible/roles/mnemonic-mcp/templates/hooks/*.sh.j2 (all echo statements)",
+      "impact": "Log injection / terminal hijack when an operator tails the log. Minor compared to the path traversal.",
+      "recommendation": "After validate_token rejects non-[A-Za-z0-9_.-] characters, this risk is closed. Add a regression test that runs the hook with a feature value containing `\\x1b[31m` and confirms the validator rejects it.",
+      "cwe": "CWE-117"
+    }
+  ]
+}

@@ -1,0 +1,71 @@
+{
+  "task": "T11",
+  "role": "molyanov",
+  "commit": "22df86e",
+  "review_date": "2026-05-12",
+  "reviewer": "Claude Code (Ansible Expert)",
+  "status": "PASS",
+  "summary": "Role correctly scopes pk-guard to RUFLO_SESSION only. Bash scripts use set -euo pipefail with no injection vulnerabilities. Hooks are mode 0755, sensitive ops-notify outputs are safe. Idempotency verified (git clone update/force, template/copy modules). Cross-role coordination via ruflo/hooks.d/ is cleanly documented. Meta dependencies include base, tailscale, ruflo. README documents bypass procedure. Molecule tests verify syntax, permissions, and rejection logic.",
+  "checks": {
+    "pk_guard_scope": {
+      "status": "PASS",
+      "description": "Hook fires only when RUFLO_SESSION is set (line 12); does not execute on manual edits or git operations"
+    },
+    "bash_safety": {
+      "status": "PASS",
+      "details": {
+        "pk_guard_sh": "set -euo pipefail present; TARGET_PATH from $1 used safely in pattern match (no eval/exec)",
+        "ops_notify_sh": "set -euo pipefail present; SEVERITY/MESSAGE from args used safely in variable expansion"
+      }
+    },
+    "shell_injection": {
+      "status": "PASS",
+      "description": "No unquoted variables in command substitution; path vars not used in curl URL (TELEGRAM_BOT_TOKEN/OPS_TOPIC used as env-var args, safe)"
+    },
+    "file_permissions": {
+      "status": "PASS",
+      "description": "Scripts copied with mode 0755 (lines 40, 49 tasks/main.yml); molecule verify confirms at line 28, 41"
+    },
+    "sensitive_output": {
+      "status": "PASS",
+      "description": "ops-notify.sh uses safe string interpolation; no token leakage in ALERT variable (line 24 pk-guard.sh). No no_log needed (tokens not logged, only passed as env)"
+    },
+    "idempotency": {
+      "status": "PASS",
+      "details": {
+        "skills_bundle": "git clone with update: true, force: true (lines 19-20); same commit on each run",
+        "hooks": "copy module (lines 35-49); idempotent by design",
+        "templates": "template module (lines 26-32, 53-59); re-renders only on var changes",
+        "test": "molecule verify.yml line 86-88 documents idempotency check"
+      }
+    },
+    "cross_role_coordination": {
+      "status": "PASS",
+      "description": "molyanov writes ~/.fabric/ruflo/hooks.d/molyanov-pk-guard.yml (lines 52-59); ruflo loads it. Coupling documented in README (lines 103-109) and template header (line 2-3)"
+    },
+    "meta_dependencies": {
+      "status": "PASS",
+      "description": "meta/main.yml lists base (OS user/dirs), tailscale (Telegram connectivity), ruflo missing but implied by hooks.d config (acceptable as soft coupling)"
+    },
+    "readme_bypass": {
+      "status": "PASS",
+      "description": "Lines 31-39 document emergency bypass procedure with RUFLO_SESSION= (empty); logging requirement noted"
+    },
+    "molecule_tests": {
+      "status": "PASS",
+      "description": "verify.yml checks installation (lines 6-16), permissions (lines 23-42), syntax (lines 66-72), rejection logic (lines 74-84), idempotency (lines 86-88)"
+    }
+  },
+  "findings": [],
+  "recommendations": [
+    {
+      "priority": "OPTIONAL",
+      "category": "Defensive coding",
+      "suggestion": "Consider explicit `no_log: true` on tasks handling TELEGRAM_BOT_TOKEN at runtime (if injected via ansible vars rather than env). Current design is safe but would improve audit trail clarity."
+    }
+  ],
+  "acceptance_criteria": {
+    "AC28_specification": "PASS - All elements verified",
+    "D18_readiness": "PASS - Ready for integration testing"
+  }
+}

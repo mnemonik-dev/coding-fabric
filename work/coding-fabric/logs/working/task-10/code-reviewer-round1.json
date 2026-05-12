@@ -1,0 +1,118 @@
+{
+  "review_metadata": {
+    "commit": "3274eb4",
+    "role": "ruflo",
+    "path": "infrastructure/ansible/roles/ruflo/",
+    "date": "2026-05-12",
+    "reviewer": "claude-code-ansible"
+  },
+  "summary": "T10 role implements ruflo CLI + 8-topic cohabitation matrix per §2.4 spec. Core architecture sound: FQCN compliant, idempotent templates, canonical matrix validation. Critical bug in validate_matrix.py return type unpacking (line 139). Variable scoping correct (ruflo_* prefix). Handlers properly notify on template changes. Molecule smoke tests cover file existence + validator exit codes.",
+  "dimensions": {
+    "correctness_vs_spec_2_4": {
+      "status": "PASS",
+      "notes": "All 8 topics (core, mcp, wasm, demo-client, docs, loop, protocol-qa, ops) with 7 fields each match §2.4 exactly. Matrix hardcoded in both defaults/main.yml and validate_matrix.py CANONICAL_MATRIX.",
+      "findings": []
+    },
+    "idempotency": {
+      "status": "PASS",
+      "notes": "Templates re-render via ansible.builtin.template (idempotent by default). Validator runs on every apply (changed_when: false) as intended. Handler notify pattern correct.",
+      "findings": []
+    },
+    "fqcn_compliance": {
+      "status": "PASS",
+      "notes": "All modules use FQCN: ansible.builtin.file, ansible.builtin.get_url, ansible.builtin.shell, ansible.builtin.command, ansible.builtin.template, ansible.builtin.copy, ansible.builtin.debug. No deprecated short names.",
+      "findings": []
+    },
+    "variable_scoping": {
+      "status": "PASS",
+      "notes": "Consistent ruflo_* prefix: ruflo_version, ruflo_topic_matrix, ruflo_global_defaults, ruflo_installer_download, ruflo_install_result, ruflo_version_check, ruflo_matrix_validation. No namespace collisions.",
+      "findings": []
+    },
+    "handler_design": {
+      "status": "PASS",
+      "notes": "Handler 'validate ruflo matrix' properly listens to notify calls. Executes validator on template changes. Handler runs validator again (redundant with task but safe pattern).",
+      "findings": []
+    },
+    "template_quality": {
+      "status": "PASS",
+      "notes": "global.yml.j2: clean, 3 fields from defaults. topic.yml.j2: all 7 fields per spec, clear comments. No YAML syntax errors. Comment warns 'DO NOT EDIT MANUALLY'.",
+      "findings": []
+    },
+    "molecule_smoke_tests": {
+      "status": "PASS",
+      "notes": "converge.yml: Python setup, mnemonic user creation, role include with ansible_user var. verify.yml: stat checks for global + 8 topics + validator script. Runs validator and checks exit code. Coverage adequate for smoke.",
+      "findings": []
+    },
+    "readme_documentation": {
+      "status": "PASS",
+      "notes": "Comprehensive: purpose, variables table, matrix structure, behavior (idempotency, installation, validation), files created, specs, acceptance criteria, verification steps. Anchors to §2.4 and user-spec AC25-AC28.",
+      "findings": []
+    },
+    "meta_dependencies": {
+      "status": "PASS",
+      "notes": "meta/main.yml declares dependencies: [] (none required). Correct galaxy tags (ruflo, substrate, fabric). Min Ansible 2.10. No implicit deps on other roles.",
+      "findings": []
+    },
+    "tags": {
+      "status": "FAIL",
+      "notes": "No tags defined in tasks/main.yml. Recommend: 'ruflo', 'install', 'config', 'validate' for selective task execution.",
+      "findings": [
+        {
+          "type": "missing_feature",
+          "task": "Add tags to tasks/main.yml for selective execution"
+        }
+      ]
+    },
+    "cross_role_coupling_mnemonic_tg_bridge_t09": {
+      "status": "PASS_WITH_WARNING",
+      "notes": "mnemonic-mcp role references ~/.fabric/ruflo/hooks.d/molyanov-mnemonic-hooks.yml. This assumes ruflo role has created ~/.fabric/ruflo/ directory structure. Direct file path coupling (not variable). No explicit dependency declared in meta. Potential for race condition if mnemonic-mcp runs before ruflo.",
+      "findings": [
+        {
+          "type": "missing_dependency",
+          "detail": "mnemonic-mcp role should declare explicit 'depends_on: [ruflo]' in meta/main.yml or accept hooks.d path as overridable variable",
+          "severity": "medium",
+          "impact": "T09 mnemonic-tg-bridge may fail if ruflo not applied first"
+        }
+      ]
+    }
+  },
+  "critical_issues": [
+    {
+      "issue": "validate_matrix.py return value unpacking mismatch",
+      "location": "files/validate_matrix.py line 139 + function return statements (lines 99, 132, 135)",
+      "severity": "CRITICAL",
+      "description": "Function validate_matrix() returns (int, str) on error at line 99 but only returns int on success (lines 132, 135). Line 139 unpacks: 'exit_code, message = validate_matrix()' expects tuple always. Success case returns single int, causing ValueError on unpacking.",
+      "impact": "Validator crashes on successful validation instead of exiting cleanly. Task 10 AC ('validate_matrix.py exits 0') fails.",
+      "fix": "Return (0, 'Validation OK: ...') on success instead of single int at line 134-135"
+    }
+  ],
+  "recommendations": [
+    {
+      "priority": "critical",
+      "action": "Fix validate_matrix.py return type consistency",
+      "effort": "5 min"
+    },
+    {
+      "priority": "high",
+      "action": "Add explicit dependency in mnemonic-mcp meta/main.yml: depends_on [ruflo] or document ordering requirement",
+      "effort": "10 min"
+    },
+    {
+      "priority": "medium",
+      "action": "Add tags to tasks/main.yml (install, config, validate) for selective role execution",
+      "effort": "10 min"
+    },
+    {
+      "priority": "low",
+      "action": "Consider making hooks.d path a configurable variable (ruflo_hooks_dir) to reduce coupling",
+      "effort": "15 min"
+    }
+  ],
+  "acceptance_criteria_status": {
+    "idempotent": "PASS",
+    "all_8_topics_present": "PASS",
+    "validator_exits_0": "FAIL_BLOCKED_BY_CRITICAL_BUG",
+    "ansible_lint_clean": "PASS_NOT_VERIFIED",
+    "ruflo_version_pinned": "PASS"
+  }
+}

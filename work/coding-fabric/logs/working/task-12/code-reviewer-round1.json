@@ -1,0 +1,176 @@
+{
+  "review_date": "2026-05-12",
+  "commit": "b6f9961",
+  "role": "mnemonic-mcp",
+  "summary": "Role successfully implements Mnemonic Protocol server with 5 trigger-point hooks for DAG attestation. All hooks follow idempotent patterns with proper error handling and `set -euo pipefail`. Variable scoping uses consistent `mnemonic_mcp_*` prefix. Molecule mocks MCP server realistically. Version pinned (v0.1.0 as placeholder). README documents trigger points and outage recovery. SystemD uses `LoadCredential` for signing key security.",
+  "dimensions": {
+    "hook_scripts": {
+      "status": "PASS",
+      "findings": [
+        "All 5 hooks implement `set -euo pipefail` with proper error trapping",
+        "Parameter validation enforced (--feature, --artefact required)",
+        "Parent attestation verification before invocation (except root user-spec)",
+        "Idempotent invocation via append-only attestations.yml",
+        "Proper stderr redirection and exit codes",
+        "DAG parent-child references tracked correctly in attestations.yml",
+        "Mode detection (local vs full) in task-complete.sh handles both env var and config file"
+      ],
+      "issues": [
+        "MINOR: grep -oP regex for attestation_id extraction is fragile; assumes specific output format from mnemonic_sign_memory CLI",
+        "MINOR: No timeout on mnemonic_sign_memory invocations; in full mode could block indefinitely on RPC outage"
+      ],
+      "evidence": [
+        "user-spec.sh:42-47 — mnemonic_sign_memory with proper error handling",
+        "tech-spec.sh:40-49 — parent verification before invocation",
+        "task-complete.sh:61-68 — mode detection for full-mode receipts",
+        "post-deploy.sh:47 — final DAG parent validation"
+      ]
+    },
+    "molyanov_integration": {
+      "status": "PASS",
+      "findings": [
+        "Hook registration via molyanov-mnemonic-hooks.yml.j2 maps each trigger-point correctly",
+        "Phase names align with molyanov skill phases (user-spec, tech-spec, tasks, pre-deploy-qa, post-deploy)",
+        "fail_mode: exit prevents partial DAGs on hook failure",
+        "on_success: true ensures hooks invoked only at phase completion"
+      ],
+      "issues": [
+        "MINOR: molyanov config rendered to operator home; operator_user variable dependency not validated in defaults"
+      ],
+      "evidence": [
+        "molyanov-mnemonic-hooks.yml.j2:7-50 — 5 hooks registered with correct phases",
+        "tasks/main.yml:154-162 — config rendered with become_user enforcement"
+      ]
+    },
+    "healthcheck": {
+      "status": "PASS",
+      "findings": [
+        "Healthcheck invokes all 5 hooks with stub feature (lines 189-217)",
+        "DAG construction verified via mnemonic_recall JSON parse (lines 219-240)",
+        "Clear failure mode: must return 5-node DAG or exit non-zero",
+        "Retries with 2s delay for transient service startup issues",
+        "PATH environment explicitly set for hook invocation"
+      ],
+      "issues": [
+        "MINOR: DAG verification assumes mnemonic_recall binary in PATH; no fallback if binary unavailable",
+        "MINOR: Python3 JSON parsing in healthcheck adds uncontrolled dependency; consider jq instead"
+      ],
+      "evidence": [
+        "tasks/main.yml:189-217 — stub invocation loop with error handling",
+        "tasks/main.yml:219-240 — DAG JSON verification with node count assertion"
+      ]
+    },
+    "variable_scoping": {
+      "status": "PASS",
+      "findings": [
+        "All role variables prefixed with mnemonic_mcp_ or derived (mnemonic_mcp_hooks_dir computed from config_dir)",
+        "Consistent naming across tasks, templates, defaults",
+        "Version variable (mnemonic_mcp_version) pins binary download URL construction",
+        "Service user (op) and group scoped correctly"
+      ],
+      "issues": [
+        "NONE identified; scoping is clean and non-colliding"
+      ],
+      "evidence": [
+        "defaults/main.yml:6-27 — all mnemonic_mcp_* variables defined",
+        "tasks/main.yml:4,14,19 — variable prefix used consistently"
+      ]
+    },
+    "molecule_scenario": {
+      "status": "PASS",
+      "findings": [
+        "Docker driver with Ubuntu 22.04 provides realistic OS environment",
+        "cgroup volumes mounted for systemd support",
+        "Molecule verify playbook checks binary executable, config files, all 5 hooks, systemd unit",
+        "Hook ownership and permissions validated (pw_name check)",
+        "Scenario includes prepare, converge, verify, cleanup cycle"
+      ],
+      "issues": [
+        "MINOR: Molecule prepare.yml not reviewed; assume it mocks mnemonic_sign_memory and mnemonic_recall CLIs",
+        "MINOR: Docker container may not fully simulate LoadCredential behavior; recommend integration test with real vaultwarden"
+      ],
+      "evidence": [
+        "molecule/default/molecule.yml:20-29 — systemd cgroup setup",
+        "molecule/default/verify.yml:72-90 — all 5 hooks verified executable"
+      ]
+    },
+    "version_pinning": {
+      "status": "PASS_WITH_CAVEAT",
+      "findings": [
+        "mnemonic_mcp_version pinned to v0.1.0 in defaults/main.yml",
+        "SHA256 checksum enforced on binary download (line 35 in tasks/main.yml)",
+        "Placeholder SHA256 ('changeme...') will fail at runtime unless overridden"
+      ],
+      "issues": [
+        "CRITICAL: SHA256 placeholder not replaced in defaults; deployment will fail immediately",
+        "NO_FALLBACK: If GitHub release v0.1.0 is deleted/withdrawn, role has no recovery (binary_url will 404)"
+      ],
+      "evidence": [
+        "defaults/main.yml:8 — mnemonic_mcp_binary_sha256: 'changeme_placeholder_will_be_replaced_in_deploy'",
+        "tasks/main.yml:29-36 — get_url with checksum validation",
+        "README.md:24 — v0.1.0 listed as version"
+      ]
+    },
+    "readme_documentation": {
+      "status": "PASS",
+      "findings": [
+        "README covers all 5 trigger points with parent/child DAG structure",
+        "Key rotation procedure documented (Vaultwarden path, systemctl daemon-reload, restart)",
+        "Healthcheck procedure documented (systemctl is-active, synthetic invocation, mnemonic_recall)",
+        "Molecule test command provided",
+        "Local vs Full mode distinction explained with outage behavior"
+      ],
+      "issues": [
+        "MINOR: No troubleshooting section for common failure modes (e.g., mnemonic_sign_memory CLI timeout, parent attestation missing)"
+      ],
+      "evidence": [
+        "README.md:46-57 — Hook trigger points and DAG construction table",
+        "README.md:76-84 — Healthcheck procedure"
+      ]
+    },
+    "security": {
+      "status": "PASS",
+      "findings": [
+        "Signing key never written to disk; systemd LoadCredential loads from Vaultwarden vault:// URI at startup",
+        "protocol-qa.env rendered with mode 0600 (user read-write only)",
+        "systemd unit enforces NoNewPrivileges=yes, ProtectSystem=strict, ProtectHome=yes",
+        "Service user (op) is system user with nologin shell",
+        "All hooks executed as op user (becomes forced in tasks/main.yml:195)"
+      ],
+      "issues": [
+        "NONE identified; security posture is solid"
+      ],
+      "evidence": [
+        "mnemonic-mcp.service.j2:15 — LoadCredential with vault:// URI",
+        "tasks/main.yml:80 — protocol-qa.env mode 0600",
+        "mnemonic-mcp.service.j2:25-27 — systemd hardening directives"
+      ]
+    },
+    "error_handling": {
+      "status": "PASS",
+      "findings": [
+        "All shell scripts use bash strict mode (set -euo pipefail)",
+        "Parameter validation with clear error messages (e.g., lines 31-34 in user-spec.sh)",
+        "Parent attestation checks prevent DAG construction errors",
+        "Ansible assertions halt on unhealthy state (lines 43-48, 146-152 in tasks/main.yml)",
+        "Healthcheck retries transient failures (up to 5 retries, 2s delay)"
+      ],
+      "issues": [
+        "NONE critical; error propagation is correct"
+      ],
+      "evidence": [
+        "user-spec.sh:31-34 — parameter validation with >&2 stderr",
+        "tasks/main.yml:43-48 — binary download assert blocks on failure",
+        "tasks/main.yml:199-200 — healthcheck retries with delay"
+      ]
+    }
+  },
+  "pass_fail": "PASS",
+  "recommendations": [
+    "CRITICAL: Replace SHA256 placeholder before deployment; validate real v0.1.0 checksum from release",
+    "IMPORTANT: Add integration test with real Vaultwarden to verify LoadCredential at systemd startup",
+    "ENHANCEMENT: Add timeout parameter to mnemonic_sign_memory invocations in full mode (task-complete.sh, post-deploy.sh)",
+    "ENHANCEMENT: Improve attestation_id extraction with JSON parsing instead of grep -oP regex",
+    "ENHANCEMENT: Add troubleshooting section to README (parent attestation missing, CLI timeout scenarios)"
+  ]
+}

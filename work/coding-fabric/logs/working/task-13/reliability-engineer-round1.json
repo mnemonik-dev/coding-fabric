@@ -1,0 +1,103 @@
+{
+  "reviewer": "reliability-engineer",
+  "round": 1,
+  "commit": "a0aee9f",
+  "files_reviewed": [
+    ".github/workflows/e2e-smoke.yml",
+    "scripts/e2e/smoke.sh",
+    "scripts/e2e/expected-dag.json"
+  ],
+  "spec_anchors": ["user-spec §8.3", "AC1-AC16", "tech-spec §6 AVP step 2", "tasks/13.md"],
+  "timestamp": "2026-05-12",
+  "checks": {
+    "1_tailscale_ttl_covers_run": {
+      "status": "PASS",
+      "severity": "INFO",
+      "finding": "The workflow uses tailscale/github-action@v3 with OAuth credentials (not a static auth-key). OAuth-generated ephemeral keys carry a 60-minute default TTL. The job timeout-minutes is 30, so the run plus the always-condition Tailscale logout step fits within the TTL window. No explicit ephemeral-key expiry override is set in the action invocation, which is acceptable since 30 min < 60 min.",
+      "recommendation": "Document the 60-min TTL assumption in a workflow comment so that if the job timeout is ever raised (e.g. to accommodate a longer DAG poll), the TTL adequacy is re-evaluated. Consider pinning ephemeral-key-ttl: 3600 explicitly in the tailscale/github-action block to make the assumption machine-readable."
+    },
+    "2_timeouts_job_dag_ssh": {
+      "status": "FAIL",
+      "severity": "HIGH",
+      "finding": "timeout-minutes: 30 is set at job level (line 49) and DAG_POLL_MAX_MINUTES: 20 is defined in env (line 43). However, the env var E2E_TIMEOUT_MINUTES: 30 (line 42) is declared but never consumed by any step. Critically, the 'Copy smoke.sh to VM' (scp, line 77) and 'Run smoke test on VM' (tailscale ssh, line 90) steps have no per-step timeout-minutes guards. A hung SSH connection or an unresponsive VM will absorb the entire 30-minute job budget, leaving zero time for DAG polling and producing a timeout with no diagnostic output from the VM. The 5-minute slack for SSH/scp operations required by the spec is absent.",
+      "recommendation": "Add timeout-minutes: 5 to both 'Copy smoke.sh to VM' and 'Validate Tailscale connectivity' steps. Add timeout-minutes: 10 to 'Run smoke test on VM' (smoke.sh itself has an internal 60s loop). Remove or wire up the unused E2E_TIMEOUT_MINUTES env var. The job-level 30-min cap is not a substitute for per-step bounds because a single hung step can block all subsequent steps including the diagnostic collection."
+    },
+    "3_concurrency_group": {
+      "status": "PASS",
+      "severity": "INFO",
+      "finding": "concurrency.group is set to 'e2e-smoke-${{ inputs.feature_name }}' (line 38-39) and cancel-in-progress is false. This serializes multiple runs triggered for the same feature name, preventing parallel duplicate smoke runs that could race on the same Mnemonic MCP state. cancel-in-progress: false means a second run queues (does not cancel the first), which is the correct behavior for a post-deploy validation.",
+      "recommendation": "None required. The queue-not-cancel semantics are correct for a correctness-gating workflow. Consider documenting why cancel-in-progress is false in a comment to prevent future accidental flip."
+    },
+    "4_failure_path_ops_alert": {
+      "status": "FAIL",
+      "severity": "HIGH",
+      "finding": "The 'Report failure to ops' step (line 194) runs on failure() and collects 50 lines of diagnostic via journalctl/tail from the VM (lines 203-204). However, the actual Telegram POST is commented out — the step only prints 'Would post to ops topic: $PAYLOAD' (line 222). In a real failure event the ops team receives no notification. Additionally, the TELEGRAM_OPS_BOT_TOKEN is declared as an optional secret in workflow_call (line 19-20) but is entirely absent from the workflow_dispatch inputs block — manual dispatch failures produce no alert regardless of whether the secret is configured. The sanitization patterns (sed on sk-/api_/ANTHROPIC_) are minimal and miss base58 keys and JWK fragments required by AC40.",
+      "recommendation": "Implement the Telegram HTTP call: 'curl -s -X POST https://api.telegram.org/bot${TELEGRAM_OPS_BOT_TOKEN}/sendMessage -H Content-Type:application/json -d \"${PAYLOAD}\"'. Assert .ok in the curl response. Add TELEGRAM_OPS_BOT_TOKEN to workflow_dispatch secrets or move the notification to a reusable ops-notify composite action. Extend sanitization regex to cover base58 keys (43-44 char base58 pattern) and JWK fragments per AC40."
+    },
+    "5_success_path_comment_and_attestation": {
+      "status": "FAIL",
+      "severity": "MEDIUM",
+      "finding": "The 'Comment on commit (success)' step (line 179) correctly uses actions/github-script@v7 and calls createCommitComment — the success-path comment is implemented. However, no mnemonic_sign_memory call is present anywhere in the workflow or in smoke.sh. tasks/13.md 'Implementation hints' explicitly states: 'Wrap the entire smoke flow in mnemonic_sign_memory so the smoke run itself is attested.' tech-spec §2.6 requires 5-node DAG attestation per feature. The smoke run itself is an attestation trigger point (post-deploy verification, node 5) and must be signed. This is a spec compliance gap.",
+      "recommendation": "Add a 'Sign smoke run via Mnemonic MCP' step after 'Verify DAG structure', running on success(): 'tailscale ssh op@{{ inputs.vm_hostname }} \"mnemonic_sign_memory --feature={{ inputs.feature_name }} --phase=e2e-smoke-pass --type=agent.state\"'. Capture the attestation_id in GITHUB_OUTPUT and include it in the commit comment body for traceability."
+    },
+    "6_smoke_sh_deployment_contract": {
+      "status": "FAIL",
+      "severity": "MEDIUM",
+      "finding": "The workflow copies scripts/e2e/smoke.sh per-run via scp (line 77). tasks/13.md Details section explicitly states: 'scripts/e2e/smoke.sh (deployed to VM by fabric-services role)'. The fabric-services role is task T10 in tech-spec §2.3 role 10. The per-run scp approach contradicts the declared cross-role contract and creates a divergence risk: the version scp'd at CI time may differ from the version deployed by Ansible, the CI needs direct write access to /tmp on the VM for every run, and smoke.sh will not be present for manual runs on the VM unless CI has been invoked. The choice is not documented in decisions.md.",
+      "recommendation": "Either: (a) align with the spec — remove the scp step and invoke the pre-deployed /etc/fabric/e2e/smoke.sh (or ~/.fabric/e2e/smoke.sh) via tailscale ssh, relying on the fabric-services Ansible role to keep it current; or (b) document the deliberate deviation in decisions.md with rationale (e.g. 'per-run copy ensures CI-tested version runs, not a potentially stale deployed version'), update tasks/13.md Details accordingly, and guard the scp step with a 5-min timeout."
+    },
+    "7_expected_dag_schema_validation": {
+      "status": "FAIL",
+      "severity": "MEDIUM",
+      "finding": "The 'Verify DAG structure' step (line 142) checks only 'length == 5 and all(.id != null and .timestamp != null)'. It does not validate: parent chain integrity (each node except root must reference the correct parent ID), node types (user-spec-node=memory, tech-spec-node=memory, task-node=receipt, pre-deploy-node=receipt, deploy-node=agent-state), phases, or feature name matching inputs.feature_name. The expected-dag.json file at scripts/e2e/expected-dag.json is never referenced in the workflow — it exists as documentation only. The DAG_OUTPUT is also written to GITHUB_OUTPUT as 'dag_json=$DAG_OUTPUT' on line 129 without length-bounding; large DAG outputs could exceed the 1 MB GITHUB_OUTPUT limit.",
+      "recommendation": "Extend the jq filter to assert: (1) parent chain — each node's parent matches the id of the preceding node; (2) node types by phase; (3) all .feature fields equal inputs.feature_name. Copy expected-dag.json to the runner and use 'jq --slurpfile expected /tmp/expected-dag.json' for structural comparison. Bound dag_json output: 'DAG_OUTPUT=${DAG_OUTPUT:0:65535}' before writing to GITHUB_OUTPUT."
+    },
+    "8_cleanup_on_failure": {
+      "status": "PASS",
+      "severity": "INFO",
+      "finding": "The 'Tailscale logout' step (line 224) has 'if: always()' and uses 'tailscale logout || true'. The '|| true' ensures the step exits 0 even if logout fails (e.g. tailscaled already stopped), preventing a cleanup failure from obscuring the original failure exit code. This correctly satisfies the always-run cleanup requirement.",
+      "recommendation": "None required. Consider logging the tailscale status before logout to confirm the node was actually removed from the tailnet: 'tailscale status --json | jq .Self.ID' before the logout call, useful for auditing ephemeral node lifecycle."
+    },
+    "9_secret_references": {
+      "status": "PASS",
+      "severity": "INFO",
+      "finding": "All three secrets are referenced exclusively via ${{ secrets.* }} expressions: TAILSCALE_OAUTH_CLIENT_ID (line 59), TAILSCALE_OAUTH_SECRET (line 60), TELEGRAM_OPS_BOT_TOKEN (line 197). No inline secret values are present in the workflow YAML or in smoke.sh. TELEGRAM_BOT_TOKEN in smoke.sh is passed from the VM environment, not from CI — this is correct since smoke.sh runs on the VM where the bot token lives in the systemd environment.",
+      "recommendation": "None required on secret references. Note that smoke.sh exits with exit 1 if TELEGRAM_BOT_TOKEN is empty (line 34-36), which is the correct defensive behavior."
+    },
+    "10_permissions": {
+      "status": "FAIL",
+      "severity": "HIGH",
+      "finding": "The workflow declares 'permissions: contents: read, pull-requests: write' (lines 33-35). The 'Comment on commit (success)' step calls github.rest.repos.createCommitComment (line 188). Per GitHub Actions documentation, createCommitComment requires the 'contents: write' permission — 'contents: read' is insufficient. This will cause a 403 HTTP error from the GitHub API at runtime, silently failing the commit comment step while the workflow overall still exits 0 (since the step does not set continue-on-error and the if: success() condition means a post-success failure will still mark the job as failed). The permission mismatch means success cases will fail on the comment step.",
+      "recommendation": "Change 'contents: read' to 'contents: write' in the permissions block. Alternatively, use pull-requests: write and post the result as a PR comment (if the triggering SHA has an associated PR) — this avoids needing contents: write. If the intent is minimal permissions, use 'gh pr comment' via the GitHub CLI which uses the GITHUB_TOKEN with PR-scoped permissions when a PR is associated with the commit."
+    }
+  },
+  "blockers": [
+    {
+      "check": 10,
+      "issue": "contents: read is insufficient for createCommitComment — requires contents: write; runtime 403 will break success-path reporting"
+    },
+    {
+      "check": 4,
+      "issue": "Ops alert Telegram POST is stubbed (echo only) — no actual notification fires on failure"
+    },
+    {
+      "check": 2,
+      "issue": "No per-step timeout on scp and tailscale ssh steps — a hung connection absorbs the entire 30-min job budget"
+    }
+  ],
+  "warnings": [
+    {
+      "check": 5,
+      "issue": "mnemonic_sign_memory attestation call absent — smoke run is not signed per task spec and tech-spec §2.6"
+    },
+    {
+      "check": 6,
+      "issue": "smoke.sh copied per-run via scp, contradicting fabric-services cross-role deployment contract in tasks/13.md; deviation undocumented"
+    },
+    {
+      "check": 7,
+      "issue": "DAG validation checks only length==5 and non-null fields; parent chain, node types, and expected-dag.json reference not used"
+    }
+  ],
+  "summary": "Three blockers: contents:read permission will 403 on createCommitComment at runtime; failure-path Telegram alert is stub-only (no HTTP call); SSH/scp steps have no per-step timeout allowing hung connections to exhaust the job budget. Three warnings: mnemonic_sign_memory attestation missing from smoke flow; smoke.sh deployment method contradicts fabric-services cross-role contract without documentation; DAG parent-chain validation is structurally incomplete. Tailscale TTL, concurrency group, secret hygiene, and always-run cleanup are solid."
+}

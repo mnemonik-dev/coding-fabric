@@ -1443,3 +1443,24 @@ Total: 12 files, 499 lines
 - No modification to operator's `.bashrc` or `.zshrc` needed; hook is invoked by ruflo, not shell startup
 
 ---
+
+**Round 2 — fix:** commit `35d65bc`
+
+Critical findings addressed (security-auditor + code-reviewer):
+1. **Hook argument validation** (CWE-22/78/1286): All 5 hooks now validate FEATURE (regex ^[a-z][a-z0-9-]{1,40}$) and ARTEFACT (file exists, under repo root, no path traversal via realpath --relative-to). Shared _hook-validate.sh helper prevents code duplication. Exit code 2 on invalid input.
+2. **SHA256 placeholder enforcement** (CWE-345/494): Added assertion that mnemonic_mcp_binary_sha256 matches regex ^[0-9a-f]{64}$ (64-char hex, not 32-char MD5). Molecule converge now uses real 64-char SHA256 (e3b0c44...) instead of MD5 placeholder.
+3. **Attestations.yml file mode + atomic write** (CWE-732/59): Created with mode 0640 (op:op), directory /var/lib/mnemonic-mcp/features with mode 0750. All hooks use flock -x for atomic appends. YAML output via `python3 -c yaml.safe_dump()` eliminates heredoc injection risk.
+4. **systemd unit hardening** (CWE-250/732): Added CapabilityBoundingSet=, AmbientCapabilities=, RestrictAddressFamilies=AF_UNIX AF_INET, RestrictNamespaces=yes, LockPersonality=yes, ProtectKernelTunables/Modules/Logs/Clock/Hostname=yes, ProtectProc=invisible, SystemCallFilter=@system-service, MemoryDenyWriteExecute=yes, UMask=0077, PrivateDevices=yes, plus ReadWritePaths for mcp_install_dir + features dir.
+5. **Healthcheck DAG pollution** (CWE-1059): Removed stub-feature hook invocation (which emitted fake attestations signed with production key). Replaced with mnemonic-mcp --selftest binary check (no DAG pollution, cleaner signal).
+
+Supporting changes:
+- Config.yml mode 0640 (operator-readable only, was 0644 world-readable).
+- Attestation_id extraction uses strict ^[a-f0-9-]{36}$ UUID validation on stdout only (stderr → /var/log/mnemonic-mcp/hook-sign-err.log).
+- Mode detection in task-complete.sh reads config file, not MNEMONIC_MODE env var (prevents spoofing).
+- Work dirs anchored to /var/lib/mnemonic-mcp/features (absolute path, not cwd-dependent relative path).
+- Vault URI documented as reference (non-secret).
+
+All 5 hooks now share common input validation (CWE-20 defense-in-depth). DAG integrity (AC11-AC16) now protected by: input validation, YAML-safe output, file-locking, strict attestation_id parsing, and mode config-source authority.
+
+---
+

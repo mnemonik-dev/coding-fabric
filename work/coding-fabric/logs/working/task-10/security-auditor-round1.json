@@ -1,0 +1,124 @@
+{
+  "task": "10",
+  "reviewer": "security-auditor",
+  "round": 1,
+  "commit_reviewed": "3274eb4",
+  "overall_verdict": "changes_required",
+  "summary": {
+    "totalFindings": 9,
+    "critical": 1,
+    "major": 4,
+    "minor": 4
+  },
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "A08 Software and Data Integrity / supply-chain",
+      "title": "Unverified third-party installer executed without checksum/signature",
+      "description": "tasks/main.yml lines 13-25 download https://install.ashwinchat.ai/ruflo via ansible.builtin.get_url with no `checksum:` parameter, then immediately bash-execute it. Trust relies solely on TLS to a third-party domain plus a self-reported `ruflo --version` string. If the upstream host is compromised (DNS hijack, CDN poisoning, domain expiry takeover, or a malicious release), the entire VM is compromised on the next `apply`. The `--version` post-check (line 34) only validates output text the installed binary chooses to print, so a backdoored binary can trivially fake the version match.",
+      "location": "infrastructure/ansible/roles/ruflo/tasks/main.yml:13-35",
+      "impact": "Full RCE on every target host on the next provision; pivots to Vaultwarden secrets (D24) and PK material referenced elsewhere in the stack. Affects every wave-3 deploy and every reprovision thereafter.",
+      "recommendation": "Either (a) pin a vendored installer copy in files/ and ship it from the role, or (b) add `checksum: sha256:<hex>` to the get_url task with a hash tied to ruflo_version. Additionally, verify the installed binary with a known-good hash (`stat` + `sha256sum` against a value pinned in defaults/main.yml) rather than relying on `ruflo --version` self-report. Consider GPG signature verification if upstream publishes signatures.",
+      "cwe": "CWE-494"
+    },
+    {
+      "severity": "major",
+      "category": "A04 Insecure Design / control bypass",
+      "title": "validate_matrix.py has a runtime bug that makes the security control non-functional",
+      "description": "files/validate_matrix.py defines `validate_matrix()` returning a bare `int` on lines 132 and 135 (the success and error-aggregate paths), but only a `(int, str)` tuple on line 99 (config-dir-missing branch). Line 139 unconditionally unpacks: `exit_code, message = validate_matrix()`. Therefore on any normal run (config dir exists) the script raises `TypeError: cannot unpack non-iterable int object` before exiting, producing a non-zero exit purely from the bug — not from real validation. The task in tasks/main.yml:75 fails the role on rc!=0, so either (a) the role never converges in any environment where the matrix is correct (operationally broken), or (b) operators add `ignore_errors`/`failed_when: false` to work around the breakage, which kills the defense-in-depth control AC25–AC28 relies on. Either way the validator is effectively bypassed.",
+      "location": "infrastructure/ansible/roles/ruflo/files/validate_matrix.py:94-142",
+      "impact": "The matrix-correctness invariant (AC25–AC28 + tech-spec D17) is unenforced at runtime. A future drift — accidental edit, partial template render, attacker tampering — will not be detected by this script. The control exists on paper only.",
+      "recommendation": "Make `validate_matrix()` return a consistent type. Simplest fix: always return `int` and let the caller `sys.exit(validate_matrix())`. Add a molecule test that asserts `python validate_matrix.py; echo $?` is 0 on a healthy converge — this would have caught the bug. Also add a negative test that mutates one topic file and asserts the validator exits non-zero.",
+      "cwe": "CWE-754"
+    },
+    {
+      "severity": "major",
+      "category": "A04 Insecure Design / trust boundary",
+      "title": "Validator script lives in user-writable directory and can be replaced",
+      "description": "validate_matrix.py is copied to `~/.fabric/ruflo/validate_matrix.py` (mode 0750, owned by ansible_user). The same OS user that owns the ruflo runtime can rewrite the validator between Ansible runs to a no-op (`import sys; sys.exit(0)`). Because the role re-copies the script every run via `ansible.builtin.copy`, this is recovered on next apply — but in the window between applies (and especially in T18 where the validator is reused as a watchdog check), any process running as `ansible_user` can disable the check. There is no signature or hash pin of the script in the role.",
+      "location": "infrastructure/ansible/roles/ruflo/tasks/main.yml:60-66 and handlers/main.yml:1-10",
+      "impact": "An agent process — or a compromised topic engine running under the same UID — can locally suppress the matrix-correctness alarm. Defeats AC25–AC28 monitoring once T18 wires the validator into the watchdog.",
+      "recommendation": "Install the validator to `/usr/local/bin/ruflo-validate-matrix` owned by root, mode 0755; have ansible_user execute it via sudo with a NOPASSWD entry restricted to this exact command. Alternatively, compute a sha256 of the validator on copy and have the watchdog re-verify the hash before invoking it.",
+      "cwe": "CWE-732"
+    },
+    {
+      "severity": "major",
+      "category": "A09 Security Logging and Monitoring",
+      "title": "no_log: true on installer hides both secrets and tampering evidence",
+      "description": "tasks/main.yml line 26 sets `no_log: true` on the installer shell task. The justification (installer may emit secrets) is reasonable, but combined with `changed_when: 'successfully' in ruflo_install_result.stdout | lower` (line 28) the controller has no record of installer output even on failure — including failure messages indicating MITM, version mismatch, or hostile output. There is no separate audit trail (file-based log) of the installer run.",
+      "location": "infrastructure/ansible/roles/ruflo/tasks/main.yml:20-28",
+      "impact": "Forensic blind spot. A supply-chain incident (finding 1) would leave no controller-side evidence beyond an opaque rc=0/rc!=0.",
+      "recommendation": "Either drop no_log (the installer is unlikely to print secrets — verify by inspection) or, if no_log is retained, redirect installer stdout/stderr to a root-owned 0600 log file on the target host (e.g. `/var/log/ruflo-install-{{ ansible_date_time.iso8601 }}.log`) so post-hoc forensic review is possible. Ensure the log path is excluded from the sanitizer's general scrub list (D26) since it is meant to be inspected.",
+      "cwe": "CWE-778"
+    },
+    {
+      "severity": "major",
+      "category": "A05 Security Misconfiguration",
+      "title": "Installer artifact left in world-readable /tmp with predictable path",
+      "description": "tasks/main.yml downloads to `/tmp/ruflo-installer.sh` with mode 0755 (line 17) and never deletes it. Path is predictable and globally readable; any local unprivileged user can copy the installer (revealing its content and any embedded URLs/keys) or, if they win a race before mode-set, tamper with it. The bash execution (line 25) then runs whatever is on disk.",
+      "location": "infrastructure/ansible/roles/ruflo/tasks/main.yml:13-25",
+      "impact": "Local-user information disclosure of installer content; small but real TOCTOU window between download and execution if any other process can write to /tmp/ruflo-installer.sh.",
+      "recommendation": "Use `ansible.builtin.tempfile` to create a 0700 directory under root's home, download there with mode 0700, execute, then `ansible.builtin.file: state: absent` to clean up. Or pipe-execute the installer in-memory if upstream supports `curl | bash`-style invocation through a fetched-and-verified blob — but only after adding the checksum from finding 1.",
+      "cwe": "CWE-377"
+    },
+    {
+      "severity": "minor",
+      "category": "best-practice",
+      "title": "Templates don't validate rendered YAML",
+      "description": "Both global.yml.j2 and topics/topic.yml.j2 are written without `validate:` parameter on the template module. A future template typo could write syntactically invalid YAML that the validator only catches after the fact (and only if finding 2 is fixed).",
+      "location": "infrastructure/ansible/roles/ruflo/tasks/main.yml:41-58",
+      "impact": "Defense-in-depth gap; not exploitable today.",
+      "recommendation": "Add `validate: 'python3 -c \"import yaml,sys; yaml.safe_load(open(sys.argv[1]))\" %s'` to both template tasks.",
+      "cwe": "CWE-20"
+    },
+    {
+      "severity": "minor",
+      "category": "best-practice",
+      "title": "Validator duplicates between handler and explicit task",
+      "description": "handlers/main.yml runs validate_matrix.py; tasks/main.yml lines 68-75 also run it explicitly afterwards. Functionally redundant. More importantly, the handler's failed_when would normally surface failures, but Ansible defers handler execution until the play ends — so failures in renders that should block further tasks won't, since validation runs last.",
+      "location": "infrastructure/ansible/roles/ruflo/handlers/main.yml:1-10 vs tasks/main.yml:68-75",
+      "impact": "Minor design smell; the explicit task post-render does provide synchronous validation, so behavior is acceptable.",
+      "recommendation": "Drop the handler — the explicit post-render validation task is sufficient and synchronous.",
+      "cwe": "N/A"
+    },
+    {
+      "severity": "minor",
+      "category": "best-practice",
+      "title": "min_ansible_version 2.10 below current LTS",
+      "description": "meta/main.yml declares min_ansible_version 2.10. ansible-core 2.10 reached EOL years ago. While modules used here are stable across versions, declaring a supported floor below LTS implies the role is OK to run on unmaintained controllers.",
+      "location": "infrastructure/ansible/roles/ruflo/meta/main.yml:7",
+      "impact": "Operators could deploy from an EOL controller missing recent security fixes.",
+      "recommendation": "Bump to ansible-core 2.15 or 2.16 (current LTS as of review date) to match the CI ansible-lint baseline.",
+      "cwe": "N/A"
+    },
+    {
+      "severity": "minor",
+      "category": "best-practice",
+      "title": "Validator uses `python` rather than `python3`",
+      "description": "tasks/main.yml:70 and handlers/main.yml:4 invoke `python ~/.fabric/ruflo/validate_matrix.py`. On Ubuntu 24.04 (per molecule platform image) `python` is not installed by default; only `python3` is. The molecule converge installs python3 explicitly, but the role itself does not. The validator's shebang is `#!/usr/bin/env python3` — call it directly rather than relying on an interpreter alias.",
+      "location": "infrastructure/ansible/roles/ruflo/tasks/main.yml:70 and handlers/main.yml:4",
+      "impact": "On a real target without the `python-is-python3` package, the validation step fails — and because of finding 2 the role already cannot converge on a healthy system; this compounds the operability problem and pressures operators to disable the check.",
+      "recommendation": "Either call `python3` explicitly, or execute the script directly (`cmd: '~/.fabric/ruflo/validate_matrix.py'` — it already has the shebang and 0750 mode).",
+      "cwe": "N/A"
+    }
+  ],
+  "positive_notes": [
+    "Topic matrix in defaults/main.yml and CANONICAL_MATRIX in validate_matrix.py both match tech-spec §2.4 exactly across all 8 topics and all 7 fields.",
+    "MEMORY_NAMESPACE isolation per topic is correctly enforced: every topic gets a unique mnemonic-<topic> namespace; no namespace collision across topics.",
+    "aidefence-off on core and mcp is justified per user-spec AC27 (false positives on hex keys); not a finding.",
+    "rag_memory-off in protocol-qa is correctly enforced per AC26; protocol-qa is the only topic with that setting and the only one in mnemonic_mode=full, matching §2.4.",
+    "No hardcoded secrets, tokens, or credentials in any file under roles/ruflo/.",
+    "FQCN used consistently for every Ansible module (ansible.builtin.*); no bare module names.",
+    "Directory modes 0750 and file modes 0640 / 0750 for the validator are reasonable (group-readable but not world).",
+    "Idempotency contract is sound in principle: templates re-render from a single matrix variable; on-disk state is checked against canonical at the end.",
+    "no_log: true is correctly applied on the installer shell step (even though finding 4 critiques the trade-off, the principle is right).",
+    "Per-topic config files do not contain secrets — only toggles and namespace identifiers, so the 0640 mode is appropriate."
+  ],
+  "scope_observations": [
+    "Reviewed: tasks/main.yml, defaults/main.yml, files/validate_matrix.py, templates/global.yml.j2, templates/topics/topic.yml.j2, handlers/main.yml, meta/main.yml, molecule/default/{converge,verify,molecule}.yml, README.md.",
+    "Cross-referenced: work/coding-fabric/tech-spec.md §2.3, §2.4, D17/D18; work/coding-fabric/user-spec.md AC25-AC28; work/coding-fabric/tasks/10.md acceptance criteria.",
+    "Findings 1, 4, 5 are blocking (changes_required). Findings 2 (validator unpacking bug) and 1 (no checksum) are the highest-leverage fixes — both are short and would close the most exploitable gaps.",
+    "Did not execute molecule or ansible-lint (read-only review). The reported ansible-lint clean status was not independently verified — recommend the next round confirm.",
+    "AC25–AC28 are anchored correctly on paper (matrix values match) but the runtime enforcement of those invariants is broken by finding 2; fixing the validator is required before AC25–AC28 can be considered met."
+  ]
+}
