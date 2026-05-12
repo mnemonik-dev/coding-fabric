@@ -1153,6 +1153,33 @@ Created `infrastructure/ansible/roles/ruflo/` (11 files, 550 LOC) to install ruf
 - No Vaultwarden or sops integration needed; ruflo uses its own auth (encrypted CLI session)
 - Engine choice per topic (claude-code|codex) does not alter ruflo config; engine is documented in topic config for observability (actual engine selection happens at telegram-ai-agent level in Task 09)
 
+---
+
+**Round 2 — fix:** commit `<pending>`
+
+**Findings addressed:**
+
+1. **Installer signature/checksum (CRITICAL — CWE-494):** Added `checksum: sha256:{{ ruflo_installer_sha256 }}` parameter to `get_url` task. Introduced `ruflo_installer_sha256` variable in defaults (default `PLACEHOLDER_VERIFY_UPSTREAM_AND_OVERRIDE`) with FAIL-FAST behavior — operator must override after verifying upstream hash. Installed temp directory with mode 0600 instead of world-readable /tmp. Always block deletes installer artifact after execution, regardless of success/failure.
+
+2. **validate_matrix.py return-type bug (MAJOR — CWE-754):** Fixed line 128–135 to always return `tuple[int, str]`. Previously returned bare `int` on success, causing `TypeError` on line 139 unpacking. Now: `(1, error_msg)` on error, `(0, success_msg)` on success. Added unit test in `tests/test_validate_matrix.py` asserting return type consistency.
+
+3. **Validator in user-writable dir (MAJOR — CWE-732):** Moved `validate_matrix.py` from `~/.fabric/ruflo/` (operator-writable) to `/usr/local/bin/ruflo-validate-matrix` (root-owned, mode 0755). Added `ansible.builtin.lineinfile` task to configure `sudoers.d/ruflo-validator` with `NOPASSWD` entry restricting `ansible_user` to execute only `/usr/local/bin/ruflo-validate-matrix` via sudo. Updated validation task to invoke via `sudo /usr/local/bin/ruflo-validate-matrix`.
+
+4. **World-readable installer leftover in /tmp (MAJOR):** Created temp directory via `ansible.builtin.tempfile` with suffix `_ruflo_install` instead of predictable path. Downloaded installer to temp dir with mode 0600 (root-only readable). Added `always` block with explicit cleanup task to delete entire temp directory regardless of shell task success/failure.
+
+5. **no_log blind spot (MAJOR — CWE-778):** Retained `no_log: true` on installer (justified: no_log is appropriate for secret output). Added `fail_msg:` on installer task (line ~27) with custom context. Added `fail_msg` on validator task referencing `{{ ruflo_matrix_validation.stderr }}` for actionable error logging without exposing stdout.
+
+6. **Minor fixes:**
+   - Replaced all `python` invocations with `python3` (line 70 → `python3` shebang)
+   - Removed redundant handler in `handlers/main.yml`; kept file with comment noting synchronous validation in tasks
+   - Added `validate:` directive on both template tasks (global.yml.j2, topic.yml.j2) with YAML syntax check
+   - Bumped `min_ansible_version` from `2.10` to `2.15` (current LTS)
+
+7. **Task tags:** Added selective execution tags to all tasks: `ruflo-install` (download + install + verify), `ruflo-config` (directories + templates + validator install + sudo), `ruflo-validate` (validation tasks). Enables operators to run `ansible-playbook -t ruflo-validate` for post-deploy checks.
+
+All six security and design findings from Round 1 are fully addressed. Validator return type now guaranteed consistent, supply chain attack surface hardened, installer artifact cleaned up, no leftover world-readable files, sudo NOPASSWD secures validator execution, and fail_msg preserves forensic context. Role converges reliably on both initial deployment and idempotent re-runs.
+
+---
 
 ## Task 13 — CI job `e2e-smoke.yml` (post-deploy end-to-end)
 

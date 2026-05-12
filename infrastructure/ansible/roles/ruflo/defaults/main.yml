@@ -3,6 +3,11 @@
 # Used to render all 8 per-topic config files and validate on-disk state
 ruflo_version: "0.20.0"  # Pinned upstream version
 
+# Installer checksum (SHA256) for supply-chain security verification
+# Default FAIL-FAST: operator MUST override after verifying upstream hash
+# To get hash: curl -sL https://install.ashwinchat.ai/ruflo | sha256sum
+ruflo_installer_sha256: "PLACEHOLDER_VERIFY_UPSTREAM_AND_OVERRIDE"
+
 ruflo_topic_matrix:
   - topic: core
     engine: claude-code

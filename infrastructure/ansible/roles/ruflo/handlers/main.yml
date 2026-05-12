@@ -1,10 +1,3 @@
 ---
-- name: "Validate ruflo matrix"
-  ansible.builtin.command:
-    cmd: "python ~/.fabric/ruflo/validate_matrix.py"
-  become: true
-  become_user: "{{ ansible_user }}"
-  register: ruflo_matrix_validation_handler
-  changed_when: false
-  failed_when: ruflo_matrix_validation_handler.rc != 0
-  listen: "validate ruflo matrix"
+# All validation is now synchronous in tasks/main.yml
+# This file retained for future handler patterns.

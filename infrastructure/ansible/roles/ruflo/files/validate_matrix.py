@@ -126,17 +126,17 @@ def validate_matrix():
                 )
 
     if errors:
-        print("Validation FAILED:", file=sys.stderr)
-        for error in errors:
-            print(f"  {error}", file=sys.stderr)
-        return 1
+        message = "Validation FAILED: " + "; ".join(errors)
+        return 1, message
 
-    print(f"Validation OK: {len(CANONICAL_MATRIX)} topics")
-    return 0
+    message = f"Validation OK: {len(CANONICAL_MATRIX)} topics"
+    return 0, message
 
 
 if __name__ == "__main__":
     exit_code, message = validate_matrix()
     if exit_code != 0:
         print(message, file=sys.stderr)
+    else:
+        print(message)
     sys.exit(exit_code)

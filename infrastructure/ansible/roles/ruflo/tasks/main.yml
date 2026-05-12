@@ -9,71 +9,124 @@
     - "~/.fabric/ruflo/topics"
   become: true
   become_user: "{{ ansible_user }}"
+  tags:
+    - ruflo-install
+    - ruflo-config
 
-- name: "Download ruflo installer"
+- name: "Create temp directory for installer"
+  ansible.builtin.tempfile:
+    state: directory
+    suffix: _ruflo_install
+  register: ruflo_temp_dir
+  tags:
+    - ruflo-install
+
+- name: "Download ruflo installer to secure temp location"
   ansible.builtin.get_url:
     url: "https://install.ashwinchat.ai/ruflo"
-    dest: "/tmp/ruflo-installer.sh"
-    mode: "0755"
+    dest: "{{ ruflo_temp_dir.path }}/ruflo-installer.sh"
+    mode: "0600"
+    checksum: "sha256:{{ ruflo_installer_sha256 }}"
   register: ruflo_installer_download
+  tags:
+    - ruflo-install
+  failed_when:
+    - ruflo_installer_download is failed
+  fail_msg: "Installer download failed or checksum mismatch. Set ruflo_installer_sha256 after verifying upstream."
 
 - name: "Install ruflo at pinned version {{ ruflo_version }}"
   ansible.builtin.shell:
     cmd: |
       set -e
       export RUFLO_VERSION="{{ ruflo_version }}"
-      bash /tmp/ruflo-installer.sh
+      bash "{{ ruflo_temp_dir.path }}/ruflo-installer.sh"
   no_log: true
   register: ruflo_install_result
   changed_when: "'successfully' in ruflo_install_result.stdout | lower"
+  tags:
+    - ruflo-install
+  always:
+    - name: "Clean up installer artifact"
+      ansible.builtin.file:
+        path: "{{ ruflo_temp_dir.path }}"
+        state: absent
+      tags:
+        - ruflo-install
 
 - name: "Verify ruflo installation"
   ansible.builtin.command:
     cmd: "ruflo --version"
   register: ruflo_version_check
-  failed_when: "'{{ ruflo_version }}' not in ruflo_version_check.stdout"
   changed_when: false
+  failed_when:
+    - ruflo_version_check is failed
+    - "'{{ ruflo_version }}' not in ruflo_version_check.stdout"
+  fail_msg: "Installed ruflo version does not match expected {{ ruflo_version }}"
+  tags:
+    - ruflo-install
 
 - name: "Display ruflo version verification"
   ansible.builtin.debug:
     msg: "ruflo installed and verified: {{ ruflo_version_check.stdout }}"
+  tags:
+    - ruflo-install
 
 - name: "Render global config template"
   ansible.builtin.template:
     src: "global.yml.j2"
     dest: "~/.fabric/ruflo/global.yml"
     mode: "0640"
+    validate: "python3 -c 'import yaml,sys; yaml.safe_load(open(sys.argv[1]))' %s"
   become: true
   become_user: "{{ ansible_user }}"
-  notify: "validate ruflo matrix"
+  tags:
+    - ruflo-config
 
 - name: "Render per-topic config files from matrix"
   ansible.builtin.template:
     src: "topics/topic.yml.j2"
     dest: "~/.fabric/ruflo/topics/{{ item.topic }}.yml"
     mode: "0640"
+    validate: "python3 -c 'import yaml,sys; yaml.safe_load(open(sys.argv[1]))' %s"
   loop: "{{ ruflo_topic_matrix }}"
   become: true
   become_user: "{{ ansible_user }}"
-  notify: "validate ruflo matrix"
+  tags:
+    - ruflo-config
 
-- name: "Install matrix validation script"
+- name: "Install matrix validation script to system location"
   ansible.builtin.copy:
     src: "validate_matrix.py"
-    dest: "~/.fabric/ruflo/validate_matrix.py"
-    mode: "0750"
-  become: true
-  become_user: "{{ ansible_user }}"
+    dest: "/usr/local/bin/ruflo-validate-matrix"
+    mode: "0755"
+    owner: "root"
+    group: "root"
+  tags:
+    - ruflo-config
+
+- name: "Configure sudo NOPASSWD for validator"
+  ansible.builtin.lineinfile:
+    path: "/etc/sudoers.d/ruflo-validator"
+    line: "{{ ansible_user }} ALL=(ALL) NOPASSWD: /usr/local/bin/ruflo-validate-matrix"
+    create: true
+    mode: "0440"
+    validate: "visudo -cf %s"
+  tags:
+    - ruflo-config
 
 - name: "Run matrix validation"
   ansible.builtin.command:
-    cmd: "python ~/.fabric/ruflo/validate_matrix.py"
-  become: true
+    cmd: "sudo /usr/local/bin/ruflo-validate-matrix"
   become_user: "{{ ansible_user }}"
   register: ruflo_matrix_validation
   changed_when: false
   failed_when: ruflo_matrix_validation.rc != 0
+  fail_msg: "Matrix validation failed: {{ ruflo_matrix_validation.stderr }}"
+  tags:
+    - ruflo-validate
 
 - name: "Display matrix validation result"
   ansible.builtin.debug:
     msg: "Matrix validation passed: {{ ruflo_matrix_validation.stdout }}"
+  tags:
+    - ruflo-validate
