@@ -1,0 +1,55 @@
+---
+- name: Verify
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Check that telegram-topics.yml was created
+      block:
+        - name: Find telegram-topics.yml
+          ansible.builtin.find:
+            paths: "/"
+            names: "telegram-topics.yml"
+            recurse: true
+          register: topics_file_search
+          failed_when: topics_file_search.matched == 0
+
+        - name: Verify telegram-topics.yml content
+          block:
+            - name: Read telegram-topics.yml
+              ansible.builtin.slurp:
+                src: "{{ topics_file_search.files[0].path }}"
+              register: topics_file_content
+
+            - name: Parse YAML content
+              ansible.builtin.set_fact:
+                topics_data: "{{ topics_file_content.content | b64decode | from_yaml }}"
+
+            - name: Verify all 8 canonical topics are present
+              ansible.builtin.assert:
+                that:
+                  - topics_data.telegram_topics is defined
+                  - topics_data.telegram_topics['core'] is defined
+                  - topics_data.telegram_topics['mcp'] is defined
+                  - topics_data.telegram_topics['wasm'] is defined
+                  - topics_data.telegram_topics['demo-client'] is defined
+                  - topics_data.telegram_topics['docs'] is defined
+                  - topics_data.telegram_topics['loop'] is defined
+                  - topics_data.telegram_topics['protocol-qa'] is defined
+                  - topics_data.telegram_topics['ops'] is defined
+                fail_msg: "Not all canonical topics found in telegram-topics.yml"
+
+            - name: Verify canonical topics have valid thread IDs
+              ansible.builtin.assert:
+                that:
+                  - topics_data.telegram_topics['core'] | int > 0
+                  - topics_data.telegram_topics['mcp'] | int > 0
+                  - topics_data.telegram_topics['ops'] | int > 0
+                fail_msg: "Invalid message thread IDs in topics mapping"
+
+    - name: Log verification success
+      ansible.builtin.debug:
+        msg: |
+          telegram-init role verification passed:
+          - All 8 canonical topics present in inventory
+          - Thread IDs assigned and valid
+          - telegram-topics.yml created successfully

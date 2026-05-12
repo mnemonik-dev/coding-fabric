@@ -1,0 +1,37 @@
+---
+# Telegram Bot API configuration
+telegram_bot_token: ""
+telegram_forum_chat_id: ""
+
+# Topic icon colors (standard Telegram forum icon colors)
+telegram_topic_icon_colors:
+  core: 16711680        # Red
+  mcp: 255              # Blue
+  wasm: 65280           # Green
+  demo-client: 16711935 # Purple
+  docs: 65535           # Cyan
+  loop: 16776960        # Yellow
+  protocol-qa: 128      # Orange
+  ops: 255              # Blue
+
+# Canonical topics list
+telegram_canonical_topics:
+  - core
+  - mcp
+  - wasm
+  - demo-client
+  - docs
+  - loop
+  - protocol-qa
+  - ops
+
+# API timeouts and retries
+telegram_api_timeout: 10
+telegram_api_retries: 3
+telegram_api_delay: 2
+
+# Rate limiting between API calls (seconds)
+telegram_api_rate_limit: 0.5
+
+# Inventory output path
+telegram_inventory_file: "infrastructure/ansible/inventory/telegram-topics.yml"

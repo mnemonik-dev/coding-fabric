@@ -1,0 +1,40 @@
+---
+dependency:
+  name: galaxy
+driver:
+  name: docker
+platforms:
+  - name: telegram-init-test
+    image: ubuntu:24.04
+    pre_build_commands:
+      - apt-get update
+      - apt-get install -y python3-pip python3-setuptools
+    command: /lib/systemd/systemd-multi-user.target
+    cgroupns_mode: host
+provisioner:
+  name: ansible
+  inventory:
+    hosts:
+      all:
+        vars:
+          ansible_connection: docker
+scenario:
+  name: default
+  test_sequence:
+    - dependency
+    - lint
+    - cleanup
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - side_effect
+    - verify
+    - cleanup
+    - destroy
+verifier:
+  name: ansible
+lint:
+  name: ansible-lint

@@ -1,0 +1,113 @@
+---
+- name: Converge
+  hosts: all
+  gather_facts: true
+  vars:
+    # Mock Telegram API responses using ansible.builtin.uri mocking
+    telegram_bot_token: "test:token"
+    telegram_forum_chat_id: "-1001234567890"
+  pre_tasks:
+    - name: Create mock Telegram API responses
+      block:
+        - name: Mock bot token (for testing only)
+          ansible.builtin.set_fact:
+            telegram_bot_token: "{{ lookup('env', 'TELEGRAM_BOT_TOKEN_TEST', default='test:token') }}"
+            telegram_forum_chat_id: "{{ lookup('env', 'TELEGRAM_FORUM_CHAT_ID_TEST', default='-1001234567890') }}"
+
+        - name: Create mock secrets file for testing
+          ansible.builtin.copy:
+            content: |
+              ---
+              - name: telegram_bot_token
+                value: "{{ telegram_bot_token }}"
+              - name: telegram_forum_chat_id
+                value: "{{ telegram_forum_chat_id }}"
+            dest: /tmp/test-secrets.sops.yml
+            mode: "0600"
+
+        - name: Mock HTTP server for Telegram API
+          block:
+            - name: Install mock HTTP server dependencies
+              ansible.builtin.apt:
+                name:
+                  - python3-pip
+                  - python3-venv
+                state: present
+                update_cache: true
+
+            - name: Create mock Telegram API server script
+              ansible.builtin.copy:
+                content: |
+                  #!/usr/bin/env python3
+                  from http.server import HTTPServer, BaseHTTPRequestHandler
+                  import json
+                  import threading
+                  import time
+
+                  class MockTelegramHandler(BaseHTTPRequestHandler):
+                      def do_POST(self):
+                          content_length = int(self.headers.get('Content-Length', 0))
+                          body = self.rfile.read(content_length)
+                          request_data = json.loads(body) if body else {}
+
+                          path = self.path
+                          response = {"ok": True, "result": {}}
+
+                          if "getChatAdministrators" in path:
+                              response["result"] = [
+                                  {"user": {"is_bot": True, "id": 123456789}}
+                              ]
+                          elif "getForumTopics" in path:
+                              response["result"] = [
+                                  {"name": "core", "message_thread_id": 2},
+                                  {"name": "mcp", "message_thread_id": 3},
+                              ]
+                          elif "getForumTopicIconStickers" in path:
+                              response["result"] = []
+                          elif "createForumTopic" in path:
+                              topic_name = request_data.get("name", "unknown")
+                              thread_ids = {"wasm": 4, "demo-client": 5, "docs": 6, "loop": 7, "protocol-qa": 8, "ops": 9}
+                              response["result"] = {
+                                  "message_thread_id": thread_ids.get(topic_name, 10),
+                                  "name": topic_name
+                              }
+                          elif "sendMessage" in path:
+                              response["result"] = {"message_id": 12345, "date": int(time.time())}
+                          elif "deleteMessage" in path:
+                              response["result"] = True
+
+                          self.send_response(200)
+                          self.send_header("Content-Type", "application/json")
+                          self.end_headers()
+                          self.wfile.write(json.dumps(response).encode())
+
+                      def log_message(self, format, *args):
+                          pass
+
+                  if __name__ == "__main__":
+                      server = HTTPServer(("127.0.0.1", 8888), MockTelegramHandler)
+                      thread = threading.Thread(target=server.serve_forever)
+                      thread.daemon = True
+                      thread.start()
+                      try:
+                          while True:
+                              time.sleep(1)
+                      except KeyboardInterrupt:
+                          pass
+                dest: /tmp/mock_telegram.py
+                mode: "0755"
+
+            - name: Start mock Telegram API server
+              ansible.builtin.command: python3 /tmp/mock_telegram.py
+              async: 300
+              poll: 0
+              register: mock_server
+
+            - name: Wait for mock server to start
+              ansible.builtin.pause:
+                seconds: 2
+  roles:
+    - role: telegram-init
+      vars:
+        telegram_bot_token: "{{ telegram_bot_token }}"
+        telegram_forum_chat_id: "{{ telegram_forum_chat_id }}"
