@@ -190,6 +190,35 @@ Findings addressed by severity:
 
 ---
 
+**Round 3 — fix:** commit `<pending>`
+
+Findings addressed (3 critical residuals + 4 minor regressions):
+
+**CRITICAL RESIDUALS:**
+- [SEC-01] authkey in argv (/proc/*/cmdline exposure) — Replaced `--authkey={{ tailscale_authkey }}` with secure tmpfile approach: write key to /run/tailscale-authkey.txt (mode 0600), use `--auth-key=file:/run/tailscale-authkey.txt`, delete in `always` block. Authkey never appears in command line. Block-wrapped with explicit file cleanup.
+- [RE-02] SSH hardening before tailscale online (lockout) — Created new role `infrastructure/ansible/roles/ssh-hardening/` with PermitRootLogin + PasswordAuthentication tasks. Extracted from base role. Includes `wait_for_connection` probe to ensure tailscale SSH is responsive before sshd hardening. Cross-role contract: base → tailscale → ssh-hardening → (downstream roles).
+- [RE-04] UFW implicitly activated in base role — Removed `state: enabled` from tailscale0 rule task (was side-effect). Added explicit "Enable ufw firewall" task with guard `when: tailscale_ip is defined`, ensuring UFW is disabled during tailscale bring-up, then activated afterward.
+
+**MINOR REGRESSIONS CLOSED:**
+- [RE-02 regression] Folded scalar --accept-routes brittleness — Replaced `{% if %}\n--accept-routes{% endif %}` with inline `{{ '--accept-routes' if tailscale_accept_routes else '' }}` (no stray whitespace when false).
+- [RE-08 regression] Molecule verify ignore_errors persistence — Removed `ignore_errors: true` from tailscale_ip assertion in molecule/default/verify.yml; assertion now fails loudly if missing.
+- [SEC-06 regression] FUTURE-WORK placeholder URL — Changed from non-existent GitHub issue reference to `tasks/07.md` path, documenting the actual Task 07 scope.
+
+**Structural changes:**
+- New role created: `infrastructure/ansible/roles/ssh-hardening/` (3 files: tasks/main.yml, defaults/main.yml, handlers/main.yml)
+- Removed from base role: SSH hardening tasks (PermitRootLogin, PasswordAuthentication, sshd reload handler)
+- Removed from tailscale role: `state: enabled` side-effect on UFW rule
+- Updated base defaults: FUTURE-WORK comment clarified with tasks/07.md reference
+
+**Cross-role contract clarified:**
+- base role: OS setup + firewall rules (ufw in disabled state)
+- tailscale role: Network activation + SSH enablement (critical before hardening)
+- ssh-hardening role: SSH config hardening + sshd reload (runs after tailscale proven online)
+
+Playbook orchestration (Task 24) must respect: base → tailscale → ssh-hardening → (vaultwarden, kaneo, etc.)
+
+---
+
 ## Task 03 — Ansible role vaultwarden
 
 **Status:** complete | **Commit:** 49c2bb1 (bundled with T02) | **Agent:** ansible-vaultwarden
