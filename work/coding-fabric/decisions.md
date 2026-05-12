@@ -1041,4 +1041,45 @@ Code quality:
 
 Total: 12 files, 834 lines
 
+### Round 2 fixes — security-auditor-round1 + code-reviewer-round1
+
+**Status:** complete | **Agent:** sanitizer (python-sage) | **Test results:** 94 passed, 0 failed
+
+**Critical security fixes:**
+
+- **Base58 bypass via padding (CWE-185):** Changed `{32,44}` to `{32,256}` (no small upper bound); contiguous base58 runs of 32+ chars are now redacted regardless of total length. 44-char pubkeys padded by one extra base58 char are caught; 87-88-char Ed25519 keypairs are caught. Added adversarial tests: `test_redacts_padded_base58_prefix`, `test_redacts_padded_base58_suffix`, `test_redacts_solana_88_char_keypair`, `test_redacts_87_char_keypair`.
+
+- **ANTHROPIC_ false positives on var names (CWE-693):** Split the monolithic `_PATTERN_API_TOKEN` into two compiled patterns: `_PATTERN_SK_API_TOKEN` (requires `[A-Za-z0-9_-]{16,256}` with letter+digit lookahead) and `_PATTERN_ANTHROPIC_TOKEN` (requires `\S{8,256}` with digit lookahead). Result: `ANTHROPIC_MODEL_NAME`, `ANTHROPIC_VERSION` etc. (all-alpha, no digit) are no longer redacted; `ANTHROPIC_API_KEY=value` (contains digit in payload) is still redacted. Added `test_does_not_redact_anthropic_var_name_only` and `test_does_not_redact_sku_patterns` to NEUTRAL_STRINGS.
+
+- **Solana 88-char keypair not caught:** Fixed by base58 upper-bound removal above. Added 87/88-char samples to `secret_corpus.txt` and explicit tests.
+
+**Major fixes:**
+
+- **TG URL eats quotes/brackets (CWE-20):** Changed `\S+` to `[^\s"'<>]+`; surrounding JSON/HTML/Markdown structure is preserved. Added `test_redacts_tg_url_inside_json` and `test_redacts_tg_url_in_html`.
+
+- **JWK regex breaks on escaped quotes (CWE-697):** Changed `[^"]*` to `(?:[^"\\]|\\.)*` so that `\"` inside a JWK value does not prematurely terminate the match. Added `test_jwk_with_escaped_quote_in_value`.
+
+- **`except Exception` in handlers (CWE-755):** Narrowed to `except (OSError, ValueError)` in both `SanitizedFileHandler.emit` and `SanitizedStreamHandler.emit`.
+
+- **No SanitizedStreamHandler (CWE-532):** Added `SanitizedStreamHandler(logging.StreamHandler)` to `handler.py`; exported from `__init__.py`. Added `test_sanitized_stream_handler_stderr` and `test_sanitized_stream_handler_is_drop_in`.
+
+- **delay=True crash in SanitizedFileHandler (CR-07-001):** Removed direct `self.stream.write` which failed when `stream=None`. New impl checks `if self.stream is None: self.stream = self._open()` before writing. Added `test_file_handler_delay_true_does_not_crash`.
+
+**Build fixes:**
+
+- **Invalid build-backend (CR-07-003):** `setuptools.backends.legacy:build` changed to `setuptools.build_meta`.
+- **requires-python mismatch (CR-07-004):** `>=3.12` changed to `>=3.10` (matches actual runtime 3.10.16).
+
+**Code quality:**
+
+- Added `__all__ = ['sanitize', 'REDACTED']` to `filter.py` (CR-07-005).
+- Updated CAVEAT docstring in `filter.py` to reflect accurate multi-line JWK behaviour.
+
+**False-positive risks remaining after round 2:**
+
+- `ANTHROPIC_MODEL=claude-opus-4-5`: assignment with digit in version suffix is still redacted (acceptable over-redaction; documented as known).
+- Single-char JWK fields `"x":"val"`, `"y":"val"`, `"d":"val"` in non-JWK JSON contexts remain in scope (unchanged, by design).
+- Any 32+ char contiguous base58-alphabet string in source code or identifiers will be redacted (upper bound removed intentionally; false negative risk outweighs false positive risk for this class).
+- `api_key1234abcdefgh`-style identifiers with mixed letter+digit payload >=16 chars will be redacted even if not secrets.
+
 ---
