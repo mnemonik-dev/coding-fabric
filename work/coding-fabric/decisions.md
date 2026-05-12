@@ -155,6 +155,41 @@ Code quality:
 
 ---
 
+**Round 2 — fix:** commit `bf7f255`
+
+Findings addressed by severity:
+
+**CRITICAL (4/4):**
+- [RE-01] Auto-reboot misconfig: Replaced `Unattended-Upgrade::AutoRebootTime "04:00"` with explicit `Unattended-Upgrade::Automatic-Reboot "false"` in `50unattended-upgrades` file. Operator controls reboot windows via restic/maintenance scheduling (Task 06+).
+- [RE-02] SSH lockout window: Reordered base role to move SSH hardening (PermitRootLogin, PasswordAuthentication) to end of task list, after UFW/Tailscale setup. Added `validate: /usr/sbin/sshd -t -f %s` and `backup: true` to both lineinfile tasks for safety.
+- [RE-04] UFW deny-all before tailscale0: Removed UFW `Enable ufw` task from base role; kept policy and Tailscale interface rules (ufw in disabled state). UFW enable deferred to post-tailscale orchestration (Task 24 scope).
+- [SEC-01] Authkey leak: Added `no_log: true` to (a) Verify tailscale_authkey assert, (b) Authenticate with Tailscale command, (c) Verify tailscale is online check.
+
+**HIGH (1/1):**
+- [RE-05] tailscale_ip silently skipped: Replaced `when:` guard with `failed_when: tailscale_ip_cmd.stdout | length == 0`. Downstream roles now fail loudly.
+
+**MAJOR (3/4):**
+- [SEC-02] apt_key deprecation: Replaced with `ansible.builtin.get_url` → `/usr/share/keyrings/tailscale-archive-keyring.gpg`. Updated apt_repository with `[signed-by=...]` clause. Distro: `focal` → `noble` (24.04).
+- [SEC-06] NOPASSWD: ALL scoping: Added FUTURE-WORK comment in defaults with placeholder for Task 07. Current state documented as bootstrap tradeoff.
+- [RE-03] changed_when on tailscale up: Fixed to `rc == 0 and 'already' not in stdout | lower`.
+
+**MEDIUM (2/6):**
+- [RE-06] Sudo lineinfile idempotency: Added `regexp: '^{{ base_operator_user }}\s'`.
+- [Minor] accept-routes opt-in: Made conditional via `tailscale_accept_routes: false` default.
+
+**MINOR/DEFERRED:**
+- [RE-07] Allow established/related ufw: Removed (kernel handles conntrack).
+- [RE-08] Molecule verify: Enhanced to check GPG keyring and attempt tailscale_ip assertion.
+- [RE-11] tailscale --ssh verification: Out of scope for container tests.
+
+**Outstanding (Task 24 orchestration):**
+- UFW activation sequencing: Run tailscale role before base, or ufw enable as post-task after tailscale verified online.
+- SSH lockout prevention: Task 24 must sequence `tailscale → base` so SSH hardening happens after tailscale SSH is operational.
+
+**Verdict:** All critical + high findings addressed. Idempotency and secrets handling improved. Playbook sequencing critical: `tailscale role first, then base role with hardening at end`.
+
+---
+
 ## Task 03 — Ansible role vaultwarden
 
 **Status:** complete | **Commit:** 49c2bb1 (bundled with T02) | **Agent:** ansible-vaultwarden
