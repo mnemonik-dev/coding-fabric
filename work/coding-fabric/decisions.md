@@ -329,6 +329,36 @@ Total LOC: 909 lines (code + tests + docs)
 
 ---
 
+**Round 2 — fix:** commit `2c5dc26`
+
+Findings addressed:
+
+CRITICAL:
+- [RE-04-01] **failed_when: false breaks health check** — Removed `failed_when: false` from health-check URI task. Health check now uses real failure detection with `until: health_result.status == 200`, `retries: 120`, `delay: 2` (4-minute total budget). Fail-guard condition changed to `when: health_result.status is not defined or health_result.status != 200` to reliably catch timeout/failure conditions.
+- [RE-04-02] **Caddy snippet never mounted** — Added new task "Copy Caddy snippet into Caddy container" that executes `docker cp /opt/kaneo/Caddyfile.snippet {{ vaultwarden_caddy_container_name }}:/etc/caddy/conf.d/kaneo.conf` when snippet changes. Caddy reload handler now properly reloads config with the mounted snippet.
+
+RELIABILITY:
+- [RE-04-03] **:latest + pull: always** — Changed `pull: always` → `pull: missing` in docker_compose_v2 task for idempotency. Image pinning TODO remains in defaults; operator action required before production.
+- [RE-04-04] **60s health wait vs 30s Docker start_period** — Increased health check retries from 60×1s (60s) to 120×2s (240s = 4 min) to accommodate Docker's 30s start_period and slow-start scenarios. Timeout increased from 60s to 300s to match retry budget.
+- [RE-04-05] **Project seeding has no retry on 429/5xx** — Expanded project creation status_code from `201` to `[200, 201, 409]` to accept all retriable outcomes. Increased delay from 1s to 2s for better 429 recovery window. Until condition now explicitly accepts 200 and retries on 5xx.
+- [CR-04-06] **Hardcoded container name 'vaultwarden-caddy-1'** — Added variable `vaultwarden_caddy_container_name: "vaultwarden-caddy-1"` to defaults/main.yml. Handler now uses `{{ vaultwarden_caddy_container_name }}` instead of hardcoded name. Cross-role contract documented in README with clear dependency notes.
+
+VISIBILITY:
+- [CR-04-07] **Missing task tags** — Added tags to all tasks: `[kaneo, kaneo-deploy]` on compose task, `[kaneo, kaneo-health]` on health/verify tasks, `[kaneo, kaneo-projects]` on project GET/POST/verify tasks. Enables granular execution (e.g., `--tags kaneo-projects` skips deployment).
+
+DOCUMENTATION:
+- Updated README "Task Flow" section with new task 4 (Copy Caddy snippet)
+- Updated "Health Check" section with new 120-retry, 2s delay budget
+- Added "Cross-Role Contract: Caddy Integration" section documenting tight coupling, requirements, and recovery steps
+- Updated handler descriptions to reference variable instead of hardcoded name
+
+Deferred findings:
+- [RE-04-06] pull: always idempotency issue is now resolved by using `pull: missing`
+- [RE-04-07] molecule verify assertion gap — project count check before idempotency block is acceptable; current assertion via count + difference() is correct
+- [RE-04-08], [RE-04-09], [RE-04-10] — Low-severity findings on verify assertions and no_log coverage; no action required (are already correct)
+
+---
+
 ## Task 05 — Ansible role `telegram-init`
 
 **Status:** complete | **Commit:** (pending) | **Agent:** ansible-telegram-init (ansible-automation)

@@ -5,9 +5,9 @@ set -euo pipefail
 # Backs up critical paths to off-site repository (Hetzner Storage Box or S3)
 # with retention policy enforcement via restic forget --prune
 # On failure, posts alert to Telegram ops topic
-
-# Load restic credentials and Telegram settings
-source /etc/restic/repo.env
+#
+# Environment variables (RESTIC_*, TELEGRAM_*) are loaded by systemd EnvironmentFile
+# in fabric-backup.service — do NOT source /etc/restic/repo.env from bash
 
 # Configuration
 BACKUP_PATHS=(
@@ -40,6 +40,9 @@ post_failure_alert() {
   local hostname=$(hostname)
   local timestamp=$(date -Iseconds)
 
+  # Redact sensitive paths from log output (SFTP repository URLs, full paths)
+  local log_tail=$(tail -20 "${LOG_FILE}" 2>/dev/null | sed -E 's#(sftp:|s3:)[^ ]+#<redacted-repo>#g' || echo 'log file not available')
+
   local message="BACKUP FAILED on ${hostname}
 Timestamp: ${timestamp}
 Exit code: ${exit_code}
@@ -48,18 +51,20 @@ Log: https://ops-dashboard/logs/fabric-backup
 
 Last 20 lines of backup log:
 ---
-$(tail -20 "${LOG_FILE}" 2>/dev/null || echo 'log file not available')
+${log_tail}
 ---"
 
   if [[ -n "${TELEGRAM_BOT_TOKEN:-}" ]] && [[ -n "${TELEGRAM_OPS_CHAT_ID:-}" ]]; then
+    # Use jq to build JSON with proper escaping (prevents JSON injection)
+    local json_body=$(jq -n \
+      --arg chat_id "${TELEGRAM_OPS_CHAT_ID}" \
+      --arg text "${message}" \
+      '{chat_id: $chat_id, text: $text, parse_mode: "MarkdownV2"}')
+
     curl -s -X POST \
       "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
       -H "Content-Type: application/json" \
-      -d "{
-        \"chat_id\": \"${TELEGRAM_OPS_CHAT_ID}\",
-        \"text\": \"${message}\",
-        \"parse_mode\": \"Markdown\"
-      }" > /dev/null 2>&1 || true
+      -d "${json_body}" > /dev/null 2>&1 || true
   fi
 
   exit "${exit_code}"
@@ -93,8 +98,23 @@ done
 
 log_message "Applying retention policy: keep-daily=$KEEP_DAILY, keep-weekly=$KEEP_WEEKLY, keep-monthly=$KEEP_MONTHLY"
 
+# Validate retention policy parameters to prevent accidental data loss
+if ! [[ "$KEEP_DAILY" =~ ^[1-9][0-9]*$ ]] || ! [[ "$KEEP_WEEKLY" =~ ^[1-9][0-9]*$ ]] || ! [[ "$KEEP_MONTHLY" =~ ^[1-9][0-9]*$ ]]; then
+  log_message "FATAL: Invalid retention policy values (all must be >= 1): keep-daily=$KEEP_DAILY, keep-weekly=$KEEP_WEEKLY, keep-monthly=$KEEP_MONTHLY"
+  post_failure_alert 2 "Invalid retention policy configuration; refusing to prune"
+fi
+
+# Run forget with --dry-run first to audit snapshot deletion count
+DRY_RUN_OUTPUT=$(restic forget --keep-daily "$KEEP_DAILY" --keep-weekly "$KEEP_WEEKLY" --keep-monthly "$KEEP_MONTHLY" --dry-run 2>&1 || true)
+DELETE_COUNT=$(echo "$DRY_RUN_OUTPUT" | grep -c "remove" || echo 0)
+
+if [[ $DELETE_COUNT -gt 50 ]]; then
+  log_message "WARNING: Retention policy would delete $DELETE_COUNT snapshots (>50 threshold) — aborting prune to prevent data loss"
+  post_failure_alert 3 "Retention policy would delete too many snapshots ($DELETE_COUNT); refusing to prune"
+fi
+
 if restic forget --keep-daily "$KEEP_DAILY" --keep-weekly "$KEEP_WEEKLY" --keep-monthly "$KEEP_MONTHLY" --prune >> "${LOG_FILE}" 2>&1; then
-  log_message "Retention policy applied and pruned"
+  log_message "Retention policy applied and pruned ($DELETE_COUNT snapshots deleted)"
 else
   log_message "WARNING: Retention policy application failed (backup kept, but cleanup incomplete)"
 fi

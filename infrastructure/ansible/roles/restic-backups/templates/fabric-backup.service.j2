@@ -5,6 +5,7 @@ After=network-online.target
 
 [Service]
 Type=oneshot
+EnvironmentFile=/etc/restic/repo.env
 ExecStart=/usr/local/bin/fabric-backup.sh
 StandardOutput=journal
 StandardError=journal
@@ -14,9 +15,9 @@ SyslogIdentifier=fabric-backup
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/home/op/.fabric /opt/vaultwarden /opt/kaneo /home/op/code/mnemonic-masters /tmp /var/log
-ReadWritePaths=/etc/restic
+ProtectHome=read-only
+BindReadOnlyPaths=/home/op/.fabric /home/op/code/mnemonic-masters
+ReadWritePaths=/opt/vaultwarden /opt/kaneo /tmp /var/log /etc/restic
 
 # Do not restart on transient network errors; timer will reschedule
 Restart=no

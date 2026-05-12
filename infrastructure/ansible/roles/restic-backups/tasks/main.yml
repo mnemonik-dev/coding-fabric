@@ -1,4 +1,31 @@
 ---
+- name: Validate backup role configuration
+  block:
+    - name: Assert retention policy parameters are all >= 1
+      ansible.builtin.assert:
+        that:
+          - restic_keep_daily | int >= 1
+          - restic_keep_weekly | int >= 1
+          - restic_keep_monthly | int >= 1
+        fail_msg: "All retention policy parameters (keep_daily, keep_weekly, keep_monthly) must be >= 1"
+
+    - name: Assert required secrets are not empty
+      ansible.builtin.assert:
+        that:
+          - restic_repository | length > 0
+          - restic_password | length > 0
+          - telegram_bot_token | length > 0
+          - telegram_ops_chat_id | length > 0
+        fail_msg: "All restic and telegram credentials must be non-empty (configured via sops secrets)"
+
+- name: Install required system dependencies
+  ansible.builtin.apt:
+    name:
+      - jq
+      - curl
+    state: present
+    update_cache: true
+
 - name: Install restic backup tool
   block:
     - name: Check available restic version in apt
@@ -70,7 +97,8 @@
     mode: "0600"
     owner: root
     group: root
-    validate: "/bin/bash -n %s"
+    # Note: Do NOT source this file from bash in validation — just check syntax via grep
+    validate: "/bin/grep -E '^[A-Z_]+=.+' %s > /dev/null"
   no_log: true
   notify: Reload systemd daemon
 

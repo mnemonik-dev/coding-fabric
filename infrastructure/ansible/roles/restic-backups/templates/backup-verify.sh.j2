@@ -3,10 +3,11 @@ set -euo pipefail
 
 # Backup verification script for mnemonic-loop coding-fabric
 # Restores the latest snapshot to a staging directory and asserts
-# that a known marker file's checksum matches expected value
+# that known marker files' checksums match expected values
+# Also verifies critical data sources are present and non-empty
 # Exit 0 on success, non-zero on any failure
-
-source /etc/restic/repo.env
+#
+# Environment variables (RESTIC_*) must be loaded beforehand (e.g., via systemd or manual export)
 
 MARKER_FILE="{{ restic_verification_marker_file }}"
 MARKER_SHA256_EXPECTED="53cffbb8a79a5265e9ed9c8d10b6cfe32d0b1be6c68a71b4ffc8f49c1a43c47e"
@@ -16,11 +17,12 @@ RESTORE_DIR="${RESTORE_DIR_BASE}/restore-test-${RESTORE_DATE}"
 
 cleanup() {
   if [[ -d "${RESTORE_DIR}" ]]; then
+    chmod -R u+w "${RESTORE_DIR}" 2>/dev/null || true
     rm -rf "${RESTORE_DIR}"
   fi
 }
 
-trap 'cleanup' EXIT
+trap 'cleanup' EXIT INT TERM
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting backup verification"
 
@@ -32,9 +34,10 @@ fi
 
 echo "Creating restore staging directory: ${RESTORE_DIR}"
 mkdir -p "${RESTORE_DIR}"
+chmod 0700 "${RESTORE_DIR}"
 
 echo "Fetching latest snapshot..."
-LATEST_SNAPSHOT=$(restic snapshots --latest=1 --json 2>/dev/null | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+LATEST_SNAPSHOT=$(restic snapshots --latest=1 --json 2>/dev/null | jq -r '.[0].id // empty')
 
 if [[ -z "${LATEST_SNAPSHOT}" ]]; then
   echo "ERROR: No snapshots found in repository" >&2
@@ -71,5 +74,46 @@ if [[ "${MARKER_SHA256_ACTUAL}" != "${MARKER_SHA256_EXPECTED}" ]]; then
 fi
 
 echo "Marker file checksum verified: ${MARKER_SHA256_ACTUAL}"
+
+# Additional verification: check critical data sources exist and are non-empty
+echo "Verifying critical backup sources..."
+
+declare -a CRITICAL_SOURCES=(
+  "/opt/vaultwarden/data/db.sqlite3"
+  "/opt/kaneo/data/kaneo.sqlite3"
+  "/home/op/code/mnemonic-masters"
+)
+
+for source_path in "${CRITICAL_SOURCES[@]}"; do
+  source_relative=$(echo "$source_path" | sed 's|^/||')
+  restored_source="${RESTORE_DIR}/${source_relative}"
+
+  if [[ -f "$restored_source" ]]; then
+    size=$(stat -c%s "$restored_source" 2>/dev/null || stat -f%z "$restored_source" 2>/dev/null || echo 0)
+    if [[ $size -eq 0 ]]; then
+      echo "ERROR: Critical source is empty: $source_path" >&2
+      exit 1
+    fi
+    echo "  OK: $source_path ($(numfmt --to=iec-i --suffix=B $size 2>/dev/null || echo $size bytes))"
+  elif [[ -d "$restored_source" ]]; then
+    count=$(find "$restored_source" -type f | wc -l)
+    if [[ $count -eq 0 ]]; then
+      echo "ERROR: Critical source directory is empty: $source_path" >&2
+      exit 1
+    fi
+    echo "  OK: $source_path ($count files)"
+  else
+    echo "WARNING: Critical source not found in snapshot: $source_path (may be expected on first run)"
+  fi
+done
+
+# Run crypto integrity check on a subset of data (5%)
+echo "Running cryptographic integrity check (5% of data)..."
+if ! restic check --read-data-subset=5% > /dev/null 2>&1; then
+  echo "ERROR: Cryptographic integrity check failed" >&2
+  exit 1
+fi
+echo "  Crypto check passed"
+
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Backup verification succeeded"
 exit 0
