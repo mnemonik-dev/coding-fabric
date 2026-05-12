@@ -1,0 +1,70 @@
+#!/bin/bash
+
+# _hook-validate.sh
+# Shared validation helper for all 5 mnemonic-mcp hook scripts
+# Provides input validation for FEATURE and ARTEFACT parameters
+# Prevents path traversal, YAML injection, and log injection attacks
+
+set -euo pipefail
+
+# Validate FEATURE token
+# Must match: ^[a-z][a-z0-9-]{1,40}$ (lowercase, alphanumeric + dash, 2-41 chars)
+validate_feature() {
+  local feature="$1"
+  if [[ ! "$feature" =~ ^[a-z][a-z0-9-]{1,40}$ ]]; then
+    echo "validate_feature: invalid feature '$feature' — must match [a-z][a-z0-9-]{1,40}" >&2
+    return 2
+  fi
+}
+
+# Validate ARTEFACT file path
+# Must: exist, be regular file, be under REPO_ROOT (no path traversal)
+validate_artefact() {
+  local artefact="$1"
+  local repo_root="${2:-.}"
+
+  # Check file exists
+  if [[ ! -f "$artefact" ]]; then
+    echo "validate_artefact: file does not exist '$artefact'" >&2
+    return 2
+  fi
+
+  # Check it's a regular file (not symlink, device, etc)
+  if [[ ! -f "$artefact" ]] || [[ -L "$artefact" ]]; then
+    echo "validate_artefact: not a regular file '$artefact'" >&2
+    return 2
+  fi
+
+  # Canonicalize to absolute path
+  local real_path
+  real_path=$(readlink -f -- "$artefact") || {
+    echo "validate_artefact: failed to resolve '$artefact'" >&2
+    return 2
+  }
+
+  # Compute relative path from repo root
+  local rel_path
+  rel_path=$(realpath --relative-to="$repo_root" "$real_path" 2>/dev/null) || {
+    echo "validate_artefact: '$real_path' is outside repo root '$repo_root'" >&2
+    return 2
+  }
+
+  # Reject if it escapes repo root (starts with ..)
+  if [[ "$rel_path" =~ ^\.\.(/|$) ]]; then
+    echo "validate_artefact: path traversal detected '$artefact' -> '$real_path'" >&2
+    return 2
+  fi
+}
+
+# Emit YAML-safe quoted value to avoid injection
+# Encodes the input with single quotes and escapes any embedded quotes
+yaml_quote() {
+  local value="$1"
+  # Use Python's yaml.safe_dump for robust escaping
+  python3 -c "import yaml; print(yaml.safe_dump('$value'))" | tr -d '\n'
+}
+
+# Export functions for use by sourcing scripts
+export -f validate_feature
+export -f validate_artefact
+export -f yaml_quote

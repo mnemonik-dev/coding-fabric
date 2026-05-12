@@ -7,8 +7,13 @@ set -euo pipefail
 # Invokes mnemonic_sign_memory with full-mode receipt if MNEMONIC_MODE=full
 # Parent: tech-spec attestation
 
+REPO_ROOT="${REPO_ROOT:-.}"
 FEATURE=""
 ARTEFACT=""
+ARTEFACT_REAL=""
+
+# Source validation helper
+source "$(dirname "$0")/_hook-validate.sh"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -21,7 +26,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     *)
-      echo "Usage: $0 --feature <name> --artefact <path>"
+      echo "Usage: $0 --feature <name> --artefact <path>" >&2
       exit 1
       ;;
   esac
@@ -32,74 +37,108 @@ if [[ -z "$FEATURE" ]] || [[ -z "$ARTEFACT" ]]; then
   exit 1
 fi
 
-WORK_DIR="work/$FEATURE"
+# Validate inputs
+if ! validate_feature "$FEATURE"; then
+  exit 2
+fi
+
+if ! validate_artefact "$ARTEFACT" "$REPO_ROOT"; then
+  exit 2
+fi
+
+ARTEFACT_REAL=$(readlink -f -- "$ARTEFACT")
+
+# Anchor work directory to absolute path
+WORK_DIR="/var/lib/mnemonic-mcp/features/$FEATURE"
 ATTESTATIONS_FILE="$WORK_DIR/attestations.yml"
+LOCK_FILE="$WORK_DIR/.attestations.lock"
 
-mkdir -p "$WORK_DIR"
+# Use file locking to prevent concurrent corruption
+{
+  flock -x 9 || {
+    echo "task-complete.sh: failed to acquire lock" >&2
+    exit 1
+  }
 
-# Verify parent (tech-spec attestation) exists
-if [[ ! -f "$ATTESTATIONS_FILE" ]] || ! grep -q "tech_spec:" "$ATTESTATIONS_FILE"; then
-  echo "task-complete.sh: parent attestation (tech_spec) not found" >&2
-  exit 1
-fi
-
-PARENT_ID=$(grep -A1 "tech_spec:" "$ATTESTATIONS_FILE" | grep "attestation_id:" | awk '{print $NF}')
-if [[ -z "$PARENT_ID" ]]; then
-  echo "task-complete.sh: failed to extract parent attestation_id" >&2
-  exit 1
-fi
-
-# Determine mode: check for protocol-qa.env or MNEMONIC_MODE env var
-MODE="local"
-if [[ -f "{{ mnemonic_mcp_config_dir }}/protocol-qa.env" ]] && grep -q "MNEMONIC_MODE=full" "{{ mnemonic_mcp_config_dir }}/protocol-qa.env"; then
-  MODE="full"
-fi
-if [[ "${MNEMONIC_MODE:-}" == "full" ]]; then
-  MODE="full"
-fi
-
-# Invoke mnemonic_sign_memory with parent reference
-if ! ATTESTATION_OUTPUT=$(mnemonic_sign_memory \
-  --content "tasks completed: $FEATURE" \
-  --parent "$PARENT_ID" \
-  --tags "task-complete" "$FEATURE" 2>&1); then
-  echo "task-complete.sh: mnemonic_sign_memory failed" >&2
-  exit 1
-fi
-
-# Extract attestation_id from output
-ATTESTATION_ID=$(echo "$ATTESTATION_OUTPUT" | grep -oP 'attestation_id[=:]?\s*\K[a-f0-9-]+' | head -1)
-if [[ -z "$ATTESTATION_ID" ]]; then
-  echo "task-complete.sh: failed to extract attestation_id" >&2
-  exit 1
-fi
-
-# In full mode, capture full-mode receipt fields
-RECEIPT_DATA="
-  attestation_id: $ATTESTATION_ID
-  parent_id: $PARENT_ID
-  timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)
-  artefact: $ARTEFACT
-  mode: $MODE"
-
-if [[ "$MODE" == "full" ]]; then
-  # Extract Solana and Arweave txids from full-mode receipt
-  SOLANA_TX=$(echo "$ATTESTATION_OUTPUT" | grep -oP 'solana_tx[=:]?\s*\K[a-zA-Z0-9]+' | head -1 || echo "")
-  ARWEAVE_TX=$(echo "$ATTESTATION_OUTPUT" | grep -oP 'arweave_tx[=:]?\s*\K[a-zA-Z0-9]+' | head -1 || echo "")
-  if [[ -n "$SOLANA_TX" ]]; then
-    RECEIPT_DATA+="
-  solana_tx: $SOLANA_TX"
+  # Verify parent (tech-spec attestation) exists
+  if [[ ! -f "$ATTESTATIONS_FILE" ]] || ! grep -q "tech_spec:" "$ATTESTATIONS_FILE"; then
+    echo "task-complete.sh: parent attestation (tech_spec) not found" >&2
+    exit 1
   fi
-  if [[ -n "$ARWEAVE_TX" ]]; then
-    RECEIPT_DATA+="
-  arweave_tx: $ARWEAVE_TX"
-  fi
-fi
 
-# Record in attestations.yml
-cat >> "$ATTESTATIONS_FILE" <<EOF
-task_complete:$RECEIPT_DATA
-EOF
+  PARENT_ID=$(grep -A1 "tech_spec:" "$ATTESTATIONS_FILE" | grep "attestation_id:" | awk '{print $NF}')
+  if [[ ! "$PARENT_ID" =~ ^[a-f0-9-]{36}$ ]]; then
+    echo "task-complete.sh: failed to extract valid parent attestation_id" >&2
+    exit 1
+  fi
+
+  # Determine mode from config (not from env var to prevent spoofing)
+  MODE="local"
+  if [[ -f "{{ mnemonic_mcp_config_dir }}/protocol-qa.env" ]]; then
+    if grep -q "MNEMONIC_MODE=full" "{{ mnemonic_mcp_config_dir }}/protocol-qa.env"; then
+      MODE="full"
+    fi
+  fi
+
+  # Invoke mnemonic_sign_memory with parent reference
+  if ! ATTESTATION_OUTPUT=$(mnemonic_sign_memory \
+    --content "tasks completed: $FEATURE" \
+    --parent "$PARENT_ID" \
+    --tags "task-complete" "$FEATURE" 2>/var/log/mnemonic-mcp/hook-sign-err.log); then
+    echo "task-complete.sh: mnemonic_sign_memory failed" >&2
+    exit 1
+  fi
+
+  # Extract attestation_id from stdout only (strict validation)
+  ATTESTATION_ID=$(echo "$ATTESTATION_OUTPUT" | grep -oP '^\s*attestation_id[=:]?\s*\K[a-f0-9-]{36}$' 2>/dev/null || echo "")
+  if [[ ! "$ATTESTATION_ID" =~ ^[a-f0-9-]{36}$ ]]; then
+    echo "task-complete.sh: failed to extract valid attestation_id" >&2
+    exit 1
+  fi
+
+  # Build attestation data with optional full-mode fields
+  DATA_DICT="
+{
+    'task_complete': {
+        'attestation_id': '$ATTESTATION_ID',
+        'parent_id': '$PARENT_ID',
+        'timestamp': '$(date -u +%Y-%m-%dT%H:%M:%SZ)',
+        'artefact': '$ARTEFACT_REAL',
+        'mode': '$MODE'"
+
+  if [[ "$MODE" == "full" ]]; then
+    SOLANA_TX=$(echo "$ATTESTATION_OUTPUT" | grep -oP '^\s*solana_tx[=:]?\s*\K[a-zA-Z0-9]+$' 2>/dev/null || echo "")
+    ARWEAVE_TX=$(echo "$ATTESTATION_OUTPUT" | grep -oP '^\s*arweave_tx[=:]?\s*\K[a-zA-Z0-9]+$' 2>/dev/null || echo "")
+    if [[ -n "$SOLANA_TX" ]]; then
+      DATA_DICT+=",
+        'solana_tx': '$SOLANA_TX'"
+    fi
+    if [[ -n "$ARWEAVE_TX" ]]; then
+      DATA_DICT+=",
+        'arweave_tx': '$ARWEAVE_TX'"
+    fi
+  fi
+
+  DATA_DICT+="
+    }
+}"
+
+  # Write attestation with safe YAML
+  python3 -c "
+import yaml
+import ast
+
+data = ast.literal_eval(\"\"\"$DATA_DICT\"\"\")
+with open('$ATTESTATIONS_FILE', 'a') as f:
+    yaml.safe_dump(data, f, default_flow_style=False)
+" || {
+    echo "task-complete.sh: failed to write attestations.yml" >&2
+    exit 1
+  }
+
+  chmod 0640 "$ATTESTATIONS_FILE" 2>/dev/null || true
+
+} 9>"$LOCK_FILE"
 
 echo "task-complete.sh: attestation created: $ATTESTATION_ID (parent: $PARENT_ID, mode: $MODE)"
 exit 0

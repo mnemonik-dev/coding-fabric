@@ -25,6 +25,12 @@
     group: "{{ mnemonic_mcp_service_group }}"
     mode: '0755'
 
+- name: Assert mnemonic_mcp_binary_sha256 is not a placeholder
+  assert:
+    that:
+      - mnemonic_mcp_binary_sha256 is match('^[0-9a-f]{64}$')
+    fail_msg: "mnemonic_mcp_binary_sha256 must be a 64-character hex SHA256; found '{{ mnemonic_mcp_binary_sha256 }}'. Override with real checksum before deploy."
+
 - name: Download mnemonic-mcp binary
   get_url:
     url: "{{ mnemonic_mcp_binary_url }}"
@@ -69,8 +75,16 @@
     dest: "{{ mnemonic_mcp_config_dir }}/config.yml"
     owner: "{{ mnemonic_mcp_service_user }}"
     group: "{{ mnemonic_mcp_service_group }}"
-    mode: '0644'
+    mode: '0640'
   notify: reload mnemonic-mcp systemd
+
+- name: Ensure attestations directory exists with strict permissions
+  file:
+    path: /var/lib/mnemonic-mcp/features
+    state: directory
+    owner: "{{ mnemonic_mcp_service_user }}"
+    group: "{{ mnemonic_mcp_service_group }}"
+    mode: '0750'
 
 - name: Render protocol-qa.env (MNEMONIC_MODE=full secrets)
   template:
@@ -186,55 +200,17 @@
   register: mnemonic_mcp_active
   failed_when: mnemonic_mcp_active.rc != 0
 
-- name: Run healthcheck - invoke user-spec hook with stub feature
-  shell: |
-    set -euo pipefail
-    export FEATURE=stub
-    export ARTEFACT="test-artefact-$(date +%s)"
-    "{{ mnemonic_mcp_hooks_dir }}/user-spec.sh" --feature="$FEATURE" --artefact="$ARTEFACT"
-  become: true
-  become_user: "{{ mnemonic_mcp_service_user }}"
-  register: healthcheck_user_spec
-  failed_when: healthcheck_user_spec.rc != 0
-  retries: 3
+- name: Healthcheck - verify binary responds to --selftest (no DAG pollution)
+  command: "{{ mnemonic_mcp_install_dir }}/bin/mnemonic-mcp --selftest"
+  changed_when: false
+  register: healthcheck_selftest
+  failed_when: healthcheck_selftest.rc != 0
+  retries: 5
   delay: 2
-  environment:
-    PATH: "/opt/mnemonic-mcp/bin:/usr/local/bin:/usr/bin:/bin"
 
-- name: Run full healthcheck through all 5 hooks
-  shell: |
-    set -euo pipefail
-    FEATURE="stub"
-    ARTEFACT="test-artefact-$(date +%s)"
-    for hook in user-spec tech-spec task-complete pre-deploy post-deploy; do
-      "{{ mnemonic_mcp_hooks_dir }}/$hook.sh" --feature="$FEATURE" --artefact="$ARTEFACT" || exit 1
-    done
-  become: true
-  become_user: "{{ mnemonic_mcp_service_user }}"
-  register: healthcheck_all_hooks
-  failed_when: healthcheck_all_hooks.rc != 0
-  environment:
-    PATH: "/opt/mnemonic-mcp/bin:/usr/local/bin:/usr/bin:/bin"
-
-- name: Verify DAG construction via mnemonic_recall
-  shell: |
-    set -euo pipefail
-    python3 -c "
-    import subprocess
-    import json
-    result = subprocess.run(['mnemonic_recall', '--feature=stub'], capture_output=True, text=True)
-    if result.returncode != 0:
-      print('mnemonic_recall failed:', result.stderr)
-      exit(1)
-    output = json.loads(result.stdout) if result.stdout else {}
-    if 'nodes' not in output or len(output.get('nodes', [])) < 5:
-      print(f'DAG has insufficient nodes: {len(output.get(\"nodes\", []))}')
-      exit(1)
-    print('DAG verification passed:', len(output.get('nodes', [])), 'nodes')
-    "
-  environment:
-    PATH: "/opt/mnemonic-mcp/bin:/usr/local/bin:/usr/bin:/bin"
-    FEATURE: "stub"
-  register: dag_verify
-  failed_when: dag_verify.rc != 0
+- name: Verify service is active after startup
+  systemd:
+    name: "{{ mnemonic_mcp_systemd_unit }}"
+  register: mnemonic_mcp_final_status
+  failed_when: mnemonic_mcp_final_status.status.ActiveState != 'active'
   changed_when: false

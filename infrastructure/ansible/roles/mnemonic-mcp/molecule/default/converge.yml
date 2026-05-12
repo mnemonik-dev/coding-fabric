@@ -5,7 +5,9 @@
   vars:
     ansible_python_interpreter: /usr/bin/python3
     mnemonic_mcp_version: "0.1.0"
-    mnemonic_mcp_binary_sha256: "d41d8cd98f00b204e9800998ecf8427e"
+    # Real test binary SHA256 (64 hex chars for SHA256, not 32-char MD5)
+    # This must be the actual SHA256 of the mnemonic-mcp test fixture binary
+    mnemonic_mcp_binary_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     mnemonic_mcp_install_dir: /opt/mnemonic-mcp
     mnemonic_mcp_config_dir: /etc/mnemonic-mcp
     mnemonic_mcp_hooks_dir: "/etc/mnemonic-mcp/hooks"

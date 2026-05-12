@@ -8,8 +8,13 @@ set -euo pipefail
 # Records attestation_id in work/<feature>/attestations.yml
 # Parent: none (DAG root)
 
+REPO_ROOT="${REPO_ROOT:-.}"
 FEATURE=""
 ARTEFACT=""
+ARTEFACT_REAL=""
+
+# Source validation helper
+source "$(dirname "$0")/_hook-validate.sh"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -22,7 +27,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     *)
-      echo "Usage: $0 --feature <name> --artefact <path>"
+      echo "Usage: $0 --feature <name> --artefact <path>" >&2
       exit 1
       ;;
   esac
@@ -33,33 +38,74 @@ if [[ -z "$FEATURE" ]] || [[ -z "$ARTEFACT" ]]; then
   exit 1
 fi
 
-WORK_DIR="work/$FEATURE"
+# Validate inputs
+if ! validate_feature "$FEATURE"; then
+  exit 2
+fi
+
+if ! validate_artefact "$ARTEFACT" "$REPO_ROOT"; then
+  exit 2
+fi
+
+ARTEFACT_REAL=$(readlink -f -- "$ARTEFACT")
+
+# Anchor work directory to absolute path
+WORK_DIR="/var/lib/mnemonic-mcp/features/$FEATURE"
 ATTESTATIONS_FILE="$WORK_DIR/attestations.yml"
+LOCK_FILE="$WORK_DIR/.attestations.lock"
 
-mkdir -p "$WORK_DIR"
-
-# Invoke mnemonic_sign_memory to create attestation
-if ! ATTESTATION_OUTPUT=$(mnemonic_sign_memory \
-  --content "user-spec approved: $FEATURE" \
-  --tags "user-spec" "$FEATURE" 2>&1); then
-  echo "user-spec.sh: mnemonic_sign_memory failed" >&2
-  exit 1
+# Create work directory if needed (mode 0750)
+if [[ ! -d "$WORK_DIR" ]]; then
+  mkdir -p "$WORK_DIR" 2>/dev/null || true
+  chmod 0750 "$WORK_DIR" 2>/dev/null || true
 fi
 
-# Extract attestation_id from output
-ATTESTATION_ID=$(echo "$ATTESTATION_OUTPUT" | grep -oP 'attestation_id[=:]?\s*\K[a-f0-9-]+' | head -1)
-if [[ -z "$ATTESTATION_ID" ]]; then
-  echo "user-spec.sh: failed to extract attestation_id" >&2
-  exit 1
-fi
+# Use file locking to prevent concurrent corruption
+{
+  flock -x 9 || {
+    echo "user-spec.sh: failed to acquire lock" >&2
+    exit 1
+  }
 
-# Record in attestations.yml
-cat >> "$ATTESTATIONS_FILE" <<EOF
-user_spec:
-  attestation_id: $ATTESTATION_ID
-  timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)
-  artefact: $ARTEFACT
-EOF
+  # Invoke mnemonic_sign_memory to create attestation
+  if ! ATTESTATION_OUTPUT=$(mnemonic_sign_memory \
+    --content "user-spec approved: $FEATURE" \
+    --tags "user-spec" "$FEATURE" 2>/var/log/mnemonic-mcp/hook-sign-err.log); then
+    echo "user-spec.sh: mnemonic_sign_memory failed" >&2
+    exit 1
+  fi
+
+  # Extract attestation_id from stdout only (strict validation)
+  ATTESTATION_ID=$(echo "$ATTESTATION_OUTPUT" | grep -oP '^\s*attestation_id[=:]?\s*\K[a-f0-9-]{36}$' 2>/dev/null || echo "")
+  if [[ ! "$ATTESTATION_ID" =~ ^[a-f0-9-]{36}$ ]]; then
+    echo "user-spec.sh: failed to extract valid attestation_id" >&2
+    exit 1
+  fi
+
+  # Create attestations.yml atomically with safe mode
+  python3 -c "
+import yaml
+import os
+
+data = {
+    'user_spec': {
+        'attestation_id': '$ATTESTATION_ID',
+        'timestamp': '$(date -u +%Y-%m-%dT%H:%M:%SZ)',
+        'artefact': '$ARTEFACT_REAL'
+    }
+}
+
+with open('$ATTESTATIONS_FILE', 'a') as f:
+    yaml.safe_dump(data, f, default_flow_style=False)
+" || {
+    echo "user-spec.sh: failed to write attestations.yml" >&2
+    exit 1
+  }
+
+  # Set restrictive permissions (owner readable/writable, group readable)
+  chmod 0640 "$ATTESTATIONS_FILE" 2>/dev/null || true
+
+} 9>"$LOCK_FILE"
 
 echo "user-spec.sh: attestation created: $ATTESTATION_ID"
 exit 0

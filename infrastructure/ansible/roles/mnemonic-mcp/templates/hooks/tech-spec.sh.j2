@@ -7,8 +7,13 @@ set -euo pipefail
 # Invokes mnemonic_sign_memory to attest tech-spec approval
 # Parent: user-spec attestation
 
+REPO_ROOT="${REPO_ROOT:-.}"
 FEATURE=""
 ARTEFACT=""
+ARTEFACT_REAL=""
+
+# Source validation helper
+source "$(dirname "$0")/_hook-validate.sh"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -21,7 +26,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     *)
-      echo "Usage: $0 --feature <name> --artefact <path>"
+      echo "Usage: $0 --feature <name> --artefact <path>" >&2
       exit 1
       ;;
   esac
@@ -32,47 +37,80 @@ if [[ -z "$FEATURE" ]] || [[ -z "$ARTEFACT" ]]; then
   exit 1
 fi
 
-WORK_DIR="work/$FEATURE"
+# Validate inputs
+if ! validate_feature "$FEATURE"; then
+  exit 2
+fi
+
+if ! validate_artefact "$ARTEFACT" "$REPO_ROOT"; then
+  exit 2
+fi
+
+ARTEFACT_REAL=$(readlink -f -- "$ARTEFACT")
+
+# Anchor work directory to absolute path
+WORK_DIR="/var/lib/mnemonic-mcp/features/$FEATURE"
 ATTESTATIONS_FILE="$WORK_DIR/attestations.yml"
+LOCK_FILE="$WORK_DIR/.attestations.lock"
 
-mkdir -p "$WORK_DIR"
+# Use file locking to prevent concurrent corruption
+{
+  flock -x 9 || {
+    echo "tech-spec.sh: failed to acquire lock" >&2
+    exit 1
+  }
 
-# Verify parent (user-spec attestation) exists
-if [[ ! -f "$ATTESTATIONS_FILE" ]] || ! grep -q "user_spec:" "$ATTESTATIONS_FILE"; then
-  echo "tech-spec.sh: parent attestation (user_spec) not found" >&2
-  exit 1
-fi
+  # Verify parent (user-spec attestation) exists
+  if [[ ! -f "$ATTESTATIONS_FILE" ]] || ! grep -q "user_spec:" "$ATTESTATIONS_FILE"; then
+    echo "tech-spec.sh: parent attestation (user_spec) not found" >&2
+    exit 1
+  fi
 
-PARENT_ID=$(grep -A1 "user_spec:" "$ATTESTATIONS_FILE" | grep "attestation_id:" | awk '{print $NF}')
-if [[ -z "$PARENT_ID" ]]; then
-  echo "tech-spec.sh: failed to extract parent attestation_id" >&2
-  exit 1
-fi
+  PARENT_ID=$(grep -A1 "user_spec:" "$ATTESTATIONS_FILE" | grep "attestation_id:" | awk '{print $NF}')
+  if [[ ! "$PARENT_ID" =~ ^[a-f0-9-]{36}$ ]]; then
+    echo "tech-spec.sh: failed to extract valid parent attestation_id" >&2
+    exit 1
+  fi
 
-# Invoke mnemonic_sign_memory with parent reference
-if ! ATTESTATION_OUTPUT=$(mnemonic_sign_memory \
-  --content "tech-spec approved: $FEATURE" \
-  --parent "$PARENT_ID" \
-  --tags "tech-spec" "$FEATURE" 2>&1); then
-  echo "tech-spec.sh: mnemonic_sign_memory failed" >&2
-  exit 1
-fi
+  # Invoke mnemonic_sign_memory with parent reference
+  if ! ATTESTATION_OUTPUT=$(mnemonic_sign_memory \
+    --content "tech-spec approved: $FEATURE" \
+    --parent "$PARENT_ID" \
+    --tags "tech-spec" "$FEATURE" 2>/var/log/mnemonic-mcp/hook-sign-err.log); then
+    echo "tech-spec.sh: mnemonic_sign_memory failed" >&2
+    exit 1
+  fi
 
-# Extract attestation_id from output
-ATTESTATION_ID=$(echo "$ATTESTATION_OUTPUT" | grep -oP 'attestation_id[=:]?\s*\K[a-f0-9-]+' | head -1)
-if [[ -z "$ATTESTATION_ID" ]]; then
-  echo "tech-spec.sh: failed to extract attestation_id" >&2
-  exit 1
-fi
+  # Extract attestation_id from stdout only (strict validation)
+  ATTESTATION_ID=$(echo "$ATTESTATION_OUTPUT" | grep -oP '^\s*attestation_id[=:]?\s*\K[a-f0-9-]{36}$' 2>/dev/null || echo "")
+  if [[ ! "$ATTESTATION_ID" =~ ^[a-f0-9-]{36}$ ]]; then
+    echo "tech-spec.sh: failed to extract valid attestation_id" >&2
+    exit 1
+  fi
 
-# Record in attestations.yml
-cat >> "$ATTESTATIONS_FILE" <<EOF
-tech_spec:
-  attestation_id: $ATTESTATION_ID
-  parent_id: $PARENT_ID
-  timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)
-  artefact: $ARTEFACT
-EOF
+  # Write attestation with safe YAML
+  python3 -c "
+import yaml
+
+data = {
+    'tech_spec': {
+        'attestation_id': '$ATTESTATION_ID',
+        'parent_id': '$PARENT_ID',
+        'timestamp': '$(date -u +%Y-%m-%dT%H:%M:%SZ)',
+        'artefact': '$ARTEFACT_REAL'
+    }
+}
+
+with open('$ATTESTATIONS_FILE', 'a') as f:
+    yaml.safe_dump(data, f, default_flow_style=False)
+" || {
+    echo "tech-spec.sh: failed to write attestations.yml" >&2
+    exit 1
+  }
+
+  chmod 0640 "$ATTESTATIONS_FILE" 2>/dev/null || true
+
+} 9>"$LOCK_FILE"
 
 echo "tech-spec.sh: attestation created: $ATTESTATION_ID (parent: $PARENT_ID)"
 exit 0

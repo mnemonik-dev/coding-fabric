@@ -5,7 +5,7 @@ operator_group: "{{ operator_user }}"
 
 mnemonic_mcp_version: "0.1.0"
 mnemonic_mcp_binary_url: "https://github.com/mnemonic-ai/mnemonic-mcp/releases/download/v{{ mnemonic_mcp_version }}/mnemonic-mcp-linux-x86_64"
-mnemonic_mcp_binary_sha256: "changeme_placeholder_will_be_replaced_in_deploy"
+mnemonic_mcp_binary_sha256: "REPLACE_WITH_REAL_SHA256_BEFORE_DEPLOY"
 
 mnemonic_mcp_install_dir: /opt/mnemonic-mcp
 mnemonic_mcp_config_dir: /etc/mnemonic-mcp
@@ -25,3 +25,6 @@ solana_devnet_rpc_url: "https://api.devnet.solana.com"
 arweave_testnet_url: "https://testnet.arweave.net"
 
 mnemonic_mcp_healthcheck_timeout: 10
+
+# mnemonic_mcp_vault_path is a vault REFERENCE, not a credential;
+# the actual signing key is never materialized in ansible variables

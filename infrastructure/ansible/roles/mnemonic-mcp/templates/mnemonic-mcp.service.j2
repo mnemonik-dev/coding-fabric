@@ -26,8 +26,24 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-NoNewPrivileges=yes
-ReadWritePaths={{ mnemonic_mcp_install_dir }} {{ mnemonic_mcp_config_dir }}
+ReadWritePaths={{ mnemonic_mcp_install_dir }} {{ mnemonic_mcp_config_dir }} /var/lib/mnemonic-mcp
+
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET
+RestrictNamespaces=yes
+LockPersonality=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+MemoryDenyWriteExecute=yes
+UMask=0077
+PrivateDevices=yes
 
 StandardOutput=journal
 StandardError=journal
