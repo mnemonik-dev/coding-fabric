@@ -1,0 +1,132 @@
+---
+- name: Create Kaneo directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: op
+    group: op
+    mode: '0700'
+  loop:
+    - /opt/kaneo
+    - /opt/kaneo/data
+
+- name: Generate docker-compose.yml from template
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: /opt/kaneo/docker-compose.yml
+    owner: op
+    group: op
+    mode: '0600'
+  register: compose_template
+  notify: Restart kaneo
+
+- name: Generate Caddy vhost snippet from template
+  ansible.builtin.template:
+    src: Caddyfile.snippet.j2
+    dest: /opt/kaneo/Caddyfile.snippet
+    owner: op
+    group: op
+    mode: '0644'
+  register: caddyfile_snippet
+  notify: Reload caddy for kaneo vhost
+
+- name: Run docker compose to start kaneo stack
+  community.docker.docker_compose_v2:
+    project_src: /opt/kaneo
+    state: present
+    pull: always
+  environment:
+    COMPOSE_PROJECT_NAME: kaneo
+  become: true
+  become_user: op
+  register: compose_result
+
+- name: Wait for Kaneo API to be healthy
+  ansible.builtin.uri:
+    url: "http://{{ tailscale_ip }}:{{ kaneo_http_port }}{{ kaneo_health_endpoint }}"
+    method: GET
+    status_code: 200
+  register: health_result
+  until: health_result.status == 200
+  retries: 60
+  delay: 1
+  timeout: 60
+  changed_when: false
+  failed_when: false
+
+- name: Fail if health check exceeded timeout
+  ansible.builtin.fail:
+    msg: "Kaneo health check failed after 60 seconds. Check docker logs: docker compose -f /opt/kaneo/docker-compose.yml logs"
+  when: health_result.failed
+
+- name: Get existing projects from Kaneo API
+  ansible.builtin.uri:
+    url: "http://{{ tailscale_ip }}:{{ kaneo_http_port }}{{ kaneo_projects_endpoint }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ kaneo_api_token }}"
+    return_content: true
+    status_code: 200
+  register: existing_projects_response
+  changed_when: false
+  no_log: true
+
+- name: Parse existing project names
+  ansible.builtin.set_fact:
+    existing_project_names: "{{ existing_projects_response.json | map(attribute='name') | list }}"
+  when: existing_projects_response.status == 200 and existing_projects_response.json is defined
+
+- name: Create Kaneo default projects (idempotent via prior GET check)
+  ansible.builtin.uri:
+    url: "http://{{ tailscale_ip }}:{{ kaneo_http_port }}{{ kaneo_projects_endpoint }}"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ kaneo_api_token }}"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      name: "{{ item.name }}"
+      description: "{{ item.description }}"
+    status_code: 201
+    return_content: true
+  register: project_create_result
+  retries: 3
+  delay: 1
+  until: project_create_result.status == 201 or project_create_result.status == 409
+  when: item.name not in existing_project_names
+  loop: "{{ kaneo_default_projects }}"
+  no_log: true
+  loop_control:
+    pause: "{{ kaneo_project_create_delay }}"
+
+- name: Verify all default projects exist
+  ansible.builtin.uri:
+    url: "http://{{ tailscale_ip }}:{{ kaneo_http_port }}{{ kaneo_projects_endpoint }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ kaneo_api_token }}"
+    return_content: true
+    status_code: 200
+  register: final_projects_response
+  changed_when: false
+  no_log: true
+
+- name: Parse final project names
+  ansible.builtin.set_fact:
+    final_project_names: "{{ final_projects_response.json | map(attribute='name') | list }}"
+  when: final_projects_response.status == 200 and final_projects_response.json is defined
+
+- name: Verify exactly 6 default projects exist
+  ansible.builtin.assert:
+    that:
+      - final_project_names | length == 6
+      - kaneo_default_projects | map(attribute='name') | list | difference(final_project_names) | length == 0
+    fail_msg: "Expected 6 projects, found {{ final_project_names | length }}. Missing: {{ kaneo_default_projects | map(attribute='name') | list | difference(final_project_names) }}"
+    success_msg: "All 6 default Kaneo projects verified: {{ final_project_names | sort }}"
+
+- name: Verify Kaneo container is running
+  ansible.builtin.shell: |
+    docker ps --filter "label=com.docker.compose.service=kaneo" --format "{{.Names}}"
+  register: container_check
+  failed_when: container_check.stdout_lines | length < 1
+  changed_when: false

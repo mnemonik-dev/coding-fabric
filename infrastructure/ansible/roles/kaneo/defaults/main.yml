@@ -1,0 +1,62 @@
+---
+# Kaneo deployment configuration
+# All variables are prefixed with kaneo_
+
+# Docker image tags
+# TODO: Lock to a specific Kaneo release tag when kaneo-app/kaneo repo is available
+# Kaneo is an open-source project management tool (see https://github.com/kaneo-app/kaneo)
+# Current placeholder; operator can override via group_vars or host_vars
+kaneo_image: "kaneo/kaneo:latest"
+
+# Network binding (from tailscale role fact)
+# WARNING: Must be bound to {{ tailscale_ip }}, never to 0.0.0.0
+# This variable is expected to be set by the tailscale role
+kaneo_tailnet_domain: "kaneo.mnemonic-fabric.ts"
+
+# Data directory
+kaneo_data_dir: "/opt/kaneo/data"
+
+# Ports (internal to tailnet only)
+kaneo_http_port: 3030
+
+# Database configuration
+# Kaneo supports both SQLite and PostgreSQL; defaulting to SQLite for simplicity
+kaneo_database_type: "sqlite"
+kaneo_database_path: "/opt/kaneo/data/kaneo.db"
+
+# CRITICAL: API admin token MUST be provided by the playbook via sops decryption
+# It is NOT defined here; role will fail clearly if missing.
+# Playbook should decrypt from infrastructure/secrets/secrets.sops.yml and pass:
+# - kaneo_api_token
+#
+# Example from sops (encrypted at rest in git):
+#   KANEO_API_TOKEN: "..."
+#
+# The playbook (Task 24 deploy.yml) decrypts these before invoking this role.
+
+# Default projects to seed (idempotent via GET before POST)
+kaneo_default_projects:
+  - name: "mnemonic-core"
+    description: "Core cryptographic protocol implementation"
+  - name: "mnemonic-mcp"
+    description: "Model Context Protocol integration for Mnemonic"
+  - name: "mnemonic-wasm"
+    description: "WebAssembly bindings and WASM-target compilation"
+  - name: "mnemonic-demo-client"
+    description: "Demo client application showcasing Mnemonic Protocol"
+  - name: "mnemonic-docs"
+    description: "Protocol documentation and guides"
+  - name: "mnemonic-loop"
+    description: "Self-hosted coding fabric for Mnemonic Protocol development"
+
+# Health endpoint (used for wait_for checks)
+kaneo_health_endpoint: "/api/health"
+
+# Projects endpoint (used for idempotent seeding)
+kaneo_projects_endpoint: "/api/projects"
+
+# Delay between project creates (rate-limit friendliness)
+kaneo_project_create_delay: 0.5
+
+# Docker Compose settings
+compose_project_name: "kaneo"

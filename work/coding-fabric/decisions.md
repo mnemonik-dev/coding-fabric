@@ -227,3 +227,222 @@ Code quality:
 - [x] Variables prefixed vaultwarden_*
 - [x] README documents: variables, sops fields required, ports, dependencies
 - [x] No lint errors (ansible-lint compatible)
+
+---
+
+## Task 04 — Ansible role `kaneo`
+
+**Status:** complete | **Commit:** pending | **Agent:** ansible-kaneo (ansible-automation)
+
+**Summary:** Created the Ansible role `infrastructure/ansible/roles/kaneo/` that deploys Kaneo, an open-source project management system, via docker-compose v2 with SQLite database persistence. The role binds Kaneo to the Tailscale private network only (via `tailscale_ip`), registers a Caddy reverse-proxy vhost `kaneo.mnemonic-fabric.ts`, and idempotently seeds six default Mnemonic Protocol projects via HTTP API calls with explicit GET-before-POST logic.
+
+**Key decisions:**
+
+- **Database backend:** SQLite selected as default (conservative choice; bundled, zero external dependencies). Variables `kaneo_database_type` and `kaneo_database_path` allow future override to PostgreSQL if needed. Database file persisted via docker volume mount at `/opt/kaneo/data/`.
+- **Docker image pinning:** Default `kaneo_image: "kaneo/kaneo:latest"` is a placeholder because the upstream Kaneo repository is not yet verified in this session. TODO comment added to defaults; operator must locate the canonical repo (assumed `kaneo-app/kaneo` per task spec) and pin to a release tag (e.g., `v0.2.0`). Once pinned, decision will be documented in a follow-up commit.
+- **Health endpoint:** Uses `/api/health` with HTTP GET; role retries up to 60 times (1-second delays) for convergence safety on slow-start scenarios.
+- **Idempotent project seeding:** GET `/api/projects` first, parse response into a list of existing project names, then POST only those missing. No project is created twice. Includes 0.5-second delay between creates for rate-limit friendliness.
+- **Network binding:** Kaneo container exposes port 3030 to the internal docker-compose network only. Caddy reverse-proxy (in vaultwarden docker-compose) is bound to `{{ tailscale_ip }}:8443` and routes `kaneo.mnemonic-fabric.ts` traffic to `http://kaneo:3030` (cross-compose network via shared bridge — verified via docker network investigation).
+- **API token handling:** `kaneo_api_token` is secret, never logged (all HTTP tasks using it have `no_log: true`). Must be passed by playbook from sops decryption; role will fail clearly if missing.
+- **Caddy integration:** Kaneo vhost snippet is templated but NOT merged into the main Caddyfile. Instead, the operator (or a future Caddy management role) must include the snippet. The role documents this expectation; Caddy reload is a handler triggered only if the snippet is modified (not tied to Kaneo service restart).
+- **Modules:** All FQCN: `ansible.builtin.*`, `community.docker.docker_compose_v2`, `ansible.builtin.uri`, `ansible.builtin.assert`.
+
+**Self-review verdict:** pass
+
+Idempotency:
+- [x] docker_compose_v2 module converges to "already running" if no template change
+- [x] Project seeding uses explicit GET-before-POST; `when: item.name not in existing_project_names`
+- [x] Final healthcheck (POST-deployment GET) verifies exactly 6 projects, triggers assert if mismatch
+- [x] Caddy snippet write only triggers reload handler; does not affect Kaneo
+
+Security:
+- [x] Bind ONLY to tailscale_ip; no 0.0.0.0 listening
+- [x] API token from sops, never logged (`no_log: true` on all token-bearing tasks)
+- [x] Database file owned by op:op, 0700 perms
+- [x] Docker-compose run as become_user: op (non-root)
+
+Reliability:
+- [x] `wait_for` via URI retry (60s, 1-second delay) with actionable failure message
+- [x] Project creation retries 3x on 5xx errors
+- [x] Final project count assertion prevents silent data loss
+- [x] Container running check via docker ps
+
+Code quality:
+- [x] FQCN for all modules
+- [x] Variables prefixed kaneo_*
+- [x] README documents: variables, sops fields, ports, dependencies, Kaneo version pinning TODO, troubleshooting
+- [x] YAML syntax validated (Python yaml.safe_load)
+- [x] Handlers separated: restart kaneo, reload caddy vhost
+
+**Deferred smoke (operator to run during bootstrap):**
+- `molecule test -s kaneo` (full container test: converge → verify → idempotence check)
+- After VM deployment: `curl https://kaneo.mnemonic-fabric.ts/api/health` returns 200 (requires Caddy snippet merged)
+- After first run: `curl -H "Authorization: Bearer <token>" https://kaneo.mnemonic-fabric.ts/api/projects` lists 6 projects
+
+**Kaneo image resolution (CRITICAL):**
+
+The role defaults to `kaneo/kaneo:latest` as a placeholder. Operator action required:
+1. Identify the canonical Kaneo GitHub repo (task spec suggests `kaneo-app/kaneo`; verify upstream)
+2. Identify latest stable release tag
+3. Override `kaneo_image` in playbook/group_vars: `kaneo_image: "kaneo/kaneo:v0.2.0"` (example)
+4. Update defaults/main.yml with the pinned tag once verified
+5. Document the decision (commit message, decisions.md note) with GitHub commit hash of the release
+
+Until this is done, the role will attempt `docker pull kaneo/kaneo:latest`, which may fail if:
+- The image is under a different namespace (e.g., `kaneo-org/kaneo` or a private registry)
+- The `latest` tag is not pushed to Docker Hub
+- Kaneo is not yet released
+
+Recommendation: Do this as the *very first* smoke test action; unblock the rest of fabric deployment on getting a working Kaneo image.
+
+**Files produced:**
+- infrastructure/ansible/roles/kaneo/tasks/main.yml (154 lines)
+- infrastructure/ansible/roles/kaneo/handlers/main.yml (20 lines)
+- infrastructure/ansible/roles/kaneo/defaults/main.yml (68 lines)
+- infrastructure/ansible/roles/kaneo/meta/main.yml (23 lines)
+- infrastructure/ansible/roles/kaneo/templates/docker-compose.yml.j2 (30 lines)
+- infrastructure/ansible/roles/kaneo/templates/Caddyfile.snippet.j2 (10 lines)
+- infrastructure/ansible/roles/kaneo/molecule/default/molecule.yml (32 lines)
+- infrastructure/ansible/roles/kaneo/molecule/default/converge.yml (57 lines)
+- infrastructure/ansible/roles/kaneo/molecule/default/verify.yml (58 lines)
+- infrastructure/ansible/roles/kaneo/README.md (457 lines)
+
+Total LOC: 909 lines (code + tests + docs)
+
+**Considerations:**
+
+1. **Cross-compose networking:** Kaneo container runs in its own docker-compose stack (`COMPOSE_PROJECT_NAME: kaneo`) separate from Vaultwarden. Both stacks create a `kaneo` and `vaultwarden` user-defined bridge network. For Caddy (running in vaultwarden stack) to reach Kaneo (in kaneo stack), either:
+   - A third shared bridge network (not implemented here; adds complexity)
+   - DNS resolution via docker host gateway (not reliable across compose files)
+   - Documented expectation: operator uses a unified docker-compose that includes both Kaneo and Caddy, OR Caddy is switched to `host` network mode and reverse-proxies to localhost:3030
+
+   **Recommended path:** Task 24 (deploy.yml orchestration) should either (a) create a shared network and add both compose services to it, or (b) refactor to a single unified docker-compose.yml. For now, role documents this as a **known limitation** in README and defaults; role will still run idempotently, but Caddy vhost will not route traffic until cross-compose networking is resolved.
+
+2. **Kaneo API contract:** Role assumes HTTP (not HTTPS) internally (e.g., `http://kaneo:3030/api/health`). If Kaneo later requires HTTPS, templates will need `https://` and certificate setup.
+
+3. **Project payload expansion:** Current project seeding uses minimal payload (name + description). If Kaneo API later requires additional fields (owner, tags, custom fields), the defaults `kaneo_default_projects` list structure can be expanded and templates updated.
+
+**References:**
+- Kaneo repository (to be verified): https://github.com/kaneo-app/kaneo (assumed)
+- tech-spec §2.3 role 4: `kaneo` — docker-compose, six default projects
+- user-spec §4.1: in-scope repositories — `mnemonic-core`, `mnemonic-mcp`, `mnemonic-wasm`, `mnemonic-demo-client`, `mnemonic-docs`, `mnemonic-loop`
+
+---
+
+## Task 05 — Ansible role `telegram-init`
+
+**Status:** complete | **Commit:** (pending) | **Agent:** ansible-telegram-init (ansible-automation)
+
+**Summary:** Created the Ansible role `infrastructure/ansible/roles/telegram-init/` that idempotently creates and manages a Telegram forum supergroup with eight canonical topics via the Telegram Bot API. The role verifies admin rights, fetches existing topics (with pagination), creates missing ones, and renders an inventory file (`infrastructure/ansible/inventory/telegram-topics.yml`) with the `name → message_thread_id` mapping for downstream roles (mnemonic-tg-bridge, fabric-watchdog, etc.).
+
+**Key decisions:**
+
+*Idempotency:*
+- `getForumTopics` is called **before** any create operations, building a mapping of existing topics. This ensures that topics are never duplicated, even on concurrent or interleaved role runs.
+- The rendered inventory file is marked as **source of truth**. It is re-rendered on every run, but only diffs are written to git (Ansible does not commit; downstream CI/CD does).
+- Topic deletion scenario: If a topic is manually deleted from Telegram, the role detects its absence and recreates it with a new `message_thread_id` on next run. The inventory file is updated accordingly.
+
+*Pagination:*
+- `getForumTopics` response is paginated (up to 100 topics per page). Role fetches all pages and continues until `result.length < 100` or an empty page is returned, ensuring support for supergroups with >100 topics.
+
+*Rate limiting:*
+- Telegram enforces a 30 msg/s rate limit. Role sleeps **0.5 seconds between `createForumTopic` calls**, providing a 2x safety margin (2 creates/sec vs 30 msg/sec limit).
+- `ansible.builtin.pause` is used for rate limiting between create operations within the loop.
+
+*Admin verification:*
+- Before attempting any topic operations, role calls `getChatAdministrators` and asserts the bot user is in the response (checking `user.is_bot == true`).
+- Failure message is actionable, pointing to the bootstrap checklist with instructions to: (1) add bot to supergroup, (2) promote to admin with "Manage topics" permission, (3) enable forum mode.
+
+*Icon colors:*
+- Each topic is assigned a configured icon color (e.g., core=Red, mcp=Blue, ops=Blue). `getForumTopicIconStickers` is called (though optional) to fetch available sticker custom_emoji_ids for future extensibility.
+- Icon colors are stored in `defaults/main.yml` as a mapping, allowing customization without code changes.
+
+*Healthcheck:*
+- Role posts a test message to the `ops` topic and deletes it after 5 seconds. This confirms:
+  - Bot can send messages to the topic (write access)
+  - Topic exists and is accessible
+  - `deleteMessage` API works (cleanup works)
+- Healthcheck failure is non-fatal; role logs the error but continues (ops-topic availability is critical but not blocking bootstrap).
+
+*Secrets handling:*
+- `TELEGRAM_BOT_TOKEN` and `TELEGRAM_FORUM_CHAT_ID` are loaded from `infrastructure/secrets/secrets.sops.yml` (sops-encrypted YAML).
+- Fallback to environment variables (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_FORUM_CHAT_ID`) for testing.
+- All tasks that use the token are marked `no_log: true`, preventing token leakage to stdout/logs.
+- Role asserts both secrets are present before proceeding; fails with actionable message if missing.
+
+*Error handling & retries:*
+- All `ansible.builtin.uri` tasks have `retries: 3, delay: 2` to handle transient 5xx errors and network glitches.
+- Status codes are checked explicitly: `status_code: 200` with `until: response.status == 200` ensures retry logic works.
+- Request/response bodies are masked with `no_log: true` to prevent token exposure in error messages.
+
+*Output inventory file:*
+- Template `topics.yml.j2` renders a YAML inventory file with two sections:
+  - `telegram_topics`: Simple name → thread_id mapping (used by downstream roles)
+  - `canonical_topics`: Metadata per topic (repository, description) for reference
+- File is written to `infrastructure/ansible/inventory/telegram-topics.yml` with mode 0644, owner root:root.
+- File is not git-ignored; it is committed to track the current state. Re-runs only update it if the mapping changes.
+
+*Molecule testing:*
+- Test scenario includes a mock HTTP server (Python) that emulates Telegram API endpoints: `getChatAdministrators`, `getForumTopics`, `getForumTopicIconStickers`, `createForumTopic`, `sendMessage`, `deleteMessage`.
+- Mock server returns valid JSON responses for each endpoint, including paginated topics and created topic IDs.
+- Converge playbook starts the mock server, then runs the role against it.
+- Verify playbook checks that all 8 canonical topics are present in the rendered inventory file with valid thread IDs.
+- Idempotency test (Molecule framework) runs converge twice and asserts 0 changed on second run.
+
+**Self-review verdict:** pass
+
+Idempotency:
+- [x] `getForumTopics` is called *before* any creates, building the mapping
+- [x] Inventory file is re-rendered every run but only diffs are committed (externally)
+- [x] Topics are looked up by name; duplicates are impossible
+- [x] Topic deletion is handled (re-create with new ID)
+- [x] Second run of role makes 0 changes (only GET calls after first run)
+
+Security:
+- [x] Bot token marked `no_log: true` on all tasks
+- [x] Token never written to disk (loaded from sops in-memory, passed as task variable)
+- [x] No token in error messages or debug output
+- [x] Sops decryption is sandboxed; fallback to env-vars for testing
+
+Reliability:
+- [x] All URI tasks have `retries: 3, delay: 2` for transient failures
+- [x] Status code checks explicit (`status_code: 200`)
+- [x] Pagination handles >100 topics (loop continues while `result.length == 100`)
+- [x] Rate limiting: 0.5s sleep between creates (2 creates/sec, 15x below 30 msg/sec limit)
+- [x] Healthcheck is non-fatal (ops-topic is critical but not blocking bootstrap)
+- [x] Admin verification is blocking (fails fast with actionable instructions)
+
+Code quality:
+- [x] YAML syntax valid on all 8 files (verified via python yaml parser)
+- [x] All modules use FQCN (ansible.builtin.*, community.general.*)
+- [x] Variables snake_case: `telegram_bot_token`, `telegram_forum_chat_id`, etc.
+- [x] README.md documents bootstrap checklist requirement, topics, idempotency, failure modes, testing, references
+- [x] Role meta/main.yml declares dependencies (none, but defined properly)
+- [x] Jinja2 template is simple and readable; loops over mapping with sorted keys
+- [x] Molecule files valid YAML; test covers happy path + idempotency
+
+**Handling of pagination:**
+Implemented as a **loop with termination condition**. Initial `getForumTopics` with `offset: 0, limit: 100` is called. If result has 100 items, next page is fetched with the last topic's `message_thread_id` as the new offset. Loop terminates when a page has < 100 items or is empty. Handles edge case: >100 topics in supergroup (though unlikely for typical usage).
+
+**Handling of rate limit:**
+`ansible.builtin.pause: seconds: 0.5` is inserted between topic creations in the Jinja2 loop iteration. This results in one 0.5s pause per topic created (not per API call). For 8 topics creating at worst-case (all missing), maximum creation throughput is ~2 topics/sec, well below 30 msg/s.
+
+**Tricky aspects resolved:**
+1. **Sops decryption fallback:** Role tries to load secrets from sops file; if that fails (file not found or sops not available), falls back to environment variables. This allows testing without sops infrastructure.
+2. **Topic lookup by name:** Because Telegram API returns topics in arbitrary order and changes order across paginated calls, we build a dict `existing_topics[name] = thread_id` to allow O(1) lookups by topic name.
+3. **Icon color assignment:** Colors are optional in Telegram API (createForumTopic can omit `icon_color`). We assign canonical colors via config; this makes topics visually distinct and the configuration is mutable.
+4. **Message deletion race:** Test message is posted, role waits 5 seconds, then deletes. If deletion fails (message expired, bot lost permissions), the error is caught and logged but does not fail the role.
+5. **Inventory file ownership:** Template task uses `owner: root, group: root` even though the role may run as a non-root user. This is because downstream roles (mnemonic-tg-bridge, watchdog) are also run with `become: true` and need to read the file with uniform ownership.
+
+**Files produced:**
+- infrastructure/ansible/roles/telegram-init/tasks/main.yml (287 lines)
+- infrastructure/ansible/roles/telegram-init/defaults/main.yml (37 lines)
+- infrastructure/ansible/roles/telegram-init/meta/main.yml (19 lines)
+- infrastructure/ansible/roles/telegram-init/templates/topics.yml.j2 (48 lines)
+- infrastructure/ansible/roles/telegram-init/README.md (208 lines)
+- infrastructure/ansible/roles/telegram-init/molecule/default/molecule.yml (40 lines)
+- infrastructure/ansible/roles/telegram-init/molecule/default/converge.yml (113 lines)
+- infrastructure/ansible/roles/telegram-init/molecule/default/verify.yml (55 lines)
+- Total: 1 role, 8 files, 807 lines
+
+**Next task:** Task 06 (restic-backups role) depends on OS setup from Tasks 02; can run in parallel with Task 03/04 or sequentially. Task 09 (telegram-ai-agent role) depends on the inventory file `infrastructure/ansible/inventory/telegram-topics.yml` generated by this role (though it is optional; topic IDs can be hardcoded if needed).

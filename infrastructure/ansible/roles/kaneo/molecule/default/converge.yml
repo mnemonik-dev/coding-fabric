@@ -1,0 +1,71 @@
+---
+- name: Converge
+  hosts: all
+  gather_facts: true
+  vars:
+    tailscale_ip: "127.0.0.1"
+    kaneo_api_token: "test-api-token-secret"
+  tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+
+    - name: Install Docker and Docker Compose plugin
+      block:
+        - name: Install Docker dependencies
+          ansible.builtin.apt:
+            name:
+              - curl
+              - ca-certificates
+              - gnupg
+              - lsb-release
+            state: present
+          when: ansible_os_family == "Debian"
+
+        - name: Add Docker GPG key
+          ansible.builtin.shell: |
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+          when: ansible_os_family == "Debian"
+
+        - name: Add Docker APT repository
+          ansible.builtin.shell: |
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
+          when: ansible_os_family == "Debian"
+
+        - name: Update apt cache (Docker)
+          ansible.builtin.apt:
+            update_cache: true
+          when: ansible_os_family == "Debian"
+
+        - name: Install Docker packages
+          ansible.builtin.apt:
+            name:
+              - docker-ce
+              - docker-ce-cli
+              - containerd.io
+              - docker-buildx-plugin
+              - docker-compose-plugin
+            state: present
+          when: ansible_os_family == "Debian"
+
+        - name: Start Docker daemon
+          ansible.builtin.systemd:
+            name: docker
+            state: started
+            enabled: true
+            daemon_reload: true
+          when: ansible_os_family == "Debian"
+
+    - name: Create op user
+      ansible.builtin.user:
+        name: op
+        shell: /bin/bash
+        createhome: true
+        groups: docker
+        state: present
+
+    - name: Include kaneo role
+      ansible.builtin.include_role:
+        name: kaneo

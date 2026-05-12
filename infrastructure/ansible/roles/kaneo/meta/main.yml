@@ -1,0 +1,19 @@
+---
+galaxy_info:
+  author: "Mnemonic Protocol"
+  description: "Deploy Kaneo project management system via docker-compose with six default projects seeded via API"
+  company: "Mnemonic Protocol"
+  license: "MIT"
+  min_ansible_version: "2.15"
+  tags:
+    - docker
+    - kaneo
+    - project-management
+    - tailscale
+    - caddy
+
+dependencies:
+  - role: tailscale
+    tags: always
+  - role: base
+    tags: always

@@ -1,0 +1,37 @@
+---
+dependency:
+  name: galaxy
+  options:
+    requirements-file: requirements.yml
+
+driver:
+  name: docker
+
+platforms:
+  - name: kaneo-test
+    image: ubuntu:24.04
+    hostname: kaneo-test
+    privileged: true
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      - /var/lib/docker:/var/lib/docker
+    env:
+      ANSIBLE_USER: root
+
+provisioner:
+  name: ansible
+  inventory:
+    hosts:
+      all:
+        vars:
+          tailscale_ip: "127.0.0.1"
+          kaneo_api_token: "test-token-{{ ansible_date_time.iso8601_basic_short }}"
+  playbooks:
+    converge: converge.yml
+    verify: verify.yml
+  log: true
+
+verifier:
+  name: ansible
+  playbooks:
+    verify: verify.yml

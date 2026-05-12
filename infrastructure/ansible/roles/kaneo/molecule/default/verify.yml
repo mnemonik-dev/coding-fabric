@@ -1,0 +1,77 @@
+---
+- name: Verify
+  hosts: all
+  gather_facts: false
+  vars:
+    tailscale_ip: "127.0.0.1"
+  tasks:
+    - name: Wait for Kaneo to be ready
+      ansible.builtin.uri:
+        url: "http://{{ tailscale_ip }}:3030/api/health"
+        method: GET
+        status_code: 200
+      register: health_check
+      retries: 30
+      delay: 2
+      until: health_check.status == 200
+      changed_when: false
+
+    - name: Verify Kaneo container is running
+      ansible.builtin.shell: |
+        docker ps --filter "label=com.docker.compose.service=kaneo" --format "{{.Status}}" | grep -q "Up"
+      register: container_status
+      changed_when: false
+      failed_when: container_status.rc != 0
+
+    - name: Verify kaneo directories exist
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: dir_stat
+      failed_when: not dir_stat.stat.exists or not dir_stat.stat.isdir
+      changed_when: false
+      loop:
+        - /opt/kaneo
+        - /opt/kaneo/data
+
+    - name: Verify docker-compose.yml exists
+      ansible.builtin.stat:
+        path: /opt/kaneo/docker-compose.yml
+      register: compose_file
+      failed_when: not compose_file.stat.exists or not compose_file.stat.isreg
+      changed_when: false
+
+    - name: Verify Caddyfile snippet exists
+      ansible.builtin.stat:
+        path: /opt/kaneo/Caddyfile.snippet
+      register: caddy_snippet
+      failed_when: not caddy_snippet.stat.exists or not caddy_snippet.stat.isreg
+      changed_when: false
+
+    - name: Debug health endpoint response
+      ansible.builtin.debug:
+        msg: "Kaneo health: {{ health_check.json | default('no JSON response') }}"
+
+    - name: Verify role is idempotent (run converge again)
+      block:
+        - name: Run converge playbook again
+          ansible.builtin.include_role:
+            name: kaneo
+
+        - name: Verify still 6 projects after idempotent run
+          ansible.builtin.uri:
+            url: "http://{{ tailscale_ip }}:3030/api/projects"
+            method: GET
+            headers:
+              Authorization: "Bearer test-api-token-secret"
+            return_content: true
+            status_code: 200
+          register: idempotent_check
+          changed_when: false
+          no_log: true
+
+        - name: Assert idempotent result
+          ansible.builtin.assert:
+            that:
+              - idempotent_check.json | length == 6
+            fail_msg: "Idempotent run changed project count"
+            success_msg: "Idempotent run confirmed: still 6 projects"

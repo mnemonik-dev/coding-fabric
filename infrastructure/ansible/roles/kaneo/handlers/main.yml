@@ -1,0 +1,19 @@
+---
+- name: Restart kaneo
+  community.docker.docker_compose_v2:
+    project_src: /opt/kaneo
+    state: present
+    restarted: true
+    services:
+      - kaneo
+  environment:
+    COMPOSE_PROJECT_NAME: kaneo
+  become: true
+  become_user: op
+
+- name: Reload caddy for kaneo vhost
+  ansible.builtin.shell: |
+    docker exec vaultwarden-caddy-1 caddy reload -c /etc/caddy/Caddyfile || true
+  become: true
+  changed_when: false
+  ignore_errors: true
