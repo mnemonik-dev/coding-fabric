@@ -1,0 +1,115 @@
+{
+  "reviewer": "reliability-engineer",
+  "task": "02",
+  "round": 1,
+  "commit": "49c2bb1",
+  "verdict": "FAIL",
+  "summary": "Auto-reboot is enabled with no guard. The tailscale role disables password auth before confirming Tailscale SSH is reachable — violating the spec's implied ordering. The `tailscale_ip` fact is silently skipped on empty output rather than failing. The `tailscale up` idempotency signal is wrong (checks stdout strings that do not appear on a no-op re-run). UFW deny-all applies in the base role before the tailscale role runs, creating a lockout window. Molecule verify for tailscale has no live-auth path and ignores_errors on the only meaningful check.",
+  "findings": [
+    {
+      "id": "RE-01",
+      "severity": "CRITICAL",
+      "category": "availability",
+      "title": "Auto-reboot enabled with no reboot window guard",
+      "file": "infrastructure/ansible/roles/base/files/50unattended-upgrades",
+      "detail": "The file contains `Unattended-Upgrade::AutoRebootTime \"04:00\";` but is missing `Unattended-Upgrade::Automatic-Reboot \"false\";`. The AutoRebootTime key is only effective when Automatic-Reboot is true. If the distro default for Automatic-Reboot is already true (Ubuntu 24.04 ships it as false by default, but the key is absent here), any kernel or libc upgrade at 04:00 will reboot the VM unannounced, taking down all services. The config omits the explicit `Automatic-Reboot \"false\";` line required to guarantee no-reboot.",
+      "recommendation": "Add `Unattended-Upgrade::Automatic-Reboot \"false\";` explicitly. Remove `AutoRebootTime` since it is unused and misleading. Add a separate task 06 (restic) to schedule maintenance windows with reboot control."
+    },
+    {
+      "id": "RE-02",
+      "severity": "CRITICAL",
+      "category": "availability",
+      "title": "Password auth disabled before Tailscale SSH confirmed reachable — lockout risk",
+      "file": "infrastructure/ansible/roles/base/tasks/main.yml",
+      "detail": "The `base` role disables SSH password auth and root login unconditionally in its task list. The `tailscale` role runs after `base`. If Tailscale authentication fails (network, key expiry, auth-key sync delay), the operator loses the only remaining SSH path into the VM. The spec comment in tasks/02.md says `ssh root@vm over public IP fails; SSH only over tailnet` which implies Tailscale SSH must be verified working before public-key-only SSH is enforced. The current code does not verify `tailscale ssh` is reachable before hardening.",
+      "recommendation": "Split into three phases: (1) harden SSH keys only (disable root, keep password temporarily), (2) run tailscale role and assert `tailscale status` online and `tailscale ip -4` returns an IP, (3) disable password auth. Alternatively, add a `wait_for` task checking Tailscale SSH port before disabling password auth."
+    },
+    {
+      "id": "RE-03",
+      "severity": "HIGH",
+      "category": "idempotency",
+      "title": "`tailscale up` changed_when is wrong — second run always reports unchanged incorrectly",
+      "file": "infrastructure/ansible/roles/tailscale/tasks/main.yml",
+      "detail": "The `changed_when` condition checks for `'IPV4' in tailscale_up_result.stdout or 'Logged in as' in tailscale_up_result.stdout`. On a second run where the node is already authenticated, `tailscale up` exits 0 with empty stdout or a message like `Already logged in as...`. Neither `IPV4` nor `Logged in as` appears in that output, so the task always reports `ok` even on first run where it actually changed state. Conversely, if the output format changes across Tailscale versions the detection breaks silently.",
+      "recommendation": "Use `changed_when: tailscale_up_result.rc == 0 and 'already' not in tailscale_up_result.stdout | lower` or, better, check pre/post `tailscale status` to detect state transitions. A cleaner approach: `tailscale status --json | jq .BackendState` before and after."
+    },
+    {
+      "id": "RE-04",
+      "severity": "HIGH",
+      "category": "availability",
+      "title": "UFW deny-all applied before Tailscale role runs — SSH lockout window",
+      "file": "infrastructure/ansible/roles/base/tasks/main.yml",
+      "detail": "The `base` role sets `ufw default deny incoming`, allows the `tailscale0` interface, then enables UFW — all in the `base` role. The `tailscale` role runs afterward. Between the moment UFW activates and the moment `tailscale up` completes and `tailscale0` is up, the host has no incoming connections permitted. If the Ansible controller connection uses public SSH (not yet on tailnet), it will be severed by UFW activation at line `Enable ufw`. The `tailscale0` allow rule references an interface that does not yet exist when UFW enables.",
+      "recommendation": "Add an explicit UFW rule to allow the existing Ansible controller's IP (or SSH port 22) before enabling UFW, then remove it after Tailscale is confirmed online. Alternatively, run the tailscale role before enforcing UFW deny-all in the play-level ordering. A `pre_tasks` block in the site playbook establishing Tailscale before UFW is activated is the safest approach."
+    },
+    {
+      "id": "RE-05",
+      "severity": "HIGH",
+      "category": "fault-tolerance",
+      "title": "`tailscale_ip` fact silently skipped on empty output — downstream roles get undefined var",
+      "file": "infrastructure/ansible/roles/tailscale/tasks/main.yml",
+      "detail": "The `Register tailscale_ip fact` task has `when: tailscale_ip_cmd.stdout | length > 0`. If `tailscale ip -4` returns empty (interface not yet up, auth failure, or flapping), the task is skipped with no error. Downstream roles (e.g., vaultwarden binding to `tailscale_ip`) will fail with an undefined variable error at a much later, less obvious point.",
+      "recommendation": "Replace the `when` guard with `failed_when: tailscale_ip_cmd.stdout | length == 0` on the `Get Tailscale IPv4 address` task, or add an explicit `ansible.builtin.assert` immediately after set_fact that `tailscale_ip is defined and tailscale_ip | length > 0`."
+    },
+    {
+      "id": "RE-06",
+      "severity": "MEDIUM",
+      "category": "idempotency",
+      "title": "`lineinfile` sudo file not idempotent — may duplicate on edge cases",
+      "file": "infrastructure/ansible/roles/base/tasks/main.yml",
+      "detail": "The `Configure sudo for operator user (NOPASSWD)` task uses `lineinfile` with `create: true` but no `regexp` to match existing lines. If the file already contains the entry (possibly with slightly different spacing), `lineinfile` will append a second copy rather than replace. This breaks `visudo -cf` validation on the second line.",
+      "recommendation": "Add `regexp: '^{{ base_operator_user }}\\s'` to the `lineinfile` task so it matches and replaces an existing entry rather than appending."
+    },
+    {
+      "id": "RE-07",
+      "severity": "MEDIUM",
+      "category": "idempotency",
+      "title": "`Allow established/related connections` ufw rule uses invalid policy parameter",
+      "file": "infrastructure/ansible/roles/base/tasks/main.yml",
+      "detail": "The task `Allow established/related connections` passes `policy: established,related` to the `community.general.ufw` module. The `policy` parameter in that module is for default policies (allow/deny/reject/limit), not for stateful match strings. This task will either error or be silently ignored, meaning established connections may not be explicitly tracked (UFW handles stateful by default at the kernel level, but the intent is unclear and the module call is wrong).",
+      "recommendation": "Remove this task — UFW handles stateful connection tracking automatically via conntrack. If explicit documentation of the rule is desired, add a comment. Do not use `policy: established,related` as it is not a valid ufw module parameter."
+    },
+    {
+      "id": "RE-08",
+      "severity": "MEDIUM",
+      "category": "observability",
+      "title": "Molecule verify for tailscale uses `ignore_errors: true` on the only meaningful check",
+      "file": "infrastructure/ansible/roles/tailscale/molecule/default/verify.yml",
+      "detail": "The task `Get tailscale status (may show offline in test container)` is the only check that validates Tailscale's operational state, and it has `ignore_errors: true`. The verify scenario cannot catch a broken `tailscale status` return because the failure is swallowed. All other verify tasks only check package installation and binary presence — not actual connectivity or fact registration.",
+      "recommendation": "Add a verify task that asserts `tailscale_ip` fact is defined (via a hostvars check or a registered variable from a `tailscale ip -4` call). Accept that the molecule container cannot auth to tailnet but the fact-registration and error-handling paths should still be testable with a mock or skip guard."
+    },
+    {
+      "id": "RE-09",
+      "severity": "MEDIUM",
+      "category": "reliability",
+      "title": "`apt_key` module is deprecated — will break on future Ansible/Ubuntu versions",
+      "file": "infrastructure/ansible/roles/tailscale/tasks/main.yml",
+      "detail": "The task `Add Tailscale GPG key` uses `ansible.builtin.apt_key`, which is deprecated in Ansible 2.13+ and not supported in Ubuntu 22.04+ apt security model (requires `/etc/apt/keyrings/` dearmored key). The module will emit deprecation warnings and may fail on future Ubuntu 24.04 upgrades.",
+      "recommendation": "Replace with `ansible.builtin.get_url` to download the GPG key to `/usr/share/keyrings/tailscale.gpg` and reference it in the apt repository definition using `signed-by=`."
+    },
+    {
+      "id": "RE-10",
+      "severity": "LOW",
+      "category": "reliability",
+      "title": "Collection version pins use `>=` — not reproducible builds",
+      "file": "infrastructure/ansible/roles/base/meta/main.yml",
+      "detail": "Both `base` and `tailscale` meta.yml specify `community.general >=9.0.0` and `ansible.posix >=1.5.0`. Lower bounds only guarantee a minimum but allow any future breaking version to be pulled in on a fresh install. There is no `requirements.yml` with exact pinned versions visible in this commit.",
+      "recommendation": "Add an `infrastructure/ansible/requirements.yml` with exact version pins (e.g., `community.general==9.1.0`). Use `>=` in meta.yml for role compatibility declarations but pin exact versions in requirements.yml for reproducible CI runs."
+    },
+    {
+      "id": "RE-11",
+      "severity": "LOW",
+      "category": "idempotency",
+      "title": "`tailscale up --ssh` flag not verified in verify.yml",
+      "file": "infrastructure/ansible/roles/tailscale/molecule/default/verify.yml",
+      "detail": "The task spec (tasks/02.md) requires `tailscale up --ssh` to be enabled. The `tailscale up` command in tasks/main.yml includes `--ssh`. However, verify.yml has no assertion that Tailscale SSH is configured. On re-runs without the `--ssh` flag persistence being checked, the feature could silently regress.",
+      "recommendation": "Add a verify task: `tailscale status --json | jq '.Self.Capabilities | contains([\"https://tailscale.com/cap/ssh\"])'` and assert it returns true."
+    }
+  ],
+  "idempotency_assessment": {
+    "base_role": "PARTIAL — hostname, user, file/dir, and package tasks are idempotent via native module semantics. lineinfile tasks for sshd_config are idempotent. The sudo lineinfile task is not idempotent due to missing regexp. UFW module tasks are idempotent. Second run would show changes on sudo file if it already exists with slight variation.",
+    "tailscale_role": "BROKEN — tailscale up changed_when incorrectly signals no-change on every re-run. The actual idempotency of `tailscale up` (already-authenticated node) depends on Tailscale CLI behavior, not on changed_when logic. Second run will report 0 changed only by coincidence."
+  },
+  "lockout_risk": "HIGH — UFW deny-all activates before tailscale0 is up; password auth disabled before Tailscale SSH confirmed. Both conditions can brick SSH access in a single bad run.",
+  "blocking_issues": ["RE-01", "RE-02", "RE-04", "RE-05"]
+}

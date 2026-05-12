@@ -1,0 +1,172 @@
+{
+  "task": "02",
+  "round": 2,
+  "verifier": "security-auditor (combined security + reliability scope)",
+  "commit_verified": "bf7f255",
+  "files_in_scope": [
+    "infrastructure/ansible/roles/base/defaults/main.yml",
+    "infrastructure/ansible/roles/base/files/50unattended-upgrades",
+    "infrastructure/ansible/roles/base/tasks/main.yml",
+    "infrastructure/ansible/roles/tailscale/defaults/main.yml",
+    "infrastructure/ansible/roles/tailscale/molecule/default/converge.yml",
+    "infrastructure/ansible/roles/tailscale/molecule/default/verify.yml",
+    "infrastructure/ansible/roles/tailscale/tasks/main.yml"
+  ],
+  "verdict": "needs-more-fixes",
+  "round1_critical_status": [
+    {
+      "finding": "SEC-01 (critical) — tailscale_authkey leaked via argv, register, and logs",
+      "status": "partial",
+      "evidence": "no_log: true added to the assert, `tailscale up`, and `tailscale status` tasks (tailscale/tasks/main.yml:8, 68, 94). This closes the Ansible-side log/register exposure. However, the authkey is still passed as `--authkey={{ tailscale_authkey }}` on the argv of `tailscale up` (line 59). Round 1 explicitly called out `/proc/<pid>/cmdline` / `ps auxf` exposure on the VM and recommended `tailscale up --auth-key file:/proc/self/fd/3` or env-var + stdin. That argv-level exposure is not addressed. With `retries: 3`, the key sits in cmdline for up to ~3*10s windows on every run. Anyone with `ps`/`/proc` read on the box (the `op` user with NOPASSWD: ALL trivially) can grab the key, which is reusable until Tailscale-side expiry. Treat as still-critical."
+    },
+    {
+      "finding": "RE-02 / SEC-02 (critical) — SSH hardening reload before Tailscale SSH is live (lockout)",
+      "status": "partial",
+      "evidence": "SSH hardening tasks moved to the END of the base role (base/tasks/main.yml:100-118) with `validate: sshd -t` and `backup: true` added — addresses the parse-error brick risk and the intra-role ordering. BUT: the tailscale role still runs as a SEPARATE role AFTER base, so the handler-flush at end-of-base reloads sshd with `PermitRootLogin no` + `PasswordAuthentication no` BEFORE `tailscale up --ssh` has ever executed (the only place tailnet SSH is enabled). The fix does not add: (a) `authorized_keys` deployment for `op` before hardening, (b) cross-role re-ordering (e.g., placing hardening in a post-tailscale `harden` role), or (c) a `wait_for`/`ansible.builtin.wait_for_connection` probe against the tailnet endpoint before hardening. The original lockout class (fresh Hetzner VM bootstrapped over public-IP SSH with only root key) is unchanged. The Round 1 critical was about cross-role ordering; the fix only addressed intra-role ordering plus belt-and-braces validate/backup."
+    },
+    {
+      "finding": "RE-04 (high) — UFW deny-all enabled before tailscale0 exists (lockout window)",
+      "status": "partial",
+      "evidence": "Commit message claims 'enable moved to be handled post-Tailscale'. In practice the explicit `Enable ufw` task is deleted, AND the bogus `policy: established,related` task is correctly removed (closes RE-07). However, the remaining `Configure ufw to allow Tailscale interface` task (base/tasks/main.yml:91-98) still carries `state: enabled` — the `community.general.ufw` module activates UFW as a side-effect when `state: enabled` is passed. So UFW is still enabled inside the base role, before the tailscale role runs, and the tailscale0 interface still does not exist at that moment. The lockout window is unchanged. No post-tailscale UFW enablement task exists anywhere; the commit message's claim of 'moved to be handled post-Tailscale' is not reflected in any committed task. If the orchestrator intended a follow-up commit/task for this, it's missing."
+    },
+    {
+      "finding": "RE-01 (critical) — auto-reboot enabled with no guard",
+      "status": "fixed",
+      "evidence": "`Unattended-Upgrade::AutoRebootTime \"04:00\";` removed; `Unattended-Upgrade::Automatic-Reboot \"false\";` added explicitly (base/files/50unattended-upgrades:10). Matches Round 1 recommendation exactly."
+    },
+    {
+      "finding": "RE-05 (high) — empty tailscale_ip silently skipped",
+      "status": "fixed",
+      "evidence": "Round 1 recommended either `failed_when: stdout | length == 0` on the get-IP task or an explicit `assert` after set_fact. The fix adds `failed_when: tailscale_ip_cmd.stdout | length == 0` (tailscale/tasks/main.yml:82) AND removes the `when: stdout | length > 0` guard from the `set_fact` (line 84-86). Empty stdout now fails the play loudly. Recommendation satisfied."
+    },
+    {
+      "finding": "RE-03 (high) — `tailscale up` changed_when always wrong",
+      "status": "fixed",
+      "evidence": "Replaced with `changed_when: tailscale_up_result.rc == 0 and 'already' not in tailscale_up_result.stdout | lower` (tailscale/tasks/main.yml:67). Matches Round 1's first-line fix recommendation. Caveat: with `no_log: true` on this task, stdout is still evaluated correctly by Ansible internals — but operators debugging will not see the value the predicate ran on. Acceptable."
+    },
+    {
+      "finding": "SEC-02 / RE-09 (major) — apt_key deprecation + unscoped trust",
+      "status": "fixed",
+      "evidence": "Switched to `get_url` → `/usr/share/keyrings/tailscale-archive-keyring.gpg`, repo line uses `[signed-by=...]`, distro flipped from `focal` to `noble` (tailscale/tasks/main.yml:10-25). Three of the three Round 1 sub-issues (deprecation, global trust, wrong distro) addressed. The fourth sub-issue (GPG fingerprint pinning via `gpg --show-keys` check task) is still absent — acceptable as it was characterized as best-practice belt-and-braces, not the blocker."
+    },
+    {
+      "finding": "SEC-06 (major) — NOPASSWD: ALL drift / contract deviation",
+      "status": "fixed (as documented deferral)",
+      "evidence": "Round 1's minimum acceptance was 'file a TODO ticket reference in defaults/main.yml and have a follow-up task tracked'. Commit adds FUTURE-WORK marker in base/defaults/main.yml:9-10 pointing at a Task 07 scoping issue. Contract deviation remains in code (still `NOPASSWD: ALL`) but is now explicitly tracked. Note: the URL referenced (`github.com/mnemonik/coding-fabric/issues/FUTURE-WORK-base-sudoers-scope`) is a placeholder, not a real issue; verifier cannot confirm the tracking issue exists. Treated as fixed per Round 1's stated acceptance bar."
+    },
+    {
+      "finding": "RE-06 (medium) — sudo lineinfile not idempotent",
+      "status": "fixed",
+      "evidence": "Added `regexp: '^{{ base_operator_user }}\\s'` to the sudoers lineinfile task (base/tasks/main.yml:54). Now replaces matching line instead of appending. Combined with the existing `validate: visudo -cf` (preserved), this is safe."
+    },
+    {
+      "finding": "RE-07 (medium) — bogus `policy: established,related` ufw task",
+      "status": "fixed",
+      "evidence": "Task fully removed from base/tasks/main.yml. Matches Round 1 recommendation."
+    },
+    {
+      "finding": "SEC-03 (minor) — `--accept-routes` unconditional",
+      "status": "fixed",
+      "evidence": "New variable `tailscale_accept_routes: false` in tailscale/defaults/main.yml:12 with README-equivalent warning comment. `tailscale up` now uses `{% if tailscale_accept_routes %}--accept-routes{% endif %}` inline (tailscale/tasks/main.yml:61). Default behavior is now safer."
+    },
+    {
+      "finding": "SEC-04 (minor) — sshd_config edits missing validate/backup",
+      "status": "fixed (partial)",
+      "evidence": "Both lineinfile tasks now carry `validate: /usr/sbin/sshd -t -f %s` and `backup: true` (base/tasks/main.yml:106-107, 116-117). The deeper Round 1 sub-concern about Ubuntu 24.04's `Include /etc/ssh/sshd_config.d/*.conf` and recommendation to write a drop-in file is not addressed — acceptable as Round 1 marked this minor."
+    },
+    {
+      "finding": "SEC-05 (minor) — assert task may render authkey on -vvv",
+      "status": "fixed",
+      "evidence": "`no_log: true` added to the `Verify tailscale_authkey is provided` task (tailscale/tasks/main.yml:8)."
+    },
+    {
+      "finding": "RE-08 (medium) — molecule verify `ignore_errors: true` on the only meaningful check",
+      "status": "partial",
+      "evidence": "The `Get tailscale status` task with `ignore_errors: true` is removed and replaced with: (a) a GPG keyring stat with proper `failed_when` (good), and (b) a `tailscale_ip` fact assertion. The fact-assertion task itself still carries `ignore_errors: true` (tailscale/molecule/default/verify.yml:48), so the strengthening is half-hearted — a missing `tailscale_ip` will still pass verify. Net improvement vs Round 1, but the only-meaningful-check-is-ignored pattern persists."
+    },
+    {
+      "finding": "RE-10 (low) — `>=` collection pins, no requirements.yml",
+      "status": "not-addressed",
+      "evidence": "No `infrastructure/ansible/requirements.yml` in this commit, no version-pin changes. Low severity, not a blocker."
+    },
+    {
+      "finding": "RE-11 (low) — `tailscale up --ssh` not verified in verify.yml",
+      "status": "not-addressed",
+      "evidence": "verify.yml still has no assertion on `tailscale status --json | jq '.Self.Capabilities'` or equivalent. Low severity, not a blocker."
+    },
+    {
+      "finding": "SEC-07 (minor) — molecule converge teaches authkey-in-YAML pattern",
+      "status": "partial",
+      "evidence": "converge.yml gained a 'NEVER replace this dummy with a real tskey-...' comment (good). The Round 1 fix recommendation about a `molecule_test` boolean gate to skip the auth task in CI is NOT implemented — the role will still burn ~30s on retries with the dummy key inside containers. Minor."
+    },
+    {
+      "finding": "SEC-08 (minor) — no audit logging / journald persistence",
+      "status": "not-addressed (explicitly deferred)",
+      "evidence": "Commit message lists this as 'Deferred (Task 07)'. Round 1 accepted documented deferral as an option (recommendation 'a'). Acceptable."
+    }
+  ],
+  "regressions": [
+    {
+      "severity": "high",
+      "title": "UFW activation now relies on undocumented side-effect of `state: enabled` on tailscale0 rule",
+      "detail": "The explicit `Enable ufw` task was removed (good intention) but no post-tailscale UFW-enable task was added. UFW is still activated inside base role via the `state: enabled` parameter on the `Configure ufw to allow Tailscale interface` task. This is more confusing than the original code: a future contributor refactoring the rule task could silently disable UFW activation. Either drop `state: enabled` from the rule task and add an explicit ordered `Enable ufw` task after the tailscale role, or document the side-effect inline. Location: infrastructure/ansible/roles/base/tasks/main.yml:91-98.",
+      "category": "A05 Security Misconfiguration / availability"
+    },
+    {
+      "severity": "medium",
+      "title": "`--accept-routes` jinja templating inside folded YAML scalar is brittle",
+      "detail": "`tailscale/tasks/main.yml:54-62` uses `cmd: >` (folded scalar) with `{% if tailscale_accept_routes %}--accept-routes{% endif %}` on its own line. When the var is false, this collapses to a stray space, which `tailscale up` tolerates today but is non-obvious. Cleaner pattern: build the command as a list (`argv:`) or use `{{ '--accept-routes' if tailscale_accept_routes else '' }}` inline. Not a runtime defect, but a maintenance hazard.",
+      "category": "best-practice"
+    },
+    {
+      "severity": "medium",
+      "title": "Molecule `tailscale_ip` assertion masked by `ignore_errors: true`",
+      "detail": "tailscale/molecule/default/verify.yml:48 carries `ignore_errors: true` on the new `tailscale_ip` assertion. This perpetuates the same antipattern that RE-08 flagged. Better: split into a check-mode-aware probe that fails the verify when the role-converge has finished and `tailscale_ip` is missing (i.e., remove `ignore_errors`, gate the assertion behind `when: tailscale_up_result is not skipped`).",
+      "category": "observability"
+    },
+    {
+      "severity": "low",
+      "title": "FUTURE-WORK URL placeholder is not a real GitHub issue",
+      "detail": "base/defaults/main.yml:10 references `https://github.com/mnemonik/coding-fabric/issues/FUTURE-WORK-base-sudoers-scope` — that is a literal placeholder string, not a valid GitHub issue URL. The Round 1 acceptance bar was 'TODO ticket reference + follow-up task tracked'. A real Task 07 reference (e.g., `tasks/07.md` path) or a real issue number would satisfy intent.",
+      "category": "best-practice"
+    }
+  ],
+  "summary_counts": {
+    "round1_critical": 3,
+    "round1_critical_fixed": 1,
+    "round1_critical_partial": 2,
+    "round1_critical_not_addressed": 0,
+    "round1_high": 3,
+    "round1_high_fixed": 3,
+    "round1_high_partial": 0,
+    "round1_high_not_addressed": 0,
+    "round1_major": 2,
+    "round1_major_fixed": 2,
+    "round1_medium": 4,
+    "round1_medium_fixed": 2,
+    "round1_medium_partial": 1,
+    "round1_medium_not_addressed": 1,
+    "round1_minor_low": 6,
+    "round1_minor_low_fixed": 3,
+    "round1_minor_low_partial": 1,
+    "round1_minor_low_not_addressed": 2,
+    "new_regressions": 4
+  },
+  "specific_check_results": {
+    "1_tailscale_up_no_log_and_authkey_not_in_ps": "PARTIAL — no_log on task: YES. authkey hidden from ps/proc: NO (still in argv).",
+    "2_ssh_hardening_after_tailscale_or_precondition": "NO — moved to end of base role but tailscale role still runs in a subsequent role; no wait_for / authorized_keys / cross-role reorder.",
+    "3_unattended_upgrades_automatic_reboot_false_explicit": "YES — explicit `Automatic-Reboot \"false\";`, AutoRebootTime removed.",
+    "4_ufw_activation_deferred_or_ordered_post_tailscale": "NO — `Enable ufw` task removed but UFW still implicitly enabled in base role via `state: enabled` on tailscale0 rule task. No post-tailscale enable task exists.",
+    "5_tailscale_ip_empty_fails_loudly": "YES — `failed_when: stdout | length == 0` added; set_fact `when` guard removed.",
+    "6_apt_key_replaced_with_get_url_signed_by": "YES — get_url to /usr/share/keyrings, repo uses signed-by, distro=noble.",
+    "7_changed_when_on_tailscale_up_fixed": "YES — `rc == 0 and 'already' not in stdout|lower`.",
+    "8_nopasswd_all_documented_bootstrap_only_or_scoped": "DOCUMENTED-ONLY — still NOPASSWD: ALL, FUTURE-WORK marker added pointing at Task 07. Placeholder URL is not a real issue. Meets Round 1's minimum acceptance bar but contract deviation remains."
+  },
+  "blocking_issues_remaining": [
+    "SEC-01: authkey still in argv (/proc/<pid>/cmdline) — switch to env-var or `--auth-key file:` to truly close",
+    "RE-02: SSH hardening still reloads sshd before tailscale role runs `tailscale up --ssh` — add a `wait_for_connection`/`wait_for` probe on the tailnet endpoint, deploy `authorized_keys` for `op`, or move hardening to a post-tailscale `harden` role",
+    "RE-04: UFW still implicitly activated in base role; either add explicit post-tailscale enable task or document and pin the side-effect"
+  ],
+  "final_recommendation": "one-more-round",
+  "rationale": "Round 2 closed 3/3 high findings, 2/2 major findings, and the bulk of medium/minor work — solid progress. However, two of the three Round 1 critical findings (SEC-01 authkey-in-argv, RE-02 cross-role SSH lockout) are only partially addressed and one high (RE-04 UFW ordering) was reshuffled rather than fixed. The lockout-class issues are the same failure mode Round 1 called out as merge blockers. Recommend one focused fix pass: (a) move authkey off argv (env or stdin), (b) deploy authorized_keys for `op` before SSH hardening AND add a `wait_for_connection` probe on the tailnet endpoint OR split hardening into a post-tailscale role, (c) add an explicit `Enable ufw` task that runs after the tailscale role completes. Estimated < 1 hour of work. Do not merge until lockout-class issues are closed — a single bad bootstrap run still bricks the VM."
+}

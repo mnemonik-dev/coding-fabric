@@ -1,0 +1,100 @@
+{
+  "task": "02",
+  "reviewer": "security-auditor",
+  "round": 1,
+  "commit_reviewed": "49c2bb1",
+  "overall_verdict": "needs-fixes",
+  "findings": [
+    {
+      "severity": "critical",
+      "area": "secrets-handling",
+      "file": "infrastructure/ansible/roles/tailscale/tasks/main.yml",
+      "line": "44-55 (Authenticate with Tailscale task)",
+      "issue": "tailscale_authkey is passed as a positional --authkey=<key> argv to the `command` module with no `no_log: true`. The full key is therefore (a) printed in ansible-playbook stdout and any callback/CI log, (b) captured into `tailscale_up_result.stdout` via `register` and re-emitted on retries / failures, and (c) visible in /proc/<pid>/cmdline and `ps auxf` on the VM for the lifetime of the command. The retry loop (`retries: 3`) compounds the exposure. Auth-keys are reusable in Tailscale until they expire; a leak into CI logs or syslog effectively grants tailnet join capability to anyone with log read access. This violates D26 (sanitizer strips secrets at every log site) and AC41 (agent trust boundary on secrets).",
+      "fix_recommendation": "Set `no_log: true` on the Authenticate task and on the subsequent IP / status tasks that may echo back state. Pass the auth-key via environment (`environment: {TS_AUTHKEY: '{{ tailscale_authkey }}'}` plus `tailscale up --auth-key file:/proc/self/fd/3 ...`) or via stdin to avoid argv exposure. Strip register output: add `tailscale_up_result.stdout: '[redacted]'` post-task, or simply do not register on success. Add `no_log: true` to the `assert` task as well as belt-and-braces."
+    },
+    {
+      "severity": "critical",
+      "area": "ssh-lockout-risk",
+      "file": "infrastructure/ansible/roles/base/tasks/main.yml",
+      "line": "82-96 (Disable root SSH login / Disable SSH password authentication)",
+      "issue": "The `base` role disables PermitRootLogin and PasswordAuthentication and queues `reload sshd` BEFORE Tailscale is installed/running (Tailscale lives in a separate, later role). The role also never deploys an `authorized_keys` entry for the new `op` user. If the playbook is being executed over public-IP SSH (the canonical first-bootstrap path on a fresh Hetzner VM where the only key belongs to root), the handler flush at end-of-base reloads sshd with public SSH locked down, while tailnet SSH (`tailscale up --ssh`) does not yet exist. Operator is one play-failure away from a permanent lockout requiring console/rescue. Also: `lineinfile` has no `validate: /usr/sbin/sshd -t -f %s` and no `backup: true`, so a malformed regex match could brick sshd with no rollback artefact.",
+      "fix_recommendation": "(1) Deploy `authorized_keys` for `op` (via `ansible.posix.authorized_key`) BEFORE the SSH hardening tasks, sourcing the key from a required variable. (2) Either move SSH-hardening tasks to a third post-tailscale role (`harden` that runs after `tailscale up --ssh` is verified online), or gate the hardening with `meta: flush_handlers` only after tailnet SSH probe succeeds. (3) Add `validate: /usr/sbin/sshd -t -f %s` and `backup: true` to both lineinfile tasks on sshd_config so a parse error doesn't take sshd down. (4) Consider `state: reloaded` (already used) over restarted — keep it; existing sessions survive."
+    },
+    {
+      "severity": "major",
+      "area": "least-privilege",
+      "file": "infrastructure/ansible/roles/base/tasks/main.yml",
+      "line": "54-62 (Configure sudo for operator user) + defaults/main.yml 6-9",
+      "issue": "Task spec (`tasks/02.md` What to do) explicitly states: 'create operator user `op` with sudo NOPASSWD only for explicit Ansible-managed commands'. Implementation grants `op ALL=(ALL) NOPASSWD: ALL`, i.e., unrestricted root-equivalent. Combined with no SSH-key restriction and the trust-boundary requirement in AC41 / D27, any compromise of the `op` shell (agent process, malicious dep, mis-sanitized log echo) escalates to full root with zero friction. The defaults/main.yml comment acknowledges this as 'bootstrap tradeoff' and the README promises 'should be hardened in production' — but no follow-up issue / TODO marker / explicit allowlist is committed, so this drifts into permanent state.",
+      "fix_recommendation": "Replace `NOPASSWD: ALL` with an explicit Cmnd_Alias list scoped to what Ansible actually invokes (systemctl restart/reload of specific units, apt-get update/install, ufw, etc.), or accept a documented variable `base_operator_sudo_cmds` (list) that callers can populate. At minimum, file a TODO ticket reference in defaults/main.yml and have a follow-up task tracked in tasks/. The current state is a deviation from the task contract, not just a 'security note'."
+    },
+    {
+      "severity": "major",
+      "area": "supply-chain",
+      "file": "infrastructure/ansible/roles/tailscale/tasks/main.yml",
+      "line": "8-16 (Add Tailscale GPG key) + 18-26 (Add Tailscale APT repository)",
+      "issue": "Uses the deprecated `ansible.builtin.apt_key` module which installs the key into the global apt trusted-keys keyring (`/etc/apt/trusted.gpg.d/` semantics), meaning the Tailscale signing key is trusted for ANY repository on the system, not just Tailscale's. The repo line `deb https://pkgs.tailscale.com/stable/ubuntu focal main` does NOT use `signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg`, so there is no scoping. Additionally, the key is fetched from `https://pkgs.tailscale.com/stable/ubuntu/focal.gpg` with no fingerprint pinning — a compromise of pkgs.tailscale.com or a DNS/TLS interception on a non-HSTS path would silently swap signing material. The repo also targets `focal` (Ubuntu 20.04) while the platform is `noble` (24.04); Tailscale supports this but it's misaligned and may stop working when Tailscale ships repo-per-distro signing.",
+      "fix_recommendation": "Switch to `ansible.builtin.get_url` → `/usr/share/keyrings/tailscale-archive-keyring.gpg` and use `deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] https://pkgs.tailscale.com/stable/ubuntu noble main`. Pin the expected GPG fingerprint with `gpg --show-keys` validation in a check task (Tailscale publishes the fingerprint on their docs site). Use the `noble` repo on Ubuntu 24.04."
+    },
+    {
+      "severity": "major",
+      "area": "ufw-ordering",
+      "file": "infrastructure/ansible/roles/base/tasks/main.yml",
+      "line": "98-127 (Configure ufw default policies → Allow established/related → Allow Tailscale interface → Enable ufw)",
+      "issue": "Two sub-issues. (a) `community.general.ufw` task 'Allow established/related connections' uses `policy: established,related` — but the module's `policy` parameter expects one of allow/deny/reject; established/related semantics on ufw are configured in `/etc/ufw/before.rules`, not via this module. As written this task will either error or be a no-op, leaving a gap. (b) The tailscale0 allow rule is created in the base role, but the `tailscale0` interface only comes into existence after the tailscale role completes its `tailscale up`. If the playbook fails between `Enable ufw` (base) and `tailscale up` (tailscale role), the VM has ufw active with default-deny incoming AND no tailscale0 yet — same lockout class as the SSH hardening issue. Spec AC2 'ssh root@vm over public IP fails; SSH only over tailnet' is achieved, but at the cost of fragile play ordering.",
+      "fix_recommendation": "(a) Remove the `policy: established,related` task; ufw's default ruleset already accepts conntrack ESTABLISHED,RELATED in `before.rules`. If explicit assertion is desired, use a `blockinfile` against `/etc/ufw/before.rules`. (b) Move the ufw `Enable ufw` task into a post-handler that fires only after `tailscale up` succeeds, OR install tailscale first then base, OR add a runtime safeguard: insert a temporary `ufw allow from {{ ansible_ssh_host }} to any port 22` rule scoped to the connecting SSH client, removed after Tailscale comes up."
+    },
+    {
+      "severity": "minor",
+      "area": "tailscale-routes",
+      "file": "infrastructure/ansible/roles/tailscale/tasks/main.yml",
+      "line": "44-55 (Authenticate with Tailscale)",
+      "issue": "`tailscale up --accept-routes` is set unconditionally. This means any tailnet node permitted to advertise routes can inject subnet routes into the fabric VM's routing table, redirecting traffic for arbitrary CIDRs. For a single-operator tailnet today this is low risk, but D27 (agent trust boundary) and the future multi-device extension (D2) make this a foot-gun. README mentions it but does not warn.",
+      "fix_recommendation": "Make `--accept-routes` opt-in via a variable `tailscale_accept_routes` defaulting to `false`. Add an ACL note in README that route-advertisement is governed by Tailscale admin ACLs and should be locked down upstream."
+    },
+    {
+      "severity": "minor",
+      "area": "ssh-config-hygiene",
+      "file": "infrastructure/ansible/roles/base/tasks/main.yml",
+      "line": "82-96 (sshd_config edits)",
+      "issue": "Both lineinfile tasks lack `backup: true` and `validate: /usr/sbin/sshd -t -f %s`. The regex `^#?PermitRootLogin` matches the first line only, but Ubuntu 24.04 ships `Include /etc/ssh/sshd_config.d/*.conf` at the top of sshd_config, and cloud-init / unattended-upgrades may drop overriding files in that directory at a later date, silently re-enabling password auth.",
+      "fix_recommendation": "Use `community.general.ini_file` or write a dedicated `/etc/ssh/sshd_config.d/00-fabric-hardening.conf` file with the directives and reload sshd. Add `validate: /usr/sbin/sshd -t -f %s` to whatever module is used. Add `backup: true`."
+    },
+    {
+      "severity": "minor",
+      "area": "secret-logging",
+      "file": "infrastructure/ansible/roles/tailscale/tasks/main.yml",
+      "line": "1-7 (Verify tailscale_authkey is provided)",
+      "issue": "The `assert` task references `tailscale_authkey` in `that:` clauses. Ansible's default behaviour is to NOT print variable values for assert failures, but enabling verbose mode (`-vvv`, used in some CI) or callback plugins like `ansible.posix.profile_tasks` may dump the templated `that` expression including the rendered value. No `no_log: true` is set.",
+      "fix_recommendation": "Add `no_log: true` to the assert task."
+    },
+    {
+      "severity": "minor",
+      "area": "test-fixture",
+      "file": "infrastructure/ansible/roles/tailscale/molecule/default/converge.yml",
+      "line": "10 (tailscale_authkey: 'tskey-dummy-key-for-testing')",
+      "issue": "Hardcoded dummy auth-key is harmless in this string, but the pattern teaches future contributors that auth-keys can live unencrypted in converge.yml. If anyone copy-pastes a real key here while debugging molecule against a live tailnet, it lands in git. Also: the molecule scenario does not document how to skip the `Authenticate with Tailscale` task in CI, so the retry loop will burn ~30s of test time on guaranteed failure inside an isolated container.",
+      "fix_recommendation": "Gate the `Authenticate with Tailscale` and downstream IP/status tasks behind `when: not ansible_check_mode and tailscale_authkey != 'tskey-dummy-key-for-testing'` or a `molecule_test` boolean variable. Add a comment in converge.yml: 'NEVER replace this dummy with a real tskey-... value'."
+    },
+    {
+      "severity": "minor",
+      "area": "audit-logging",
+      "file": "infrastructure/ansible/roles/base/tasks/main.yml",
+      "line": "(entire role — absence)",
+      "issue": "OWASP A09. The base role configures unattended-upgrades and sshd hardening but does not install/configure auditd, journald persistence, or log shipping. D26 mentions sanitizer-at-source for fabric logs but OS-level auth events (sudo invocations on `op`, sshd Accepted/Failed lines, ufw drops) are not retained beyond systemd-journal defaults (which on Ubuntu cloud images is often non-persistent, /var/log/journal absent). Forensics after a compromise of `op` will have a hole.",
+      "fix_recommendation": "Either (a) document explicitly in README that audit logging is intentionally deferred to a later role, with a ticket reference, or (b) add a small task: `mkdir -p /var/log/journal && systemd-tmpfiles --create --prefix /var/log/journal && systemctl restart systemd-journald` to enable persistent journald, plus install auditd in a follow-up role."
+    }
+  ],
+  "positive_notes": [
+    "Auth-key is correctly declared as a required, no-default variable with an explicit `assert` gate before any task that uses it — good first line of defence.",
+    "sudoers file is written via `lineinfile` with `validate: /usr/sbin/visudo -cf %s` — prevents bricking sudo with a parse error.",
+    "Operator home and .fabric subdirs are created with mode 0750 and explicit owner/group, not the default 0755 — appropriate for a single-user fabric.",
+    "ufw default-deny-incoming + allow-outgoing is the correct posture; the role does not punch holes for arbitrary services.",
+    "unattended-upgrades configuration includes security-only origins (no -updates pocket) and minimal-steps mode, reducing the chance of an automated upgrade taking the box down.",
+    "Tailscale role registers `tailscale_ip` only after a verified `tailscale ip -4` returns non-empty stdout, with retry-until-succeeded — downstream roles get a real fact, not an empty string.",
+    "Molecule scenarios exist for both roles with idempotency-relevant verify steps (hostname, ufw status, sshd -T greps) — gives a regression net even if Tailscale itself cannot authenticate in a container.",
+    "GPG key fetch and apt_repository tasks have retry loops — robust to transient network glitches during bootstrap."
+  ],
+  "scope_observations": "Reviewed only infrastructure/ansible/roles/base/ and infrastructure/ansible/roles/tailscale/ per orchestrator instructions; the vaultwarden role accidentally included in commit 49c2bb1 was excluded from this review and is owned by Task 03. Spec references checked: tech-spec.md D2/D4 (Tailscale + Ansible decision lineage), user-spec AC1-AC3 (VPN-only access, hardened SSH), AC41 (agent trust boundary on secrets), tasks/02.md (role contract). The largest contract deviation against tasks/02.md is the sudoers grant: the task description explicitly says 'NOPASSWD only for explicit Ansible-managed commands' and the implementation ships `NOPASSWD: ALL`. Two genuine lockout-class issues (SSH hardening before tailnet SSH is live; ufw enable before tailscale0 exists) plus one secrets-in-argv-and-logs issue (authkey on command line, no no_log) are the merge blockers."
+}

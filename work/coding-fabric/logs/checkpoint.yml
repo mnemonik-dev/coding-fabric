@@ -2,27 +2,33 @@
 feature: coding-fabric
 version: 0.2.0
 total_waves: 8
-last_completed_wave: 0
-next_wave: 1
+last_completed_wave: 1
+next_wave: 2
 review_level: L2
 team_name: coding-fabric-v0.2.0
 started: 2026-05-12
 last_updated: 2026-05-12
-status: dry-run-in-progress
+status: wave-2-in-progress
 note: |
-  Dry-run mode: Wave 1 task 01 only. After completion, user decides whether to
-  unleash full Wave 1 parallelism (T02-T06).
+  Wave 1 complete (T01-T06). All tasks went through round 1 impl + round 1 review +
+  round 2 fix. T02, T03, T04 also needed round 3 fix for residual criticals (cross-role
+  contracts, authkey argv, admin-seed redesign). T05, T06 cleared at round 2.
+
+  Cross-role contracts established in Wave 1:
+  - vaultwarden's Caddyfile imports /etc/caddy/conf.d/*.conf (consumed by kaneo + future apps)
+  - new ssh-hardening role extracted from base; playbook ordering must be base → tailscale → ssh-hardening → vaultwarden → kaneo → telegram-init → restic-backups
+  - vaultwarden_admin_password removed from automated seed (operator does first-user setup via /admin UI on first deploy)
 
 task_statuses:
-  "01": in_progress  # OpenTofu Hetzner VM + volume + firewall
-  "02": planned
-  "03": planned
-  "04": planned
-  "05": planned
-  "06": planned
-  "07": planned
-  "08": planned
-  "09": planned
+  "01": done
+  "02": done
+  "03": done
+  "04": done
+  "05": done
+  "06": done
+  "07": in_progress
+  "08": in_progress
+  "09": in_progress
   "10": planned
   "11": planned
   "12": planned

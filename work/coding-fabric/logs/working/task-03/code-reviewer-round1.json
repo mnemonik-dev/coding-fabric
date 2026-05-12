@@ -1,0 +1,124 @@
+{
+  "review_metadata": {
+    "task_id": "03",
+    "role": "vaultwarden",
+    "reviewer": "code-reviewer",
+    "round": 1,
+    "review_date": "2026-05-12",
+    "dimensions": 11,
+    "total_issues": 9,
+    "summary": "Role correctly deploys Vaultwarden+Caddy with strong security controls (tailnet-IP-only binding, image pinning, secrets via sops). Idempotency solid. Minor gaps: missing task tags, handler lacks become context, docker-compose shell fallback, health-check error recovery unclear. Molecule scenario underdeveloped. Overall delivery-ready with refinements."
+  },
+  "findings": [
+    {
+      "dimension": 1,
+      "dimension_name": "Correctness — deployment design",
+      "severity": "info",
+      "area": "tasks/main.yml",
+      "file": "/Users/syi/src/sessions/coding-fabric/infrastructure/ansible/roles/vaultwarden/tasks/main.yml",
+      "line": 77,
+      "issue": "Admin password seeding script is generated but never executed. Script created at line 77-108 (seed-admin.sh) but no subsequent task invokes it.",
+      "fix_recommendation": "Add task after docker-compose up: 'ansible.builtin.command: /opt/vaultwarden/seed-admin.sh' with 'creates: /opt/vaultwarden/.admin-seeded' guard. Current design relies on env var in .env but initial admin password typically requires POST to /admin/register endpoint or similar in Vaultwarden."
+    },
+    {
+      "dimension": 2,
+      "dimension_name": "Idempotency",
+      "severity": "warning",
+      "area": "handlers/main.yml",
+      "file": "/Users/syi/src/sessions/coding-fabric/infrastructure/ansible/roles/vaultwarden/handlers/main.yml",
+      "line": 3,
+      "issue": "Restart handler missing 'become_user: op' context. docker_compose_v2 module runs with 'become_user: op' in main task (line 118) but handler at line 3-12 has 'become: true' without 'become_user'.",
+      "fix_recommendation": "Add 'become_user: op' to both handlers (lines 3 and 14). Ensures handlers run under same user context as main tasks, critical for file ownership consistency."
+    },
+    {
+      "dimension": 3,
+      "dimension_name": "FQCN usage",
+      "severity": "info",
+      "area": "tasks/main.yml, handlers/main.yml, templates",
+      "file": "/Users/syi/src/sessions/coding-fabric/infrastructure/ansible/roles/vaultwarden/tasks/main.yml",
+      "line": "140-146",
+      "issue": "Docker container inspection uses ansible.builtin.shell with 'docker ps' pipe to grep. Line 141-146 uses shell directly instead of docker module. Similarly, handler at handlers/main.yml:15 uses 'docker exec' in shell.",
+      "fix_recommendation": "Line 141-146: migrate to community.docker.docker_container_info with filters. Handler caddy reload: consider community.docker.docker_container or ansible.builtin.command if docker-cli is guaranteed present. Reduces shell injection risk and improves module consistency."
+    },
+    {
+      "dimension": 4,
+      "dimension_name": "Variable scoping — naming & defaults",
+      "severity": "info",
+      "area": "defaults/main.yml, tasks/main.yml",
+      "file": "/Users/syi/src/sessions/coding-fabric/infrastructure/ansible/roles/vaultwarden/defaults/main.yml",
+      "line": "1-44",
+      "issue": "Variable naming inconsistent. Uses 'vaultwarden_*' prefix correctly, but templates reference 'tailscale_ip' (fact from base role) without declaring it as a requirement in defaults. Also 'caddy_log_level' lacks 'vaultwarden_' prefix.",
+      "fix_recommendation": "Add 'vaultwarden_caddy_log_level' variable to defaults (currently hardcoded in Caddyfile.j2:3). Document external dependency on 'tailscale_ip' in defaults as a comment. Ensures full role portability without implicit dependencies."
+    },
+    {
+      "dimension": 5,
+      "dimension_name": "Handler design — restart vs reload distinction",
+      "severity": "info",
+      "area": "handlers/main.yml",
+      "file": "/Users/syi/src/sessions/coding-fabric/infrastructure/ansible/roles/vaultwarden/handlers/main.yml",
+      "line": "14-19",
+      "issue": "Caddy reload handler ignores errors ('|| true') but never logs the failure. If caddy reload fails, role silently continues. No feedback to operator about reload status.",
+      "fix_recommendation": "Change 'ignore_errors: true' to explicit error handling. Either: (a) fail loudly if caddy reload fails (safer for production), or (b) log warning and retry 3x with 1s delay before ignoring. Document choice in README."
+    },
+    {
+      "dimension": 6,
+      "dimension_name": "Templates — Jinja2 quality, escaping, injection safety",
+      "severity": "info",
+      "area": "templates/",
+      "file": "/Users/syi/src/sessions/coding-fabric/infrastructure/ansible/roles/vaultwarden/templates/vaultwarden.env.j2",
+      "line": "13, 19",
+      "issue": "Environment variables in .env.j2 use unquoted template variables (lines 13, 19: ADMIN_TOKEN={{ vaultwarden_admin_token }}, VAULTWARDEN_INITIAL_ADMIN_PASSWORD={{...}}). If secret contains whitespace or special chars, will break env parsing.",
+      "fix_recommendation": "Quote all secret variables: ADMIN_TOKEN=\"{{ vaultwarden_admin_token | quote }}\" and VAULTWARDEN_INITIAL_ADMIN_PASSWORD=\"{{ vaultwarden_initial_admin_password | quote }}\". Use Jinja2 quote filter to escape shell/env special characters."
+    },
+    {
+      "dimension": 7,
+      "dimension_name": "Molecule scenario — converge + verify test coverage",
+      "severity": "warning",
+      "area": "molecule/default/",
+      "file": "/Users/syi/src/sessions/coding-fabric/infrastructure/ansible/roles/vaultwarden/molecule/default/verify.yml",
+      "line": "84-88",
+      "issue": "Idempotence check (line 77-88) verifies 'ansible_play.status == completed' but does not assert 'changed_when: false' results from second run. Molecule test-sequence includes 'idempotence' step, but verify.yml re-runs role manually without capturing task-by-task change count.",
+      "fix_recommendation": "Let Molecule's built-in idempotence step (test_sequence line 44) handle the second run. Alternatively, capture task output and assert all 'changed_when: false' tasks from second run. Document why health-check tolerance is 60s (should match task timeout)."
+    },
+    {
+      "dimension": 8,
+      "dimension_name": "README quality — sufficiency for next operator",
+      "severity": "info",
+      "area": "README.md",
+      "file": "/Users/syi/src/sessions/coding-fabric/infrastructure/ansible/roles/vaultwarden/README.md",
+      "line": "80-95",
+      "issue": "README correctly documents sops integration and dependencies, but missing: (a) troubleshooting for health-check timeout failure modes (what if containers are stuck?), (b) no mention of how to manually seed admin password post-deploy, (c) internal-CA TLS assumption not explained (why not Let's Encrypt for tailnet domain?).",
+      "fix_recommendation": "Add section: 'Failure recovery: if health check times out, check 'docker logs vaultwarden-vaultwarden-1' and 'docker logs vaultwarden-caddy-1' for CA/cert errors.' Add: 'Manual admin password reset: POST to /admin/register with hash. Internal-CA docs: tailnet domains non-public, so ACME (Let's Encrypt) cannot verify; Caddy internal CA generates self-signed certs.'"
+    },
+    {
+      "dimension": 9,
+      "dimension_name": "Meta dependencies — collection versions pinned",
+      "severity": "warning",
+      "area": "meta/main.yml",
+      "file": "/Users/syi/src/sessions/coding-fabric/infrastructure/ansible/roles/vaultwarden/meta/main.yml",
+      "line": "22",
+      "issue": "meta/main.yml declares dependency on 'community.docker' collection but does NOT pin version. Line 22 lists 'community.docker' without 'version:' constraint. This risks community.docker API changes (e.g., docker_compose_v2 module signature change in future release).",
+      "fix_recommendation": "Change line 22 to: 'collections: [name: community.docker, version: \">=5.0.0,<6.0.0\"]' (or minimum supported version). Pin to major.minor range. Add to requirements.txt/galaxy.yml in parent project: 'community.docker>=5.0.0'. Document in README: 'Tested with community.docker 5.x.'"
+    },
+    {
+      "dimension": 10,
+      "dimension_name": "Tag usage — tasks tagged for selective runs",
+      "severity": "info",
+      "area": "tasks/main.yml",
+      "file": "/Users/syi/src/sessions/coding-fabric/infrastructure/ansible/roles/vaultwarden/tasks/main.yml",
+      "line": "1-147",
+      "issue": "No tasks are tagged. Cannot selectively run 'ansible-playbook -t docker-setup' or '-t health-check' for faster iteration or debugging. All 8+ task blocks run monolithically.",
+      "fix_recommendation": "Add tags to logical blocks: 'tags: [docker-setup]' (lines 2-34), 'tags: [config]' (lines 47-75), 'tags: [compose-up]' (lines 110-119), 'tags: [health-check]' (lines 121-139). Document tags in README for operator convenience."
+    },
+    {
+      "dimension": 11,
+      "dimension_name": "Cross-role coupling — tight binding to base/tailscale",
+      "severity": "info",
+      "area": "tasks/main.yml, defaults/main.yml",
+      "file": "/Users/syi/src/sessions/coding-fabric/infrastructure/ansible/roles/vaultwarden/defaults/main.yml",
+      "line": "9-12",
+      "issue": "Role tightly coupled to tailscale role via implicit 'tailscale_ip' fact (line 36 in docker-compose.j2). If tailscale role is not applied or fact is missing, role fails with unclear error. No validation that tailscale_ip is set before template rendering.",
+      "fix_recommendation": "Add task before template rendering: 'ansible.builtin.assert: {that: [tailscale_ip is defined], fail_msg: \"tailscale_ip fact not set. Ensure tailscale role is applied before vaultwarden.\"}' Reduces operator confusion and catches coupling issues early. Document in README that tailscale role is mandatory prerequisite."
+    }
+  ]
+}

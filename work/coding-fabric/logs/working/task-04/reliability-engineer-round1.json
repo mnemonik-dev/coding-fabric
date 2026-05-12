@@ -1,0 +1,111 @@
+{
+  "task": "04",
+  "role": "reliability-engineer",
+  "round": 1,
+  "verdict": "changes_required",
+  "findings": [
+    {
+      "id": "RE-04-01",
+      "severity": "critical",
+      "category": "health_check_logic",
+      "title": "failed_when: false makes the fail-guard unreachable",
+      "description": "The URI task at 'Wait for Kaneo API to be healthy' sets failed_when: false. This means health_result.failed is always false regardless of outcome. The subsequent 'Fail if health check exceeded timeout' task checks 'when: health_result.failed' — this condition can never be true. If Kaneo never becomes healthy (wrong port, bad image, /api/health returns 404), the play silently continues to project seeding and produces a misleading success. The until condition (status == 200) exhausts retries and the uri module would normally set failed=true, but failed_when: false suppresses it.",
+      "file": "infrastructure/ansible/roles/kaneo/tasks/main.yml",
+      "lines": "44-60",
+      "recommendation": "Remove failed_when: false from the health-check URI task. Use the default failure behavior (failed_when not specified) so that retry exhaustion propagates as a real failure. Alternatively, check health_result.status != 200 in the fail guard: 'when: health_result.status is not defined or health_result.status != 200'."
+    },
+    {
+      "id": "RE-04-02",
+      "severity": "critical",
+      "category": "cross_role_coordination",
+      "title": "Caddy snippet never assembled into the running Caddyfile",
+      "description": "The role writes /opt/kaneo/Caddyfile.snippet and notifies 'Reload caddy for kaneo vhost'. The handler calls 'caddy reload' on the vaultwarden-caddy-1 container. However, there is no task anywhere in this role (or in the vaultwarden role as visible from the templates) that copies or imports the snippet into the Caddy container's mounted Caddyfile. The snippet file exists on the host but is never read by Caddy. kaneo.mnemonic-fabric.ts will return connection refused after the role runs.",
+      "file": "infrastructure/ansible/roles/kaneo/handlers/main.yml",
+      "lines": "14-19",
+      "recommendation": "Add a task that appends or includes the snippet into the Caddy Caddyfile path (the same volume mount used by the vaultwarden role). Alternatively, establish a convention where the vaultwarden role assembles all *.snippet files from /opt/*/Caddyfile.snippet on each Caddy reload. Document the assembly contract between roles. Failing silently with 'ignore_errors: true' in the handler makes debugging this harder."
+    },
+    {
+      "id": "RE-04-03",
+      "severity": "high",
+      "category": "image_pinning",
+      "title": "kaneo_image pinned to :latest with TODO — no real version set",
+      "description": "defaults/main.yml sets kaneo_image: 'kaneo/kaneo:latest' with a TODO comment. Using :latest violates reproducibility: re-running the role on a different day may pull a breaking release. Combined with pull: always in the compose task, every playbook run pulls the image, potentially introducing unreviewed upstream changes into production.",
+      "file": "infrastructure/ansible/roles/kaneo/defaults/main.yml",
+      "lines": "6-9",
+      "recommendation": "Pin to a specific semver tag (e.g. kaneo/kaneo:1.2.3) before merging. Add a CHANGELOG entry or ADR note when the pin is bumped. Remove pull: always from the docker_compose_v2 task or gate it behind an explicit variable (kaneo_force_pull: false by default) so idempotent re-runs do not trigger spurious restarts."
+    },
+    {
+      "id": "RE-04-04",
+      "severity": "high",
+      "category": "timeout_budget",
+      "title": "60-second health-check window too tight given Docker start_period",
+      "description": "The Ansible URI retries 60 times with delay: 1 giving a 60-second budget. The docker-compose healthcheck sets start_period: 30s and retries: 3 at interval: 10s, meaning Docker itself may not report healthy for up to 60 seconds after start. On a cold pull (first deploy or after image update) the container image download time is not included in either budget. In practice the Ansible wait fires before the container is even running.",
+      "file": "infrastructure/ansible/roles/kaneo/tasks/main.yml",
+      "lines": "44-54",
+      "recommendation": "Increase retries to 120 with delay: 2 (4-minute total budget, cache-friendly). Add a preceding wait_for module task checking that TCP port kaneo_http_port is open before probing the HTTP health endpoint. This separates 'container started' from 'app initialized'."
+    },
+    {
+      "id": "RE-04-05",
+      "severity": "high",
+      "category": "project_seeding_error_handling",
+      "title": "No retry on 429 or 5xx during project creation",
+      "description": "The project create loop retries 3 times but the until condition is 'status == 201 or status == 409'. A 429 (rate-limit) or 503 (startup transient) causes the retries to exhaust and the task fails. The task spec calls out a 0.5s pause between creates but does not address transient server errors. The 1-second retry delay is also too short for a rate-limit recovery window.",
+      "file": "infrastructure/ansible/roles/kaneo/tasks/main.yml",
+      "lines": "79-100",
+      "recommendation": "Expand the until condition to also accept 429 and 5xx status codes as retriable: 'until: project_create_result.status in [201, 409] or project_create_result.status >= 500'. Increase delay to 2 seconds. For 429 specifically, consider increasing loop_control.pause when a 429 is received (this requires a rescue block or a dedicated retry task)."
+    },
+    {
+      "id": "RE-04-06",
+      "severity": "medium",
+      "category": "idempotency",
+      "title": "pull: always causes spurious changed status and unnecessary restarts",
+      "description": "docker_compose_v2 with pull: always re-pulls the image on every playbook run. When the image is :latest, every run may produce a different image digest, triggering the Restart kaneo handler. This makes idempotency claims misleading: second run reports changed even when no configuration changed. Acceptance criterion 'Role idempotent' is not satisfied by a run that restarts the container.",
+      "file": "infrastructure/ansible/roles/kaneo/tasks/main.yml",
+      "lines": "33-43",
+      "recommendation": "Set pull: policy to 'missing' (default) or introduce a kaneo_force_pull boolean variable. Reserve pull: always for an explicit upgrade play."
+    },
+    {
+      "id": "RE-04-07",
+      "severity": "medium",
+      "category": "backup_coverage",
+      "title": "SQLite data volume not guaranteed in restic_paths",
+      "description": "Task 06 (restic-backups) mentions 'Kaneo data' in its description but does not define a cross-role mechanism for this role to register /opt/kaneo/data into restic_paths. The kaneo role does not set any host variable or fact that Task 06's defaults would pick up. If the restic-backups role author omits /opt/kaneo/data from its defaults list, the SQLite database will not be backed up. There is no validation gate to catch this omission.",
+      "file": "infrastructure/ansible/roles/kaneo/defaults/main.yml",
+      "lines": "21-25",
+      "recommendation": "Either: (a) document in the kaneo role README that /opt/kaneo/data MUST be included in restic_paths, and add an assert task in the kaneo role that fails if restic_paths is defined but does not include kaneo_data_dir; or (b) have the kaneo role append to a shared restic_backup_dirs list variable via set_fact, which the restic-backups role then consumes."
+    },
+    {
+      "id": "RE-04-08",
+      "severity": "medium",
+      "category": "molecule_verification",
+      "title": "Molecule verify does not assert 6 named projects before idempotency block",
+      "description": "The verify.yml first block checks health, container status, and file existence but does not independently assert that all 6 named projects exist. The 6-project assertion (idempotent_check.json | length == 6) only appears inside the idempotency re-run block. If the converge run creates only 4 projects due to a partial failure, the first verify pass would not catch it — the idempotency re-run would then create the remaining 2 and the count assertion would pass, masking the original failure.",
+      "file": "infrastructure/ansible/roles/kaneo/molecule/default/verify.yml",
+      "lines": "1-77",
+      "recommendation": "Add a standalone verify task before the idempotency block that GETs /api/projects and asserts both count == 6 and that each of the 6 expected names is present by name (not just by count). The current count-only assertion would pass with 6 wrong project names."
+    },
+    {
+      "id": "RE-04-09",
+      "severity": "low",
+      "category": "verification_assertion",
+      "title": "Final assert checks length == 6 but project names could have drifted",
+      "description": "The 'Verify exactly 6 default projects exist' assert in main.yml checks both count and name coverage via difference(). This is correct. However, it does not guard against extra projects (e.g. operator manually added a 7th project). The assert would pass with 7 projects if all 6 expected names are present, because difference() returns empty. The fail_msg also shows only the count found, not the names.",
+      "file": "infrastructure/ansible/roles/kaneo/tasks/main.yml",
+      "lines": "119-125",
+      "recommendation": "If extra user-created projects are acceptable, document this explicitly and remove the length == 6 check. If strict count is required, the assert is correct but the fail_msg should show both the found names and the expected names for easier debugging: 'found: {{ final_project_names }}'. Consider removing the strict length check to be tolerant of operator-added projects."
+    },
+    {
+      "id": "RE-04-10",
+      "severity": "low",
+      "category": "no_log_coverage",
+      "title": "no_log: true coverage is consistent for API-token tasks",
+      "description": "All three URI tasks that include the Authorization header (GET projects, POST projects, GET final verification) have no_log: true. The docker-compose template task renders kaneo_api_token into the compose file via the template module — this is correct as template module does not log rendered content by default. No gaps found in no_log coverage for this specific concern.",
+      "file": "infrastructure/ansible/roles/kaneo/tasks/main.yml",
+      "lines": "62-113",
+      "recommendation": "No action required for no_log coverage. Note for completeness: the converge.yml sets kaneo_api_token: 'test-api-token-secret' in plaintext vars, which is acceptable for molecule test context only."
+    }
+  ],
+  "summary": "Two critical blockers: (1) failed_when: false on the health URI task makes the fail-guard permanently unreachable — a down Kaneo is silently ignored; (2) the Caddy snippet is written to disk but never incorporated into the running Caddyfile, so the vhost will not work. Two high-severity issues: image pinned to :latest with pull: always breaks idempotency and reproducibility; 60-second health timeout is too tight against Docker start_period. Project seeding has no retry path for 429 or 5xx. SQLite backup inclusion in restic_paths is undocumented and unvalidated. Molecule verify does not assert named projects before the idempotency re-run.",
+  "blocking": ["RE-04-01", "RE-04-02"],
+  "approved": false
+}

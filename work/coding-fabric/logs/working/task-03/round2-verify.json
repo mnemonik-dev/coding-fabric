@@ -1,0 +1,97 @@
+{
+  "status": "changes_required",
+  "summary": {
+    "totalFindings": 3,
+    "critical": 1,
+    "major": 1,
+    "minor": 1
+  },
+  "verification_matrix": [
+    {
+      "item": "1. Admin password actually gets set in Vaultwarden (creates: guard + ACTUAL invocation of admin-seed)",
+      "round1_finding_refs": ["security-auditor #3 (creates: guard)", "code-reviewer dim1 (never executed)"],
+      "verdict": "fail",
+      "evidence": "tasks/main.yml:147-154 only touches a marker file /opt/vaultwarden/.admin-seeded. There is NO invocation of any admin-seed script (script itself was removed), NO call to the Vaultwarden admin API to register the initial admin, and the VAULTWARDEN_INITIAL_ADMIN_PASSWORD env var is no longer written to templates/vaultwarden.env.j2 (compare with original lines 18-20 — now absent). Net effect: the role asserts vaultwarden_initial_admin_password is defined (>=12 chars), then completely ignores it, then drops a marker file claiming it was seeded. The initial admin password is never communicated to Vaultwarden by any mechanism. This is a regression — the Round 1 fix removed both the unsafe script AND the env-var path without providing any replacement seeding mechanism. Operator must manually register admin via /admin endpoint, which contradicts the role's documented behavior."
+    },
+    {
+      "item": "2. no_log: true on all secret-handling tasks",
+      "round1_finding_refs": ["security-auditor #1"],
+      "verdict": "pass-with-gap",
+      "evidence": "no_log: true present on: pre-flight assert (tasks/main.yml:11), .env template task (line 113), docker_compose_v2 run (line 126), and Restart vaultwarden handler (handlers/main.yml:13). Missing on Reload caddy handler (handlers/main.yml:15-23) — acceptable since that path does not touch the secret. Overall coverage is adequate for the surface that still touches secrets."
+    },
+    {
+      "item": "3. seed-admin.sh script removed OR made safe",
+      "round1_finding_refs": ["security-auditor #2"],
+      "verdict": "pass",
+      "evidence": "grep -rn seed-admin returns no matches in roles/vaultwarden/. The world-readable script with embedded secrets has been deleted entirely. (Side effect: item 1 broke; see above.)"
+    },
+    {
+      "item": "4. on_demand / ACME_AGREE removed from Caddy",
+      "round1_finding_refs": ["security-auditor #5"],
+      "verdict": "pass",
+      "evidence": "templates/Caddyfile.j2:8-9 now reads plain `tls internal` with no `on_demand`. templates/docker-compose.yml.j2 caddy service block no longer sets ACME_AGREE. The CT-log leak vector is closed."
+    },
+    {
+      "item": "5. Docker install via apt + signed key (not curl|sh)",
+      "round1_finding_refs": ["security-auditor #6"],
+      "verdict": "pass-with-minor-gap",
+      "evidence": "tasks/main.yml:30-48 uses ansible.builtin.apt_key with pinned fingerprint 9DC858229FC7DD38854AE2D88D81803C0EBFCD88, ansible.builtin.apt_repository with signed-by=/etc/apt/keyrings/docker.gpg, and ansible.builtin.apt for installation. Gap: apt_key writes to /etc/apt/trusted.gpg.d/ but signed-by references /etc/apt/keyrings/docker.gpg — the two paths do not match, so the repo signature verification may fail on real Ubuntu hosts (apt_key is also deprecated). Recommend switching to ansible.builtin.get_url for the key into /etc/apt/keyrings/docker.gpg + ansible.builtin.command gpg --dearmor. Not blocking, but the chain as written is inconsistent."
+    },
+    {
+      "item": "6. pull: missing (not always)",
+      "round1_finding_refs": ["security-auditor #7"],
+      "verdict": "pass",
+      "evidence": "tasks/main.yml:120 sets `pull: missing` on docker_compose_v2. Tag-swap risk reduced; though images are still pinned by tag only, not digest (security-auditor #7 second half remains open as a non-blocking improvement)."
+    },
+    {
+      "item": "7. molecule failed_when bug fixed",
+      "round1_finding_refs": ["security-auditor #9"],
+      "verdict": "pass",
+      "evidence": "molecule/default/verify.yml:30 and :36 now use a single OR expression: `not env_stat.stat.exists or env_stat.stat.mode != \"0600\"` (and the equivalent for data_dir 0700). The AND-of-list bug is corrected."
+    },
+    {
+      "item": "8. Assert on required sops vars",
+      "round1_finding_refs": ["security-auditor #4"],
+      "verdict": "pass",
+      "evidence": "tasks/main.yml:2-11 asserts vaultwarden_admin_token defined and >=32 chars, vaultwarden_initial_admin_password defined and >=12 chars, with fail_msg pointing to README. tasks/main.yml:13-19 also asserts tailscale_ip fact. quiet: true and no_log: true applied."
+    },
+    {
+      "item": "9. Caddy admin API bound to localhost",
+      "round1_finding_refs": ["security-auditor #15"],
+      "verdict": "pass",
+      "evidence": "templates/Caddyfile.j2:41-43 binds the admin/metrics listener to 127.0.0.1:2019 inside the container. A compromised Vaultwarden sibling container can no longer reach the Caddy admin API across the bridge network."
+    }
+  ],
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "A04: Insecure Design",
+      "title": "Initial admin password is asserted but never delivered to Vaultwarden — role silently fails its primary bootstrap responsibility",
+      "description": "Round 1 found that the seed-admin.sh script (a) leaked secrets, (b) had no creates: guard, and (c) was never executed. The Round 1 fix removed the script entirely and also removed VAULTWARDEN_INITIAL_ADMIN_PASSWORD from templates/vaultwarden.env.j2 (compare current template to Round 1 description: lines 18-20 of the env template no longer write the password). What replaced it is tasks/main.yml:147-154, which only touches /opt/vaultwarden/.admin-seeded with no command, no uri call, no docker exec, no env var. The pre-flight assert at tasks/main.yml:5-8 still requires `vaultwarden_initial_admin_password is defined and | length >= 12`, so the operator is forced to supply a password via sops — and the role then discards it. The marker file makes future runs claim 'seeded' state when no seeding happened. End-to-end: a fresh VM after this role completes has Vaultwarden running with ADMIN_TOKEN set (good) but no admin user registered — the operator must manually visit /admin and register, contradicting the README and the tech-spec acceptance criterion that the role bootstraps Vaultwarden into a usable state.",
+      "location": "infrastructure/ansible/roles/vaultwarden/tasks/main.yml:147-154; infrastructure/ansible/roles/vaultwarden/templates/vaultwarden.env.j2 (missing line)",
+      "impact": "Role is non-functional for the documented use case: zero-touch bootstrap of Vaultwarden as the fabric's sole secret store. The operator who supplies VAULTWARDEN_INITIAL_ADMIN_PASSWORD via sops has no signal that it was ignored, only an inert .admin-seeded marker. Worse: a re-run of the role after manual admin registration will see the marker and never re-attempt — but it never tried to begin with. Tech-spec D24 (Vaultwarden as sole secret store) cannot be satisfied if no admin can log in.",
+      "recommendation": "Pick one of two patterns and implement end-to-end:\n\n(A) Env-var path (Vaultwarden 1.32+ supports VAULTWARDEN_INITIAL_ADMIN_PASSWORD as a first-boot bootstrap env var if you confirm the upstream feature flag): re-add the line to vaultwarden.env.j2, but gate it on absence of the .admin-seeded marker using a lookup in the template task — write the env file WITH the password on first run, then on subsequent runs re-template WITHOUT it after the marker exists. Touch the marker only after a successful health check confirms the admin can authenticate.\n\n(B) API-call path: after the health check, POST to https://{{ vaultwarden_tailnet_domain }}/admin via ansible.builtin.uri using the admin_token for auth, registering the initial admin email + password hash; gate the call with `creates: /opt/vaultwarden/.admin-seeded` semantics (use a `stat` task on the marker and a `when:` clause), then touch the marker. Apply `no_log: true` to both the uri call and the marker step.\n\nEither way, the marker must be touched only after seeding actually succeeded, not unconditionally.",
+      "cwe": "CWE-665"
+    },
+    {
+      "severity": "major",
+      "category": "A05: Security Misconfiguration",
+      "title": "Docker apt key path mismatch — apt_key writes to legacy trusted.gpg.d but apt_repository references /etc/apt/keyrings/docker.gpg",
+      "description": "tasks/main.yml:30-34 uses ansible.builtin.apt_key, which on modern Ubuntu writes the key into /etc/apt/trusted.gpg.d/ (or the deprecated single keyring). Line 39 then declares the repo with `signed-by=/etc/apt/keyrings/docker.gpg`. That file is never created. On a clean Ubuntu 22.04/24.04 host, apt update for the Docker repo will fail because the signed-by path does not exist, and the apt install at lines 43-48 will fail. The unit-test/molecule scenario may not catch this if it uses a different base image with Docker pre-installed.",
+      "location": "infrastructure/ansible/roles/vaultwarden/tasks/main.yml:30-41",
+      "impact": "Docker installation is broken on fresh Ubuntu hosts that don't already have docker — defeating one of the role's deployment responsibilities. The Round 1 fix correctly moved off curl|sh but introduced a path-mismatch bug.",
+      "recommendation": "Replace apt_key (deprecated since Ansible 2.10) with explicit key handling:\n\n- name: Ensure /etc/apt/keyrings exists\n  ansible.builtin.file: { path: /etc/apt/keyrings, state: directory, mode: '0755' }\n\n- name: Download Docker GPG key\n  ansible.builtin.get_url:\n    url: https://download.docker.com/linux/ubuntu/gpg\n    dest: /etc/apt/keyrings/docker.asc\n    mode: '0644'\n\n- name: Convert to dearmored keyring\n  ansible.builtin.command: gpg --dearmor -o /etc/apt/keyrings/docker.gpg /etc/apt/keyrings/docker.asc\n  args: { creates: /etc/apt/keyrings/docker.gpg }\n\nThen verify the key fingerprint matches 9DC858229FC7DD38854AE2D88D81803C0EBFCD88 via `gpg --show-keys` before adding the repo.",
+      "cwe": "CWE-494"
+    },
+    {
+      "severity": "minor",
+      "category": "best-practice",
+      "title": "Molecule idempotency check supplies placeholder secrets that fail the new assert thresholds",
+      "description": "molecule/default/verify.yml:77-78 passes `vaultwarden_admin_token: test-admin-token-abcdef123456` (28 chars) and `vaultwarden_initial_admin_password: test-admin-password-12345` (25 chars). The new pre-flight assert at tasks/main.yml:5-8 requires admin_token length >= 32. 28 < 32, so the second-run idempotency check will fail at the assert before any other task runs. Molecule will report a red converge on the include_role call, but the failure mode is the assert (not real idempotency), which is misleading.",
+      "location": "infrastructure/ansible/roles/vaultwarden/molecule/default/verify.yml:77-78",
+      "impact": "Molecule test results misrepresent the role's idempotency: the failure is upstream of any meaningful task, and CI signal is muddied.",
+      "recommendation": "Use 32+ character placeholder token in verify.yml, e.g. `test-admin-token-abcdef123456789012345678` (40 chars). Better: load the same placeholder vars via molecule/default/converge.yml so both first and second runs use identical inputs.",
+      "cwe": "CWE-1188"
+    }
+  ]
+}

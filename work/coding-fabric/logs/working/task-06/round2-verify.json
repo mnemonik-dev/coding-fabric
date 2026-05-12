@@ -1,0 +1,70 @@
+{
+  "status": "approved",
+  "summary": {
+    "totalFindings": 3,
+    "critical": 0,
+    "major": 1,
+    "minor": 2
+  },
+  "verificationChecklist": {
+    "1_envfile_replaces_source": {
+      "fixed": true,
+      "evidence": "fabric-backup.service.j2:8 sets EnvironmentFile=/etc/restic/repo.env; restic.env.j2 renders KEY={{ var | quote }} (no `export`, no `source`); fabric-backup.sh.j2:9-10 comments explicitly forbid sourcing; backup-verify.sh.j2 also expects env-vars pre-loaded (no `source`). Bash RCE via secret metacharacters is eliminated — systemd's EnvironmentFile parser does not invoke a shell."
+    },
+    "2_jq_for_telegram_json": {
+      "fixed": true,
+      "evidence": "fabric-backup.sh.j2:59-62 builds JSON via `jq -n --arg chat_id ... --arg text ... '{chat_id:$chat_id,text:$text,parse_mode:\"MarkdownV2\"}'`. Raw interpolation of ${message} into JSON is gone; jq handles all escaping. JSON injection vector closed."
+    },
+    "3_verify_multiple_sources": {
+      "fixed": true,
+      "evidence": "backup-verify.sh.j2:81-108 iterates CRITICAL_SOURCES array containing /opt/vaultwarden/data/db.sqlite3, /opt/kaneo/data/kaneo.sqlite3, /home/op/code/mnemonic-masters and asserts each is present + non-empty (size>0 for files, file-count>0 for directories). Also runs `restic check --read-data-subset=5%` for crypto integrity. Verifies intent of D28/AC42, not just a single marker."
+    },
+    "4_forget_prune_protected": {
+      "fixed": true,
+      "evidence": "Two-layer guard: (a) tasks/main.yml:4-10 Ansible assert refuses to apply role unless restic_keep_daily/weekly/monthly are all >=1; (b) fabric-backup.sh.j2:102-105 runtime regex `^[1-9][0-9]*$` aborts the script before forget. Also lines 108-114 perform `restic forget --dry-run` first and abort if >50 snapshots would be deleted. Misconfig to 0/empty values can no longer wipe history."
+    },
+    "5_protecthome_readonly": {
+      "fixed": true,
+      "evidence": "fabric-backup.service.j2:18 sets `ProtectHome=read-only` (changed from `true`) and line 19 adds `BindReadOnlyPaths=/home/op/.fabric /home/op/code/mnemonic-masters`. Restic can now read the home-rooted backup paths; backup paths under /opt remain writable via ReadWritePaths (line 20). Silent functional failure mode resolved."
+    },
+    "6_github_release_provenance": {
+      "fixed": "partial",
+      "evidence": "tasks/main.yml:57-62 uses `get_url checksum: sha256:{{ restic_github_sha256 }}` (pinned SHA256 in defaults/main.yml:6 = 49b5c9b…). This satisfies the orchestrator's stated criterion of `GPG verification OR pinned SHA256`. NO GPG signature verification (SHA256SUMS.asc) is performed; the SHA256 in defaults itself is not independently attested. Original Round 1 finding's deeper concern (trust-in-defaults) is unmitigated, but the explicit fix criterion is met."
+    },
+    "7_jq_curl_dependencies": {
+      "fixed": true,
+      "evidence": "tasks/main.yml:21-27 installs `jq` and `curl` via apt before any script template is rendered. Scripts that depend on both binaries can no longer fail with `command not found`."
+    }
+  },
+  "findings": [
+    {
+      "severity": "major",
+      "category": "A08: Software and Data Integrity",
+      "title": "GitHub-release restic install still lacks GPG signature verification",
+      "description": "tasks/main.yml:57-62 verifies the downloaded restic binary against a hard-coded SHA256 in defaults/main.yml:6 (restic_github_sha256). The SHA256 itself has no independent provenance — a reviewer must trust the commit author. There is still no `gpg --verify SHA256SUMS.asc SHA256SUMS` step, no SLSA attestation check, and no comment in defaults pointing to the upstream signed checksum URL. The orchestrator's Round-2 acceptance criterion (`GPG verification OR pinned SHA256`) is technically met by the pinned hash, so this is downgraded from Round 1 critical/major to major-residual.",
+      "location": "infrastructure/ansible/roles/restic-backups/tasks/main.yml:57-62; defaults/main.yml:5-6",
+      "impact": "If GitHub releases AND the defaults SHA256 are tampered with by the same actor (compromised maintainer + malicious PR), a backdoored restic binary runs as root with access to RESTIC_PASSWORD. Reduced risk because apt path is preferred (when restic >= 0.15 is available); the github fallback is the exposed surface.",
+      "recommendation": "Add a follow-up task: download `SHA256SUMS` and `SHA256SUMS.asc` from the same release, import restic's signing key by pinned fingerprint (0xCF8F18F2844575973F79D4E191A6868BD3F7A907), `gpg --verify`, then assert the binary's SHA256 from the signed list (rather than from defaults). At minimum, add a code comment in defaults/main.yml pointing to the upstream signed SHA256SUMS URL so reviewers can confirm out-of-band.",
+      "cwe": "CWE-494"
+    },
+    {
+      "severity": "minor",
+      "category": "A04: Insecure Design",
+      "title": "Marker SHA256 still hard-coded in template; rotation drift risk persists",
+      "description": "backup-verify.sh.j2:13 still hard-codes `MARKER_SHA256_EXPECTED=53cffbb8…`. The Round 1 finding about operator-driven marker rotation causing alert fatigue / tripwire-bypass remains. The new multi-source check (lines 81-108) plus `restic check --read-data-subset=5%` substantially reduces the criticality because verification no longer relies solely on the single marker — even if the marker check produces false-positives, the per-source presence + crypto checks still detect real failures.",
+      "location": "infrastructure/ansible/roles/restic-backups/templates/backup-verify.sh.j2:13",
+      "impact": "Operators rotating the marker may rationalize 'expected mismatch' warnings and tune them out, but data-loss detection is now layered (per-source presence + crypto check), so this is best-practice, not a critical hole.",
+      "recommendation": "Compute the marker SHA256 in Ansible (e.g., from a Jinja-rendered content with a known hash) and inject it via template var, or drop the marker check entirely now that multi-source verification + crypto check exist. Render the marker file via Ansible with mode 0444 and `chattr +i` to make it tamper-evident.",
+      "cwe": "CWE-345"
+    },
+    {
+      "severity": "minor",
+      "category": "best-practice",
+      "title": "Telegram bot token still co-located with restic password in /etc/restic/repo.env",
+      "description": "restic.env.j2 still mixes RESTIC_* and (implicit, via tasks/main.yml assert) TELEGRAM_* credentials into one EnvironmentFile read by both `fabric-backup.service` and operators running scripts manually. Round 1 minor finding (CWE-668 blast radius) is unmitigated. Lower urgency now because EnvironmentFile parsing eliminates the worst (RCE) exposure; remaining risk is a single accidental `cat /etc/restic/repo.env` leaking both credential classes.",
+      "location": "infrastructure/ansible/roles/restic-backups/templates/restic.env.j2; tasks/main.yml:12-19",
+      "impact": "Increased blast radius if either credential leaks via debug output. Telegram credentials are also used by telegram-init and telegram-ai-agent roles; co-locating them with backup secrets means a leak of the alert channel also leaks the encryption password's container.",
+      "recommendation": "Split into `/etc/restic/repo.env` (RESTIC_* only) and `/etc/fabric/telegram.env` (TELEGRAM_* only), then list both in the service unit: `EnvironmentFile=/etc/restic/repo.env` and `EnvironmentFile=/etc/fabric/telegram.env`. Lets the telegram-init role manage telegram creds centrally."
+    }
+  ]
+}

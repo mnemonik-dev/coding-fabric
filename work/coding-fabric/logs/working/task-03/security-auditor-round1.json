@@ -1,0 +1,161 @@
+{
+  "status": "changes_required",
+  "summary": {
+    "totalFindings": 15,
+    "critical": 5,
+    "major": 6,
+    "minor": 4
+  },
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "A09: Security Logging and Monitoring",
+      "title": "Missing no_log: true on every secret-handling task",
+      "description": "Task 03 spec and tech-spec D6/D24 require that secrets sourced from sops never appear in Ansible output. However, NONE of the tasks that template or copy secrets in infrastructure/ansible/roles/vaultwarden/tasks/main.yml set `no_log: true`. The 'Create environment file for Vaultwarden' task (lines 67-75) templates vaultwarden.env.j2 which contains ADMIN_TOKEN={{ vaultwarden_admin_token }} and VAULTWARDEN_INITIAL_ADMIN_PASSWORD={{ vaultwarden_initial_admin_password }}. The 'Seed initial admin password' task (lines 77-108) embeds both secrets directly into the script's `content:` parameter. When Ansible runs in verbose mode (-v / -vvv), with debug callback, or when these tasks fail, the rendered content (with plaintext admin token AND initial admin password) is printed to stdout, journald, and any CI log capture. This is a direct violation of D6 ('only the age private key is in GH Actions secret') and AC38 ('Vaultwarden sole secret store on VM'). Handlers/main.yml `Restart vaultwarden` also re-runs the compose task which references the env file; should also be `no_log`.",
+      "location": "infrastructure/ansible/roles/vaultwarden/tasks/main.yml:67-108",
+      "impact": "Plaintext admin token and initial admin password leak to Ansible stdout, CI logs, journald, and operator terminals on any verbose run or failure. An attacker with read access to CI artifacts, journald, or shell history obtains full Vaultwarden admin control, breaking the security model that makes Vaultwarden the sole secret store.",
+      "recommendation": "Add `no_log: true` to every task that references vaultwarden_admin_token or vaultwarden_initial_admin_password: the env template task, the seed-admin.sh copy task, and the docker_compose_v2 invocation (since it loads the env file). Example:\n\n- name: Create environment file for Vaultwarden\n  ansible.builtin.template:\n    src: vaultwarden.env.j2\n    dest: /opt/vaultwarden/.env\n    owner: op\n    group: op\n    mode: '0600'\n  no_log: true\n  register: env_file\n  notify: Restart vaultwarden",
+      "cwe": "CWE-532"
+    },
+    {
+      "severity": "critical",
+      "category": "A01: Broken Access Control",
+      "title": "seed-admin.sh written world-readable (mode 0755) with embedded plaintext secrets",
+      "description": "tasks/main.yml lines 77-108 write /opt/vaultwarden/seed-admin.sh with mode 0755 (world-readable, world-executable). The `content:` block embeds {{ vaultwarden_initial_admin_password }} and {{ vaultwarden_admin_token }} as plaintext shell variables. Any local user on the VM (including future agent containers per D27 if they ever escape isolation, or any unprivileged process) can `cat /opt/vaultwarden/seed-admin.sh` and read both secrets. The .env file is correctly mode 0600, but this script bypasses that control.",
+      "location": "infrastructure/ansible/roles/vaultwarden/tasks/main.yml:104-107",
+      "impact": "Bypass of D24 secret-storage guarantees. Any non-root user (or compromised container with bind-mount) reads Vaultwarden admin token + initial password from a world-readable file. Persistence: rewritten on every Ansible run.",
+      "recommendation": "(1) Change mode to '0700' and owner to op:op with no group/other access. (2) Better: do not embed secrets in a script-on-disk at all. Pass them via stdin to a one-shot command, or use the Vaultwarden admin API directly via `ansible.builtin.uri` with `no_log: true` and `body_format: json`. (3) After seeding, delete the script: add a follow-up task `ansible.builtin.file: path=/opt/vaultwarden/seed-admin.sh state=absent`.",
+      "cwe": "CWE-732"
+    },
+    {
+      "severity": "critical",
+      "category": "A04: Insecure Design",
+      "title": "seed-admin.sh has no `creates:` guard — re-seeds secrets on every run",
+      "description": "Task 03 spec explicitly requires: 'Operator already changed admin password manually — role doesn't reset it; only seeds on first install (uses `creates:` guard)'. The README also claims '`creates:` guard on initial admin password seed (so re-runs don't reset)'. The actual code at tasks/main.yml:77-108 uses `ansible.builtin.copy` with only a `when: vaultwarden_initial_admin_password is defined and ...|length > 0` clause. There is NO `creates:` argument and NO marker file check. Every Ansible re-run rewrites the script (and, more importantly, the same secrets keep flowing through the env file unconditionally, line 18-20 of vaultwarden.env.j2). If the operator rotates the admin password in the Vaultwarden UI, the next `ansible-playbook` run reverts it via the persisted env variable. This breaks the documented Idempotency contract and violates the edge case from tasks/03.md.",
+      "location": "infrastructure/ansible/roles/vaultwarden/tasks/main.yml:77-108; templates/vaultwarden.env.j2:18-20",
+      "impact": "Operator-rotated admin credentials get silently reset on next deploy. Worse: the documented guarantee is false, so the operator may rely on rotation that doesn't hold. Also: the secret keeps being shipped in plaintext to disk forever, when it should be a one-shot seed.",
+      "recommendation": "Add an explicit `creates:` guard and a marker file: \n\n- name: Seed initial admin password (first run only)\n  ansible.builtin.copy: ...\n  args:\n    creates: /opt/vaultwarden/.admin-seeded\n  no_log: true\n\n- name: Run seed script (first run only)\n  ansible.builtin.command: /opt/vaultwarden/seed-admin.sh\n  args:\n    creates: /opt/vaultwarden/.admin-seeded\n  no_log: true\n\n- name: Mark admin as seeded\n  ansible.builtin.file:\n    path: /opt/vaultwarden/.admin-seeded\n    state: touch\n    mode: '0600'\n\nAlso: remove VAULTWARDEN_INITIAL_ADMIN_PASSWORD from .env after seeding, or guard the .env block with the same marker.",
+      "cwe": "CWE-665"
+    },
+    {
+      "severity": "critical",
+      "category": "A07: Authentication Failures",
+      "title": "No assert that vaultwarden_admin_token is defined and non-empty before templating",
+      "description": "defaults/main.yml documents (lines 20-30) that `vaultwarden_admin_token` and `vaultwarden_initial_admin_password` must be passed by the playbook from sops; they are intentionally NOT in defaults. However, tasks/main.yml never asserts these variables are defined before templating vaultwarden.env.j2. If the playbook forgets to pass them (or sops decryption silently produces an empty string), the template renders `ADMIN_TOKEN=` with an empty value. Vaultwarden interprets an unset/empty ADMIN_TOKEN as 'admin panel disabled' in recent versions — but older 1.32.0 behavior on empty token has been documented to allow unauthenticated access to /admin. Either way, a silent misconfiguration produces a security-relevant state change with no operator signal.",
+      "location": "infrastructure/ansible/roles/vaultwarden/tasks/main.yml:1-76; templates/vaultwarden.env.j2:13",
+      "impact": "Silent secret-missing failure can disable admin auth or grant unauthenticated admin access on the tailnet. Tailnet is not a security boundary if tailscale ACL allows it. No operator alarm.",
+      "recommendation": "Add a pre-flight assert task at the top of tasks/main.yml:\n\n- name: Assert required secrets are provided\n  ansible.builtin.assert:\n    that:\n      - vaultwarden_admin_token is defined\n      - vaultwarden_admin_token | length >= 32\n      - vaultwarden_initial_admin_password is defined\n      - vaultwarden_initial_admin_password | length >= 12\n    fail_msg: 'vaultwarden role requires VAULTWARDEN_ADMIN_TOKEN and VAULTWARDEN_INITIAL_ADMIN_PASSWORD from sops. See README.md.'\n    quiet: true\n  no_log: true",
+      "cwe": "CWE-1188"
+    },
+    {
+      "severity": "critical",
+      "category": "A05: Security Misconfiguration",
+      "title": "Caddy `tls internal { on_demand }` may fall through to public ACME, leaking tailnet domain to CT logs",
+      "description": "templates/Caddyfile.j2 lines 8-10 configure `tls internal` with `on_demand`. The `on_demand` directive in Caddy is designed for dynamically resolving public domains and triggering ACME issuance against a public CA. Combined with `ACME_AGREE: \"true\"` env var on the Caddy container (templates/docker-compose.yml.j2:44), Caddy is configured as if public-CA fallback is acceptable. If `tls internal` ever fails (CA file missing, container volume not persisted, etc.), `on_demand` may attempt to acquire a Let's Encrypt cert for `vault.mnemonic-fabric.ts`. Caddy will fail (LE can't validate a .ts tailnet domain) but the request itself is logged in public CT logs (failed cert requests are logged), leaking the tailnet hostname publicly. This directly contradicts tech-spec D6 (no tailnet domain in public CT logs) and the role's documented requirement (Caddy internal-CA mode, NOT Let's Encrypt).",
+      "location": "infrastructure/ansible/roles/vaultwarden/templates/Caddyfile.j2:8-10; templates/docker-compose.yml.j2:44",
+      "impact": "Tailnet hostname `vault.mnemonic-fabric.ts` leaks to public Certificate Transparency logs (crt.sh, censys), exposing the existence of a Vaultwarden instance to internet-wide scanners. This defeats the privacy benefit of tailnet-internal hosting.",
+      "recommendation": "Remove `on_demand` (it's not needed for a single static tailnet hostname). Remove `ACME_AGREE` env var (it's irrelevant for internal CA). Use plain `tls internal`:\n\n{{ vaultwarden_tailnet_domain }}:8443 {\n  tls internal\n  ...\n}\n\nIf on-demand-like behavior IS desired, scope it explicitly with `on_demand_tls { ask https://localhost/check }` and bind it to internal CA — never let it touch ACME for a non-public domain.",
+      "cwe": "CWE-200"
+    },
+    {
+      "severity": "major",
+      "category": "A08: Software and Data Integrity",
+      "title": "Docker installed via `curl ... | sh` from get.docker.com without signature verification",
+      "description": "tasks/main.yml:10-14 runs:\n\n  curl -fsSL https://get.docker.com -o /tmp/get-docker.sh\n  sh /tmp/get-docker.sh\n\nThis is the classic `curl | sh` install pattern with NO signature verification, NO checksum check, NO GPG validation, NO TLS pinning. If get.docker.com is ever compromised, a CDN edge is hijacked, or a MITM occurs (despite TLS), the entire VM is owned. The downloaded script also adds an apt repository with its own GPG key on the fly — operator never gets a chance to verify the chain. Note that Docker themselves recommend the apt-repo method for production. Also: `sh /tmp/get-docker.sh` doesn't pass `set -e`, so partial install failures are silently ignored.",
+      "location": "infrastructure/ansible/roles/vaultwarden/tasks/main.yml:10-14",
+      "impact": "Supply-chain compromise: a single bad day at get.docker.com installs arbitrary code as root on every fabric VM. No tamper-evidence.",
+      "recommendation": "Use the supported community.docker.docker_setup pattern or geerlingguy.docker role: install Docker's official GPG key with a pinned fingerprint, add the apt repo, then `ansible.builtin.apt: name=docker-ce state=present`. Example:\n\n- name: Add Docker GPG key\n  ansible.builtin.apt_key:\n    url: https://download.docker.com/linux/ubuntu/gpg\n    id: 9DC858229FC7DD38854AE2D88D81803C0EBFCD88  # pinned\n    state: present\n\n- name: Add Docker apt repo\n  ansible.builtin.apt_repository:\n    repo: \"deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable\"\n\n- name: Install docker-ce\n  ansible.builtin.apt:\n    name: [docker-ce, docker-ce-cli, containerd.io, docker-compose-plugin]\n    state: present",
+      "cwe": "CWE-494"
+    },
+    {
+      "severity": "major",
+      "category": "A08: Software and Data Integrity",
+      "title": "Container images pinned by tag only, not by digest — tag mutability allows registry-side image swap",
+      "description": "defaults/main.yml lines 6-7 pin images as `vaultwarden/server:1.32.0` and `caddy:2.9.1`. Tags are mutable on Docker Hub — a maintainer (or attacker with maintainer creds) can re-push a different image under the same tag. Combined with `pull: always` in the docker_compose_v2 task (line 114), every run pulls fresh from Hub. Recommendation in the docker security model is pinning by sha256 digest (`vaultwarden/server@sha256:...`). This is especially important here because Vaultwarden is the sole secret store on the VM (D24): a swapped Vaultwarden image extracts every secret. Caddy similarly proxies all admin traffic.",
+      "location": "infrastructure/ansible/roles/vaultwarden/defaults/main.yml:6-7",
+      "impact": "Registry-side tag-swap or hub compromise replaces Vaultwarden/Caddy with malicious image on next `ansible-playbook` run. Plaintext secrets become exfil targets.",
+      "recommendation": "Pin to digests in defaults/main.yml:\n\n  vaultwarden_image: \"vaultwarden/server:1.32.0@sha256:<digest>\"\n  vaultwarden_caddy_image: \"caddy:2.9.1@sha256:<digest>\"\n\nDocument the upgrade process: bump digest in a PR with the release notes URL. Optionally enable docker content trust (DOCKER_CONTENT_TRUST=1) in the systemd service environment.",
+      "cwe": "CWE-494"
+    },
+    {
+      "severity": "major",
+      "category": "A02: Cryptographic Failures",
+      "title": "Initial admin password persists in plaintext in .env forever (no post-seed cleanup)",
+      "description": "templates/vaultwarden.env.j2:18-20 writes VAULTWARDEN_INITIAL_ADMIN_PASSWORD={{ ... }} to /opt/vaultwarden/.env unconditionally whenever the var is defined. There is no logic to remove it after the seed has happened. It remains as a plaintext credential at rest on the VM filesystem for the lifetime of the instance, even after the user has logged in and changed the admin password. .env mode is 0600 which limits exposure to root + op, but the principle of least privilege says: a one-shot bootstrap credential should not persist past bootstrap.",
+      "location": "infrastructure/ansible/roles/vaultwarden/templates/vaultwarden.env.j2:18-20",
+      "impact": "Plaintext credential lifetime extends from intended 'first run' to 'forever'. Backups (Restic per D28) capture it indefinitely. Disk forensics or backup compromise recovers the original admin password.",
+      "recommendation": "Gate the env block on absence of the `.admin-seeded` marker file (use Jinja2 fact). Alternatively: after successful seed, run an Ansible task to template a new .env without the password (using `lookup('file', ...)` to check the marker). Cleanest: pass the initial password to a one-shot init container via stdin, never write it to .env.",
+      "cwe": "CWE-256"
+    },
+    {
+      "severity": "major",
+      "category": "best-practice",
+      "title": "Molecule verify.yml `failed_when` clauses use AND-of-list — security checks pass silently when they should fail",
+      "description": "molecule/default/verify.yml:30-32 and 38-40:\n\n  failed_when:\n    - not env_stat.stat.exists\n    - env_stat.stat.mode != \"0600\"\n\nA list under `failed_when` is AND'd in Ansible. So the task only fails if BOTH the file is missing AND the mode is wrong. If the file exists with wrong mode (e.g., 0644 world-readable .env), the check passes silently. Same bug for data_dir mode 0700 check. This breaks the entire security verification that the role's idempotency claims rely on.",
+      "location": "infrastructure/ansible/roles/vaultwarden/molecule/default/verify.yml:30-32, 38-40",
+      "impact": "False sense of security: molecule reports green even if .env is mode 0644 (world-readable secrets). Acceptance criterion 'env file mode 0600' goes unverified.",
+      "recommendation": "Use `or` in a single expression:\n\n  failed_when: not env_stat.stat.exists or env_stat.stat.mode != '0600'\n\nOr split into two assert tasks. Apply same fix for the data_dir 0700 check.",
+      "cwe": "CWE-754"
+    },
+    {
+      "severity": "major",
+      "category": "A05: Security Misconfiguration",
+      "title": "Docker install tasks lack `become: true` and may silently no-op",
+      "description": "tasks/main.yml:2-34 ('Install Docker and Docker Compose plugin' block) has no `become: true` declaration on the block or on individual tasks. `curl ... | sh` requires root. `systemd_service` requires root. `ansible.builtin.user` (adding op to docker group) requires root. If the playbook invokes this role without privilege escalation, every task either fails or runs with the wrong identity. The `Reset ssh connection` task even runs `when: docker_group_add is changed` — but `docker_group_add` may show changed=true on a no-op if running as root with wrong context.",
+      "location": "infrastructure/ansible/roles/vaultwarden/tasks/main.yml:2-34",
+      "impact": "If the playbook (deploy.yml in Task 24) doesn't set `become: true` at the role level, Docker install silently fails or behaves unexpectedly. Worst case: half-installed Docker on a production VM.",
+      "recommendation": "Add `become: true` to the block:\n\n- name: Install Docker and Docker Compose plugin\n  become: true\n  block:\n    - ...\n\nSame applies to 'Create Vaultwarden directories' (line 36), template tasks (lines 47-75), and the seed copy (line 77). The compose run task (line 110) already has `become: true become_user: op` which is correct.",
+      "cwe": "CWE-269"
+    },
+    {
+      "severity": "major",
+      "category": "A05: Security Misconfiguration",
+      "title": "Handler 'Reload caddy' uses shell+docker exec with `ignore_errors: true` masking config failures",
+      "description": "handlers/main.yml:14-19 reloads Caddy by `docker exec vaultwarden-caddy-1 caddy reload -c /etc/caddy/Caddyfile || true` with `ignore_errors: true`. A bad Caddyfile (e.g., a templating bug that emits malformed TLS config or removes the binding line) will silently fail to apply, and the operator gets zero signal. If the broken Caddyfile is later picked up (e.g., container restart), the reverse proxy may go down or fall back to default config. The double-suppress (|| true AND ignore_errors) is excessive.",
+      "location": "infrastructure/ansible/roles/vaultwarden/handlers/main.yml:14-19",
+      "impact": "Silent Caddyfile rollouts. A misconfigured TLS or binding goes unnoticed until the next full restart — at which point the service may serve on 0.0.0.0 or with no TLS.",
+      "recommendation": "Remove `|| true` and `ignore_errors: true`. Add a `changed_when` based on caddy reload output, and let real failures fail the handler. The operator can choose to add a recovery task downstream.",
+      "cwe": "CWE-754"
+    },
+    {
+      "severity": "minor",
+      "category": "best-practice",
+      "title": "Hardcoded domain `vault.mnemonic-fabric.ts` in tasks instead of using `vaultwarden_tailnet_domain` variable",
+      "description": "tasks/main.yml lines 89 (in seed-admin.sh content) and 123 (uri url) hardcode `https://vault.mnemonic-fabric.ts/...` instead of using `https://{{ vaultwarden_tailnet_domain }}/...`. If the operator changes the domain in defaults, the seed script and health check still hit the old hostname.",
+      "location": "infrastructure/ansible/roles/vaultwarden/tasks/main.yml:89, 123",
+      "impact": "Configuration drift between defaults and code. Not directly exploitable but indicates the variable abstraction is incomplete.",
+      "recommendation": "Replace with `https://{{ vaultwarden_tailnet_domain }}/api/health` in both places.",
+      "cwe": "CWE-1188"
+    },
+    {
+      "severity": "minor",
+      "category": "best-practice",
+      "title": "Duplicate LOG_LEVEL in vaultwarden.env.j2 (info vs warn) — second wins, source of truth ambiguous",
+      "description": "templates/vaultwarden.env.j2 declares LOG_LEVEL=info on line 6 and LOG_LEVEL=warn on line 29. Shell env-file parsing assigns the last one, so effective level is `warn`, but the defaults/main.yml and the docker-compose env block both say `info`. Inconsistent state makes log-based incident response harder.",
+      "location": "infrastructure/ansible/roles/vaultwarden/templates/vaultwarden.env.j2:6,29",
+      "impact": "Reduced observability: less detailed logs than configured-and-expected. Security event detection (failed logins, admin actions) may be missed if Vaultwarden gates them on `info` level.",
+      "recommendation": "Remove the duplicate LOG_LEVEL=warn on line 29. Source the value from `{{ vaultwarden_config.LOG_LEVEL | default('info') }}` so defaults/main.yml is the single source of truth.",
+      "cwe": "CWE-778"
+    },
+    {
+      "severity": "minor",
+      "category": "A02: Cryptographic Failures",
+      "title": "TLS verification disabled in health check and seed script (validate_certs: false / curl -k)",
+      "description": "tasks/main.yml:126 sets `validate_certs: false` on the health-check uri call. seed-admin.sh content uses `curl -sf ... -k`. Both disable TLS verification. With Caddy `tls internal`, the CA cert is self-issued and not in the system trust store, so verification will fail by default — hence the workaround. This is the documented approach for internal CA, but it's a footgun: any future change to the cert (e.g., adversary-issued cert) is not detected. Better: trust the Caddy internal CA root in the system trust store, then validate normally.",
+      "location": "infrastructure/ansible/roles/vaultwarden/tasks/main.yml:126; tasks/main.yml:89 (seed-admin.sh curl -k)",
+      "impact": "MITM on the loopback or tailnet (low but non-zero attacker model: compromised tailnet peer) goes undetected during health check or seeding.",
+      "recommendation": "Export Caddy's internal CA root from the caddy_data volume (path `/data/caddy/pki/authorities/local/root.crt`), copy it into the host's `/usr/local/share/ca-certificates/`, run `update-ca-certificates`, then drop `validate_certs: false` and `-k`. Or use Caddy's API on plain HTTP to localhost:2019 for health-checking and skip the public TLS path entirely.",
+      "cwe": "CWE-295"
+    },
+    {
+      "severity": "minor",
+      "category": "best-practice",
+      "title": "Caddy admin API on `:2019` exposed inside container without auth",
+      "description": "templates/Caddyfile.j2:43-45 exposes `:2019 { metrics }` — the Caddy admin endpoint. It's not port-mapped to the host in docker-compose.yml.j2, so it's only reachable from inside the bridge network. However, if a compromised Vaultwarden container (or future siblings on the same network) reaches it, the admin API allows config changes (writes a new Caddyfile, swaps the TLS cert, redirects reverse_proxy to attacker). The admin API has no auth by default in Caddy.",
+      "location": "infrastructure/ansible/roles/vaultwarden/templates/Caddyfile.j2:43-45; templates/docker-compose.yml.j2 (networks)",
+      "impact": "Container-to-container lateral movement: a Vaultwarden RCE could reconfigure Caddy and intercept all admin traffic / TLS.",
+      "recommendation": "Either bind admin to 127.0.0.1 inside the container (`admin 127.0.0.1:2019`) so cross-container access is blocked, or use a separate Docker network for Vaultwarden ↔ Caddy and a different one for metrics. The metrics endpoint can also be exposed only as Unix socket: `admin unix//tmp/caddy-admin.sock`.",
+      "cwe": "CWE-306"
+    }
+  ]
+}

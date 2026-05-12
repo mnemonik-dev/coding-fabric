@@ -1,0 +1,57 @@
+{
+  "task": "04",
+  "round": 2,
+  "role": "verifier",
+  "verdict": "changes_required",
+  "checks": [
+    {
+      "id": "V2-01",
+      "item": "failed_when: false removed; until+retries properly detect failure",
+      "status": "PASS",
+      "detail": "failed_when: false is gone from the URI health task. Retry exhaustion (120 retries × 2s) now propagates as a real Ansible failure. Fallback explicit fail task at line 65-68 correctly guards on health_result.status != 200."
+    },
+    {
+      "id": "V2-02",
+      "item": "Caddy snippet ACTUALLY mounted into Caddy container for vhost routing",
+      "status": "PARTIAL",
+      "detail": "New task (lines 33-38) runs 'docker cp' to copy the snippet to /etc/caddy/conf.d/kaneo.conf inside the container — correct path and variable. However, the 'Reload caddy for kaneo vhost' handler invokes 'caddy reload -c /etc/caddy/Caddyfile', which only works if the main Caddyfile includes 'import conf.d/*'. There is no evidence the vaultwarden Caddyfile has that import directive. If it does not, the copied snippet is never parsed by Caddy and the vhost still does not route. Cross-role Caddyfile include contract is undocumented and unvalidated.",
+      "risk": "high"
+    },
+    {
+      "id": "V2-03",
+      "item": "Image pin: pull:missing instead of pull:always; image not :latest",
+      "status": "PARTIAL",
+      "detail": "pull: missing is correctly set (line 44) — idempotency regression fixed. However kaneo_image remains 'kaneo/kaneo:latest' in defaults/main.yml with a TODO comment. The :latest tag was the original reproducibility concern and is still unresolved. RE-04-03 high-severity issue half-addressed.",
+      "risk": "medium"
+    },
+    {
+      "id": "V2-04",
+      "item": "Health-check Ansible timeout > Docker start_period",
+      "status": "PASS",
+      "detail": "Docker start_period is 30s with up to 60s total for container health. Ansible retries are now 120 × 2s = 240s (4 minutes), well above the Docker budget. No race condition."
+    },
+    {
+      "id": "V2-05",
+      "item": "Project seeding retries on 429/5xx",
+      "status": "FAIL",
+      "detail": "status_code list (line 100) accepts [200, 201, 409] only. A 429 or 5xx causes the uri module to raise an error before until evaluates. The until condition (line 105) also only checks those same three codes. RE-04-05 (expand until to accept 429/5xx as retriable) was not implemented.",
+      "risk": "high"
+    },
+    {
+      "id": "V2-06",
+      "item": "vaultwarden_caddy_container_name variable replaces hardcoded string",
+      "status": "PASS",
+      "detail": "defaults/main.yml line 14 defines vaultwarden_caddy_container_name: 'vaultwarden-caddy-1' with cross-role documentation. Handler (line 16) and docker cp task (line 35) both use the variable. Default value retains backward compatibility."
+    },
+    {
+      "id": "V2-07",
+      "item": "Task tags added",
+      "status": "PASS",
+      "detail": "kaneo-deploy on docker compose task (line 50), kaneo-health on health wait and container check tasks (lines 63, 69, 147), kaneo-projects on all seeding and verification tasks (lines 82, 111, 124, 130, 139). Tag granularity request from code-reviewer round 1 is satisfied. Minor gap: Caddy snippet copy tasks lack tags, but the three required tag groups are present."
+    }
+  ],
+  "blocking": ["V2-05"],
+  "non_blocking_gaps": ["V2-02", "V2-03"],
+  "approved": false,
+  "summary": "Two critical round-1 fixes landed: failed_when:false removed (health failure now propagates), vaultwarden_caddy_container_name variable introduced, pull:missing set, health retries expanded to 240s, and task tags added. Two gaps remain: (1) project seeding still does not retry on 429/5xx — status_code and until both exclude those codes, blocking approval; (2) Caddy snippet is docker-copied into the container but the reload targets /etc/caddy/Caddyfile with no verified import conf.d/* directive, making vhost routing unconfirmed; (3) kaneo_image is still :latest."
+}

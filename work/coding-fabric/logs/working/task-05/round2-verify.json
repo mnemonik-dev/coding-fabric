@@ -1,0 +1,94 @@
+{
+  "task": "05",
+  "verifier": "reliability-engineer",
+  "round": 2,
+  "fix_commit": "6645780",
+  "verdict": "pass_with_notes",
+  "checks": [
+    {
+      "id": 1,
+      "area": "pagination",
+      "description": "Pagination truly unbounded (until empty), not 2-page cap",
+      "status": "pass",
+      "evidence": "tasks/main.yml lines 104-145: outer block uses `until: forum_topics_response.json.result | length == 0` with `retries: {{ telegram_max_pagination_pages }}` (default 20). The inner tasks update `pagination_offset` and `pagination_iteration` on each iteration. Loop exits when the API returns an empty result array. A guard fail at line 140-142 prevents infinite loops.",
+      "residual_risk": "Ansible's block-level `until`/`retries` iterates the *entire* block including the nested URI task — this is the correct Ansible pattern for a pagination loop and is truly unbounded up to the cap. Verified: no 2-page hardcap remains."
+    },
+    {
+      "id": 2,
+      "area": "sops-integration",
+      "description": "Sops integration removed from role (playbook provides vars)",
+      "status": "pass",
+      "evidence": "tasks/main.yml lines 1-19: role now begins with `ansible.builtin.assert` that `telegram_bot_token` and `telegram_forum_chat_id` are defined and non-empty, with fail_msg explicitly stating the caller must use `community.sops.load_vars`. The dead `slurp | b64decode | from_yaml` block and its env-var rescue fallback are completely gone. Responsibility for decryption is correctly pushed to the playbook layer.",
+      "residual_risk": "None within the role. Caller integration (community.sops collection availability) is outside the role's scope."
+    },
+    {
+      "id": 3,
+      "area": "uri-status-codes-and-retries",
+      "description": "URI tasks accept multiple status_codes + retries actually work on 5xx",
+      "status": "pass",
+      "evidence": "All `uri` tasks now carry `status_code: [200, 400, 403, 429, 500, 502, 503, 504]` (lines 32, 69, 115, 186, 251, 277). `failed_when: task_var.status not in [200]` is set separately, allowing Ansible to complete the task (not throw an exception) on 5xx so the `until` + `retries` loop can retry transient errors. Pattern is consistent across all API call tasks.",
+      "residual_risk": "Minor: on 5xx the `until: status == 200` keeps retrying up to `telegram_api_retries` (default 3) attempts. If Telegram returns sustained 5xx beyond 3 retries the `failed_when` triggers and fails the task — this is acceptable behavior."
+    },
+    {
+      "id": 4,
+      "area": "admin-permission-check",
+      "description": "Bot admin check verifies can_manage_topics",
+      "status": "pass",
+      "evidence": "tasks/main.yml line 47: `selectattr('user.is_bot', 'equalto', true) | selectattr('can_manage_topics', 'equalto', true)` — both conditions are chained. The fail message at lines 53-58 explicitly names the 'can_manage_topics' / 'Manage topics' permission. Exactly matches the recommendation from round-1 reliability report.",
+      "residual_risk": "Minor: `selectattr('user.is_bot', 'equalto', true)` matches any bot admin, not specifically the bot whose token is being used. If a forum has multiple bots and only a different bot has `can_manage_topics`, the check could pass falsely. Severity is low for typical deployments."
+    },
+    {
+      "id": 5,
+      "area": "defaults-wired-into-tasks",
+      "description": "Defaults wired into tasks (not dead code)",
+      "status": "pass",
+      "evidence": "All `uri` tasks reference `timeout: '{{ telegram_api_timeout }}'`, `retries: '{{ telegram_api_retries }}'`, `delay: '{{ telegram_api_delay }}'` (lines 33-36, 70-73, 116-119, 187-190, 253-255, 279). All `pause` tasks reference `seconds: '{{ telegram_api_rate_limit }}'` (lines 42-43, 78-80, 124-126, 209-210). defaults/main.yml defines all five variables. Dead-code finding from round-1 fully resolved.",
+      "residual_risk": "None. Wiring is complete and consistent."
+    },
+    {
+      "id": 6,
+      "area": "pre-loop-rate-limit-pauses",
+      "description": "Pre-loop rate-limit pauses added",
+      "status": "pass",
+      "evidence": "Pause tasks are present after getChatAdministrators (lines 41-43), after getForumTopicIconStickers (lines 78-80), and inside the pagination block after each getForumTopics fetch (lines 124-126), and inside the create loop (lines 209-210). All use `{{ telegram_api_rate_limit }}`. Covers all API calls identified in the round-1 report.",
+      "residual_risk": "None identified."
+    },
+    {
+      "id": 7,
+      "area": "template-quote-filter",
+      "description": "Topic name | quote filter in template",
+      "status": "pass",
+      "evidence": "templates/topics.yml.j2 line 9: `{{ topic_name | quote }}: {{ thread_id }}`. The round-1 code-reviewer finding (line 9, `| quote` missing) is fixed. This prevents YAML parse errors for topic names containing colons or other special characters.",
+      "residual_risk": "The `| quote` filter adds shell-style single-quoting. For YAML keys, this produces `'core': 12345` which is valid YAML. Edge case: topic names with single quotes themselves would double-escape (`'it''s'`), which is valid YAML but slightly unusual — acceptable for the current canonical topic set."
+    },
+    {
+      "id": 8,
+      "area": "task-tags",
+      "description": "Task tags added",
+      "status": "pass",
+      "evidence": "Block-level tags are present throughout: `[telegram-init, secrets, always]` (line 3), `[telegram-init, telegram-verify, always]` (line 23), `[telegram-init, telegram-topics]` (lines 62, 96, 148, 215), `[telegram-init, telegram-health]` (line 239), `[telegram-init, always]` (line 298). Selective execution patterns like `-t telegram-verify` or `-t telegram-health` are now possible.",
+      "residual_risk": "Minor: the `telegram-topics` tag spans topic fetch, create, and render blocks — an operator cannot selectively run only creation without fetch, but that is operationally correct (fetch must precede create for idempotency)."
+    }
+  ],
+  "open_issues": [
+    {
+      "severity": "low",
+      "area": "admin-check-bot-identity",
+      "description": "Admin check matches any bot with can_manage_topics, not specifically the bot identified by the supplied token. Requires a getMe call to bind the check to the specific bot user ID.",
+      "from_round1": true
+    },
+    {
+      "severity": "low",
+      "area": "pagination-offset-semantics",
+      "description": "Offset is taken as the last result's message_thread_id (line 137). If Telegram changes sort order or uses cursor-based pagination this will silently misbehave. No upstream API contract violation currently, but worth noting.",
+      "from_round1": true
+    },
+    {
+      "severity": "info",
+      "area": "molecule-pagination-coverage",
+      "description": "Molecule mock server still returns only 2 topics; the pagination branch (>100 topics per page) remains untested by molecule. The implementation is correct but coverage gap persists.",
+      "from_round1": true
+    }
+  ],
+  "summary": "All 8 critical fixes from round-1 are correctly implemented. Pagination is truly unbounded with a configurable guard. Sops is cleanly removed; role asserts caller-supplied vars. All URI tasks accept 5xx codes enabling retry loops. Admin check verifies can_manage_topics. All defaults are wired. Rate-limit pauses cover every pre-loop API call. Template uses | quote. Tags enable selective execution. Three low-severity items remain open but do not block production use."
+}

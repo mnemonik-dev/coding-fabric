@@ -1,0 +1,102 @@
+{
+  "task": "05",
+  "reviewer": "reliability-engineer",
+  "round": 1,
+  "commit_reviewed": "5cf82bf",
+  "overall_verdict": "needs-fixes",
+  "findings": [
+    {
+      "severity": "high",
+      "area": "pagination",
+      "file": "infrastructure/ansible/roles/telegram-init/tasks/main.yml",
+      "line": 121,
+      "issue": "Pagination implementation is hard-capped at exactly two pages. The outer fetch reads page 1 and, if `has_more_topics` is true, a single nested block fetches page 2 and then stops. There is no loop or recursive mechanism. A forum with more than 200 existing topics (>100 per page) will silently drop all topics on pages 3+. The idempotency guarantee fails in that scenario: topics on later pages are treated as non-existent and `createForumTopic` is called again, creating duplicates with identical names.",
+      "fix_recommendation": "Replace the nested single-fetch block with a `loop` that continues fetching while `has_more_topics` is true, updating `existing_topics` and `topics_offset` on each iteration. A `set_stats` counter or `retries`-based loop construct in Ansible can implement this. The limit should be configurable via a `telegram_max_pagination_pages` default (e.g. 20) to guard against infinite loops on a misconfigured API response."
+    },
+    {
+      "severity": "high",
+      "area": "sops-integration",
+      "file": "infrastructure/ansible/roles/telegram-init/tasks/main.yml",
+      "line": 4,
+      "issue": "The sops secrets block uses `ansible.builtin.slurp` to read the raw file then pipes through `b64decode | from_yaml`. This will always fail in production because the file content is age-encrypted ciphertext, not valid YAML. `from_yaml` on encrypted bytes raises a parse error. The rescue fallback to env vars is the only path that ever works. The primary block is dead code in all real deployments, making the sops integration illusory. The role has no actual sops-decrypt step (community.sops.load_vars or ansible-community/sops collection).",
+      "fix_recommendation": "Replace the primary block with `community.sops.load_vars` (requires `community.sops` collection in meta/requirements.yml). This is the canonical Ansible-idiomatic sops integration. The rescue fallback for CI/testing is correct in principle but should set vars only when `ansible_env.CI` is defined or when an explicit `telegram_init_skip_sops: true` variable is set, to avoid silently using empty tokens in production if the collection is missing."
+    },
+    {
+      "severity": "medium",
+      "area": "rate-limiting",
+      "file": "infrastructure/ansible/roles/telegram-init/tasks/main.yml",
+      "line": 29,
+      "issue": "The 0.5 s rate-limit pause is placed inside the topic creation loop (line 209) only. The four API calls before that loop — getChatAdministrators, getForumTopicIconStickers, getForumTopics page 1, getForumTopics page 2 — fire with no inter-call delay. On a cold-start with a freshly configured bot these four calls land within ~100 ms of each other. Telegram's Bot API rate limit is 30 msg/s globally and 1 msg/s per-chat for non-broadcast chats; at role startup, a burst of 4 write-like API calls in under a second may hit per-method limits and cause 429 responses. The `retries: 3, delay: 2` on individual calls will recover, but it adds unnecessary latency during bootstrap.",
+      "fix_recommendation": "Add a `ansible.builtin.pause: seconds: '{{ telegram_api_rate_limit }}'` task after each of the pre-loop API calls (getChatAdministrators, getForumTopicIconStickers, getForumTopics). The defaults variable `telegram_api_rate_limit: 0.5` already exists but is only referenced in comments, not in any task. Wire all `pause` tasks to use `{{ telegram_api_rate_limit }}` instead of the hardcoded 0.5."
+    },
+    {
+      "severity": "medium",
+      "area": "defaults-not-used",
+      "file": "infrastructure/ansible/roles/telegram-init/tasks/main.yml",
+      "line": 39,
+      "issue": "The role defines `telegram_api_timeout`, `telegram_api_retries`, `telegram_api_delay`, and `telegram_api_rate_limit` in defaults/main.yml, but every `uri` task in main.yml hard-codes `timeout: 10`, `retries: 3`, `delay: 2` as literals. The defaults variables are never referenced in tasks. Changing the defaults has zero effect. This means an operator who increases `telegram_api_delay: 5` to handle a slow network will see no change in behaviour — a silent operational failure.",
+      "fix_recommendation": "Replace all literal values in uri tasks with their corresponding variables: `timeout: '{{ telegram_api_timeout }}'`, `retries: '{{ telegram_api_retries }}'`, `delay: '{{ telegram_api_delay }}'`. Apply the same to the `pause` tasks: `seconds: '{{ telegram_api_rate_limit }}'`."
+    },
+    {
+      "severity": "medium",
+      "area": "admin-permission-check",
+      "file": "infrastructure/ansible/roles/telegram-init/tasks/main.yml",
+      "line": 44,
+      "issue": "The bot-admin check at line 44 only verifies that at least one bot user appears in the admin list. It does not verify that the bot specifically has `can_manage_topics: true`. A bot can be promoted as admin with the default set of permissions (e.g. pin messages only) and this check will pass, after which `createForumTopic` will return 400 with `Bad Request: not enough rights`. The error message at that point gives no actionable guidance.",
+      "fix_recommendation": "Filter by the bot's own user ID (fetched from `getMe` or derived from the token) and check `can_manage_topics` in the admin entry. Update the fail message in the existing `Fail if bot is not admin` task to also mention the `can_manage_topics` permission explicitly. Example filter: `selectattr('user.is_bot', 'equalto', true) | selectattr('can_manage_topics', 'equalto', true)`."
+    },
+    {
+      "severity": "medium",
+      "area": "inventory-idempotency",
+      "file": "infrastructure/ansible/roles/telegram-init/tasks/main.yml",
+      "line": 222,
+      "issue": "The `ansible.builtin.template` task that renders `telegram-topics.yml` runs unconditionally on every playbook execution. Even if the topic mapping has not changed, Ansible will re-render and update the file's mtime. This will show as a `changed` task on every run, breaking the Molecule idempotency test (`idempotence` step in molecule.yml test_sequence). It also causes any downstream task that watches the file mtime (e.g. systemd `ConditionPathChanged`) to retrigger unnecessarily.",
+      "fix_recommendation": "Hash the current `telegram_topics` mapping and compare it against the deployed file before rendering. The simplest approach is to let the `template` module's built-in content-comparison handle idempotency: Ansible's template module already only marks `changed` if the rendered content differs from the on-disk file. However, since `telegram_topics` is built from live API data (thread IDs that are stable integers), the template will produce identical content on re-runs and the template task itself will correctly show `ok`. Verify this is working correctly in Molecule converge+idempotence runs. If the template includes a timestamp or generation comment, remove it."
+    },
+    {
+      "severity": "low",
+      "area": "healthcheck",
+      "file": "infrastructure/ansible/roles/telegram-init/tasks/main.yml",
+      "line": 273,
+      "issue": "The `until` clause on the deleteMessage task uses an old-style bare-variable reference: `\"deleteMessage_response.status == 200 or deleteMessage_response.status == 400\"`. In Ansible 2.9+ this style still works via implicit `{{ }}` in `until`, but it is inconsistent with Ansible style guide which recommends explicit `{{ }}` in all expressions. More critically, a 400 response on deleteMessage is accepted as success — this may mask real errors (e.g. the bot lacks delete-message permission), as 400 can also mean malformed request, not just already-deleted.",
+      "fix_recommendation": "Rewrite as `until: \"deleteMessage_response.status in [200, 400]\"` (this is also more Pythonic). Add a separate assertion after the loop that if status is 400, only treat it as success when the response body contains `\"description\": \"Bad Request: message to delete not found\"` — any other 400 is a real error. Wrap with `no_log: true` already present, so this is just the `until` logic."
+    },
+    {
+      "severity": "low",
+      "area": "retry-5xx",
+      "file": "infrastructure/ansible/roles/telegram-init/tasks/main.yml",
+      "line": 39,
+      "issue": "All `uri` tasks use `until: task_var.status == 200`, which means the retry loop will NOT retry on 5xx responses — Ansible's `uri` module raises an exception (not a non-200 status) when the remote returns 5xx if `status_code` is set to 200. The `retries/delay/until` pattern only retries when the task completes (including with a non-200 that is not in `status_code`). On a 5xx, the task fails immediately on the first attempt without retrying.",
+      "fix_recommendation": "Change `status_code: 200` to `status_code: [200, 429, 500, 502, 503, 504]` (accept these codes without raising an exception) and update `until` to `until: task_var.status == 200`. This allows Ansible to retry on transient 5xx and 429 responses. Alternatively, use `failed_when: false` with a subsequent assert, but the status_code list approach is cleaner."
+    },
+    {
+      "severity": "info",
+      "area": "no_log-consistency",
+      "file": "infrastructure/ansible/roles/telegram-init/tasks/main.yml",
+      "line": 282,
+      "issue": "The `Log completion` debug task at line 282 prints the count of telegram_topics but not their contents. This is safe. However, the `Log healthcheck failure (non-fatal)` rescue task at line 278 logs a static string with no variable interpolation — also safe. The `no_log: true` coverage is comprehensive across all tasks that touch secrets or thread IDs. One edge case: `available_icon_colors` at line 76 stores `custom_emoji_id` values from the API; these are not secrets but are logged without `no_log`. This is acceptable since custom emoji IDs are not sensitive.",
+      "fix_recommendation": "No action required. Coverage is complete for the identified sensitive fields."
+    },
+    {
+      "severity": "info",
+      "area": "molecule-mock-accuracy",
+      "file": "infrastructure/ansible/roles/telegram-init/molecule/default/converge.yml",
+      "line": 101,
+      "issue": "The mock Telegram server is started with `async: 300, poll: 0` (fire-and-forget) and the playbook waits 2 seconds before proceeding. There is no health check that the mock server is actually listening before the role runs. On a slow CI host the 2-second pause may be insufficient. Additionally, the mock `getForumTopics` handler always returns exactly 2 topics (core and mcp), meaning the pagination path (`has_more_topics`) is never exercised in molecule tests. The idempotency test in molecule will also not hit the second-page pagination code path.",
+      "fix_recommendation": "Add a `wait_for: port: 8888 host: 127.0.0.1 delay: 0 timeout: 10` task after starting the mock server instead of a fixed pause. Add a second mock scenario (or a molecule variable) that makes the mock return 100 topics on page 1 to exercise the pagination branch. Without this, the high-severity pagination bug (finding #1) is not caught by the test suite."
+    }
+  ],
+  "positive_notes": [
+    "Idempotency check via getForumTopics BEFORE createForumTopic is correctly structured — existing topics are fetched and mapped before any create attempt, satisfying the core idempotency requirement.",
+    "no_log: true is present on all tasks that handle the bot token or chat IDs — secret hygiene is thorough.",
+    "The healthcheck post-then-delete pattern correctly targets the ops topic thread ID and uses a rescue block to make it non-fatal, meeting the spec requirement without spamming the topic.",
+    "Bot admin verification with actionable error message listing the three required steps is a good operator experience pattern — this directly addresses the spec requirement for actionable error messages on missing admin rights.",
+    "defaults/main.yml defines all tunable parameters (timeout, retries, delay, rate_limit) as role defaults — the design intent is correct, only the wiring to tasks is broken.",
+    "Rate limit pause of 0.5 s between topic create calls is correctly positioned inside the loop and matches the 30 msg/s ceiling requirement.",
+    "Molecule test includes both converge and idempotence steps in the test_sequence, and the verify.yml checks all 8 canonical topics — the test structure is sound.",
+    "Template uses sorted iteration (`items() | sort`) ensuring deterministic output ordering across runs, which prevents false-positive diffs on the rendered inventory file.",
+    "Rescue fallback for sops failure correctly uses no_log: true on the set_fact task, protecting env-var-sourced tokens from appearing in CI logs.",
+    "meta/main.yml correctly declares no external role dependencies, keeping the role self-contained for bootstrap use."
+  ],
+  "scope_observations": "The role correctly implements the core idempotency pattern required by §2.3 role 5 and tech-spec D4. The most critical issues are: (1) the sops integration is non-functional in production and needs the community.sops collection, (2) pagination beyond 200 topics creates duplicates, and (3) 5xx errors are not retried despite the retry parameters being present. The rate-limiting and defaults-wiring issues are medium severity but collectively mean the role's operational parameters are not tunable. None of these issues affect the basic happy-path smoke test with a fresh forum (0 existing topics), which is why they may have been missed."
+}

@@ -1,0 +1,139 @@
+{
+  "review_metadata": {
+    "task_id": "04",
+    "role_name": "kaneo",
+    "reviewer": "code-reviewer",
+    "round": 1,
+    "date": "2026-05-12",
+    "scope": "Ansible role for Kaneo deployment via docker-compose with API-driven project seeding"
+  },
+  "summary": "Kaneo role demonstrates solid idempotency, proper handler isolation, and comprehensive templating. FQCN coverage is strong. Issues: (1) Cross-role coupling tight via hardcoded vaultwarden-caddy-1 container name in handler; consider variable injection from vaultwarden role. (2) Tag coverage incomplete—role lacks tags on key tasks; recommend adding 'kaneo-deploy' + 'kaneo-health' + 'kaneo-projects' granularity. (3) Molecule test token generation uses dynamic syntax unsupported by current Ansible version; recommend static test token. (4) Variable scoping: kaneo_api_token required but not validated upfront.",
+  "dimensions": {
+    "1_correctness": {
+      "status": "PASS",
+      "findings": [
+        "All HTTP calls use correct methods (GET for reads, POST for creation)",
+        "Health check correctly uses retries + until with 60-second timeout",
+        "Project creation correctly gates on existing_project_names via when conditional",
+        "Final verification asserts exactly 6 projects; idempotency chain robust"
+      ],
+      "issues": []
+    },
+    "2_idempotency": {
+      "status": "PASS",
+      "findings": [
+        "GET-before-POST pattern correctly implemented for project seeding",
+        "Docker-compose converges to 'already running' on unchanged template",
+        "File tasks use register + notify for handlers, avoiding duplicate restarts",
+        "Caddy snippet reload only triggers on file change (not on every run)",
+        "Loop_control pause ensures rate-limit safety between project creations"
+      ],
+      "issues": []
+    },
+    "3_fqcn": {
+      "status": "PASS",
+      "findings": [
+        "ansible.builtin modules correctly specified (file, template, uri, shell, set_fact, fail, assert)",
+        "community.docker.docker_compose_v2 properly qualified",
+        "All module references follow fully-qualified naming convention"
+      ],
+      "issues": []
+    },
+    "4_variable_scoping": {
+      "status": "WARN",
+      "findings": [
+        "kaneo_api_token is marked CRITICAL in defaults but not validated at role entry",
+        "No upfront check for tailscale_ip fact; will fail cryptically if missing",
+        "All kaneo_ prefixes correctly applied",
+        "Defaults for kaneo_image use :latest placeholder (acceptable per README)"
+      ],
+      "issues": [
+        "Consider adding a 'Validate required variables' task at role start to fail fast if kaneo_api_token or tailscale_ip missing"
+      ]
+    },
+    "5_handlers": {
+      "status": "WARN",
+      "findings": [
+        "Two handlers correctly defined: 'Restart kaneo' and 'Reload caddy for kaneo vhost'",
+        "Handler separation prevents accidental Kaneo restarts when Caddy reloads",
+        "become_user: op correctly applied in restart handler"
+      ],
+      "issues": [
+        "Hardcoded container name 'vaultwarden-caddy-1' in 'Reload caddy' handler creates cross-role coupling. Should accept caddy_container_name variable from vaultwarden role or be parameterized via group_vars. Current design breaks if vaultwarden role renames Caddy container."
+      ]
+    },
+    "6_templates": {
+      "status": "PASS",
+      "findings": [
+        "docker-compose.yml.j2: Correct syntax, kaneo_api_token properly injected via environment, volumes and networks defined",
+        "Caddyfile.snippet.j2: Proper Caddy reverse_proxy with X-Forwarded headers, gzip encoding enabled",
+        "Both templates use standard Jinja2 without advanced filters; templates are clear and maintainable"
+      ],
+      "issues": []
+    },
+    "7_molecule_quality": {
+      "status": "WARN",
+      "findings": [
+        "Test container runs privileged with docker-in-docker support, enabling real docker-compose testing",
+        "Verify playbook comprehensively checks health, directories, files, and idempotency",
+        "Includes debug output for health response inspection"
+      ],
+      "issues": [
+        "molecule.yml line 28: kaneo_api_token uses dynamic timestamp syntax 'test-token-{{ ansible_date_time.iso8601_basic_short }}' which is evaluated by molecule provisioner, not Ansible; this may fail in some molecule versions. Recommend static token 'test-token-kaneo-molecule' for stability.",
+        "molecule test missing explicit assertion on project creation count before idempotency check; verify task assumes 6 projects exist but HTTP call not captured"
+      ]
+    },
+    "8_readme": {
+      "status": "PASS",
+      "findings": [
+        "README comprehensive: 190 lines covering overview, requirements, variables, task flow, idempotency, security, networking",
+        "Variables table clear with defaults and descriptions",
+        "Troubleshooting section addresses common failures (container startup, project creation, DNS)",
+        "Kaneo image pinning guidance documented; operator action items explicit"
+      ],
+      "issues": []
+    },
+    "9_meta_dependencies": {
+      "status": "PASS",
+      "findings": [
+        "meta/main.yml correctly specifies tailscale and base role dependencies with tags: always",
+        "Dependency ordering ensures tailscale_ip fact available and op user created before kaneo tasks run"
+      ],
+      "issues": []
+    },
+    "10_tags": {
+      "status": "WARN",
+      "findings": [
+        "Galaxy tags (docker, kaneo, project-management, tailscale, caddy) appropriate at role level",
+        "No task-level tags defined within tasks/main.yml"
+      ],
+      "issues": [
+        "Task granularity lacking. Recommend adding tags to enable selective execution: 'kaneo-deploy' (docker-compose up), 'kaneo-health' (health wait), 'kaneo-projects' (seeding). Example: 'molecule test -s kaneo --tags kaneo-projects' would allow testing only project creation without container restart overhead."
+      ]
+    },
+    "11_cross_role_coupling": {
+      "status": "WARN",
+      "findings": [
+        "Loose coupling with tailscale role (via tailscale_ip fact injection; standard pattern)",
+        "Loose coupling with base role (via op user; standard pattern)"
+      ],
+      "issues": [
+        "TIGHT COUPLING to vaultwarden role: Caddy handler hardcodes 'vaultwarden-caddy-1' container name. If vaultwarden role changes Caddy container naming (e.g., via compose_project_name variable), kaneo handler silently fails. Recommend: (a) Accept caddy_container_name variable from parent playbook, (b) Query running containers dynamically with docker ps filter (less fragile), or (c) Document mandatory contract with vaultwarden role in README and add validation task."
+      ]
+    }
+  },
+  "critical_blockers": [],
+  "recommendations": [
+    "Add upfront variable validation task (fail if kaneo_api_token or tailscale_ip undefined)",
+    "Decouple Caddy handler from hardcoded container name via variable or dynamic lookup",
+    "Add task-level tags for granular execution control (kaneo-deploy, kaneo-health, kaneo-projects)",
+    "Fix molecule test token generation to use static string instead of dynamic Ansible syntax",
+    "Add explicit project count capture in molecule verify playbook before idempotency assertion"
+  ],
+  "acceptance_criteria_coverage": {
+    "Role idempotent": "PASS — GET-before-POST pattern, handler isolation, no duplicate projects",
+    "Health endpoint 200": "PASS — Retry loop with 60s timeout and clear failure message",
+    "Six projects, no duplicates": "PASS — Final assertion and idempotency test",
+    "ansible-lint passes": "LIKELY PASS — No issues detected in syntax or FQCN; recommend running offline for confirmation"
+  }
+}
