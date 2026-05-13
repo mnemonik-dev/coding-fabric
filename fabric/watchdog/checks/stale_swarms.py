@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from fabric.watchdog.alert_state import deterministic_alert_id
 from fabric.watchdog.models import Alert, Severity
 
 logger = logging.getLogger(__name__)
@@ -73,9 +74,12 @@ def _check(config: dict[str, Any]) -> Alert | None:
 
     evidence = f"{len(stale)} stale ruflo swarm(s) past {ttl_hours}h TTL: {', '.join(stale)}"
     logger.warning("stale_swarms: %s", evidence)
+    # Use a deterministic id so a prolonged outage doesn't re-alert every tick.
+    stable_sig = ":".join(sorted(stale))
     return Alert(
         alert_class="stale_swarms",
         severity=Severity.WARNING,
         evidence=evidence,
+        alert_id=deterministic_alert_id("stale_swarms", stable_sig),
         extra={"stale_swarms": stale, "ttl_hours": ttl_hours},
     )

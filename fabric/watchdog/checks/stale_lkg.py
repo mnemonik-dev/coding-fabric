@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from fabric.watchdog.alert_state import deterministic_alert_id
 from fabric.watchdog.models import Alert, Severity
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,7 @@ def _check(config: dict[str, Any]) -> Alert | None:
             alert_class="stale_lkg",
             severity=Severity.WARNING,
             evidence=evidence,
+            alert_id=deterministic_alert_id("stale_lkg", f"{repo}:{tag_name}:missing"),
             extra={"repo": str(repo), "tag": tag_name},
         )
 
@@ -95,6 +97,7 @@ def _check(config: dict[str, Any]) -> Alert | None:
             alert_class="stale_lkg",
             severity=Severity.WARNING,
             evidence=evidence,
+            alert_id=deterministic_alert_id("stale_lkg", f"{repo}:{tag_name}:stale"),
             extra={"age_days": round(age_days, 1), "threshold_days": stale_days, "tag": tag_name},
         )
 

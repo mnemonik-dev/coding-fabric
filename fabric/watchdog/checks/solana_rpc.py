@@ -16,7 +16,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from fabric.watchdog.alert_state import deterministic_alert_id
 from fabric.watchdog.models import Alert, Severity
+from fabric.watchdog.url_validator import validate_url
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +43,9 @@ def _check(config: dict[str, Any]) -> Alert | None:
     url = config.get("solana_rpc_url", _DEFAULT_RPC_URL)
     timeout = float(config.get("solana_rpc_timeout", _DEFAULT_TIMEOUT))
 
+    # Reject file://, ftp://, public IPs, and mainnet endpoints.
+    validate_url(url, context="solana_rpc_url")
+
     payload = _json.dumps(
         {"jsonrpc": "2.0", "id": 1, "method": "getHealth"}
     ).encode()
@@ -62,6 +67,7 @@ def _check(config: dict[str, Any]) -> Alert | None:
                 alert_class="solana_rpc",
                 severity=Severity.CRITICAL,
                 evidence=evidence,
+                alert_id=deterministic_alert_id("solana_rpc", url),
                 extra={"url": url, "result": result},
             )
         return None
@@ -72,5 +78,6 @@ def _check(config: dict[str, Any]) -> Alert | None:
             alert_class="solana_rpc",
             severity=Severity.CRITICAL,
             evidence=evidence,
+            alert_id=deterministic_alert_id("solana_rpc", url),
             extra={"url": url, "error": str(exc)},
         )

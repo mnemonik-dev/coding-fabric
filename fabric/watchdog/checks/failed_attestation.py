@@ -21,7 +21,9 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from fabric.watchdog.alert_state import deterministic_alert_id
 from fabric.watchdog.models import Alert, Severity
+from fabric.watchdog.url_validator import validate_url
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +44,9 @@ def _check(config: dict[str, Any]) -> Alert | None:
     base_url = config.get("mnemonic_mcp_url", _DEFAULT_MCP_URL).rstrip("/")
     api_key = config.get("mnemonic_api_key", "")
     timeout = float(config.get("mcp_timeout", _DEFAULT_TIMEOUT))
+
+    # Reject file://, ftp://, and non-local public hosts.
+    validate_url(base_url, context="mnemonic_mcp_url")
 
     # Call the MCP tool endpoint: POST /mcp with tool call for mnemonic_check_pending
     payload = _json.dumps({
@@ -72,6 +77,7 @@ def _check(config: dict[str, Any]) -> Alert | None:
             alert_class="failed_attestation",
             severity=Severity.WARNING,
             evidence=evidence,
+            alert_id=deterministic_alert_id("failed_attestation", f"{base_url}:unreachable"),
             extra={"mcp_url": base_url, "error": str(exc)},
         )
 
@@ -102,9 +108,12 @@ def _check(config: dict[str, Any]) -> Alert | None:
     if len(failures) > 5:
         evidence += f" ... and {len(failures) - 5} more"
     logger.warning("failed_attestation: %s", evidence)
+    # Deterministic id so a stuck queue doesn't re-alert every tick.
+    sig = ":".join(sorted(f.get("id", "?") for f in failures[:10]))
     return Alert(
         alert_class="failed_attestation",
         severity=Severity.CRITICAL,
         evidence=evidence,
+        alert_id=deterministic_alert_id("failed_attestation", f"{base_url}:{sig}"),
         extra={"failures": failures[:10]},
     )

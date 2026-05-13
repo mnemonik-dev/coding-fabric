@@ -426,3 +426,555 @@ class TestFailedAttestation:
         assert alert.alert_class == "failed_attestation"
         from fabric.watchdog.models import Severity
         assert alert.severity == Severity.WARNING
+
+
+# ---------------------------------------------------------------------------
+# stale_swarms
+# ---------------------------------------------------------------------------
+
+
+class TestStaleSwarms:
+    """Direct unit tests for stale_swarms check."""
+
+    def test_stale_swarms_detects_stale(self, tmp_path):
+        """Alert fires when a swarm has exceeded the TTL."""
+        from fabric.watchdog.checks.stale_swarms import check
+        import time
+
+        state = tmp_path / "swarms.json"
+        old_ts = time.time() - (49 * 3600)  # 49 hours old, TTL is 48
+        state.write_text(json.dumps({
+            "swarm-abc": {"created_at": old_ts, "name": "abc"},
+        }))
+        config = {"ruflo_state_file": str(state), "swarm_ttl_hours": 48}
+        alert = check(config)
+        assert alert is not None
+        assert alert.alert_class == "stale_swarms"
+        assert "swarm-abc" in alert.evidence
+
+    def test_stale_swarms_no_alert_when_fresh(self, tmp_path):
+        """No alert when all swarms are within TTL."""
+        from fabric.watchdog.checks.stale_swarms import check
+        import time
+
+        state = tmp_path / "swarms.json"
+        recent_ts = time.time() - (10 * 3600)
+        state.write_text(json.dumps({
+            "swarm-fresh": {"created_at": recent_ts},
+        }))
+        config = {"ruflo_state_file": str(state), "swarm_ttl_hours": 48}
+        alert = check(config)
+        assert alert is None
+
+    def test_stale_swarms_missing_state_file(self, tmp_path):
+        """No alert when the ruflo state file doesn't exist."""
+        from fabric.watchdog.checks.stale_swarms import check
+
+        config = {"ruflo_state_file": str(tmp_path / "nonexistent.json")}
+        alert = check(config)
+        assert alert is None
+
+    def test_stale_swarms_deterministic_alert_id(self, tmp_path):
+        """Same stale set produces the same alert_id (dedup across ticks)."""
+        from fabric.watchdog.checks.stale_swarms import check
+        import time
+
+        state = tmp_path / "swarms.json"
+        old_ts = time.time() - (50 * 3600)
+        state.write_text(json.dumps({
+            "swarm-x": {"created_at": old_ts},
+        }))
+        config = {"ruflo_state_file": str(state), "swarm_ttl_hours": 48}
+        alert1 = check(config)
+        alert2 = check(config)
+        assert alert1 is not None
+        assert alert2 is not None
+        assert alert1.alert_id == alert2.alert_id
+
+
+# ---------------------------------------------------------------------------
+# stale_lkg
+# ---------------------------------------------------------------------------
+
+
+class TestStaleLkg:
+    """Direct unit tests for stale_lkg check."""
+
+    def _init_repo_with_tag(self, path: Path, tag_name: str, days_old: int) -> Path:
+        """Create a git repo with a tag whose pointed-to commit is N days old.
+
+        ``git log -1 --format=%ct refs/tags/<tag>`` returns the commit's author
+        date, not the tag creation date.  To get a stale reading we must commit
+        with a backdated GIT_AUTHOR_DATE / GIT_COMMITTER_DATE.
+        """
+        subprocess.run(["git", "init", "-b", "main", str(path)], check=True, capture_output=True)
+        for cmd in [
+            ["git", "config", "user.email", "t@t.com"],
+            ["git", "config", "user.name", "T"],
+        ]:
+            subprocess.run(cmd, check=True, capture_output=True, cwd=str(path))
+        (path / "f.txt").write_text("x")
+        subprocess.run(["git", "add", "."], check=True, capture_output=True, cwd=str(path))
+
+        import os as _os
+        env = _os.environ.copy()
+        old_ts = f"{int(time.time() - days_old * 86400)} +0000"
+        env["GIT_AUTHOR_DATE"] = old_ts
+        env["GIT_COMMITTER_DATE"] = old_ts
+        subprocess.run(
+            ["git", "commit", "-m", "init"],
+            check=True, capture_output=True, cwd=str(path), env=env,
+        )
+        subprocess.run(
+            ["git", "tag", tag_name],
+            check=True, capture_output=True, cwd=str(path),
+        )
+        return path
+
+    def test_stale_lkg_fires_when_tag_old(self, tmp_path):
+        """Alert fires when the last-known-good tag is older than stale_lkg_days."""
+        from fabric.watchdog.checks.stale_lkg import check
+
+        repo = self._init_repo_with_tag(tmp_path / "repo", "last-known-good", days_old=10)
+        config = {
+            "loop_repo_path": str(repo),
+            "lkg_tag_name": "last-known-good",
+            "stale_lkg_days": 7,
+        }
+        alert = check(config)
+        assert alert is not None
+        assert alert.alert_class == "stale_lkg"
+        assert "last-known-good" in alert.evidence
+
+    def test_stale_lkg_no_alert_when_fresh(self, tmp_path):
+        """No alert when the tag is recent."""
+        from fabric.watchdog.checks.stale_lkg import check
+
+        repo = self._init_repo_with_tag(tmp_path / "repo", "last-known-good", days_old=1)
+        config = {
+            "loop_repo_path": str(repo),
+            "lkg_tag_name": "last-known-good",
+            "stale_lkg_days": 7,
+        }
+        alert = check(config)
+        assert alert is None
+
+    def test_stale_lkg_missing_tag(self, tmp_path):
+        """Alert fires (WARNING) when the tag doesn't exist at all."""
+        from fabric.watchdog.checks.stale_lkg import check
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
+        for cmd in [["git", "config", "user.email", "t@t.com"], ["git", "config", "user.name", "T"]]:
+            subprocess.run(cmd, check=True, capture_output=True, cwd=str(repo))
+        (repo / "f.txt").write_text("x")
+        subprocess.run(["git", "add", "."], check=True, capture_output=True, cwd=str(repo))
+        subprocess.run(["git", "commit", "-m", "init"], check=True, capture_output=True, cwd=str(repo))
+
+        config = {
+            "loop_repo_path": str(repo),
+            "lkg_tag_name": "last-known-good",
+            "stale_lkg_days": 7,
+        }
+        alert = check(config)
+        assert alert is not None
+        assert "not found" in alert.evidence
+
+    def test_stale_lkg_missing_repo_skipped(self, tmp_path):
+        """No alert when the repo directory doesn't exist."""
+        from fabric.watchdog.checks.stale_lkg import check
+
+        config = {"loop_repo_path": str(tmp_path / "nonexistent")}
+        alert = check(config)
+        assert alert is None
+
+
+# ---------------------------------------------------------------------------
+# irys_balance
+# ---------------------------------------------------------------------------
+
+
+class TestIrysBalance:
+    """Direct unit tests for irys_balance check."""
+
+    def test_irys_balance_below_threshold_fires(self):
+        """Alert fires when balance is below the minimum threshold."""
+        from fabric.watchdog.checks.irys_balance import check
+        from unittest.mock import patch, MagicMock
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({"balance": "500000"}).encode()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            config = {
+                "irys_node_url": "https://devnet.irys.xyz",
+                "irys_address": "walletABCDEF",
+                "irys_balance_min": 1_000_000,
+                "irys_rpc_timeout": 5,
+            }
+            alert = check(config)
+
+        assert alert is not None
+        assert alert.alert_class == "irys_balance"
+        assert "500000" in alert.evidence
+
+    def test_irys_balance_sufficient_returns_none(self):
+        """No alert when balance is at or above the minimum."""
+        from fabric.watchdog.checks.irys_balance import check
+        from unittest.mock import patch, MagicMock
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({"balance": "2000000"}).encode()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            config = {
+                "irys_node_url": "https://devnet.irys.xyz",
+                "irys_address": "walletABCDEF",
+                "irys_balance_min": 1_000_000,
+            }
+            alert = check(config)
+
+        assert alert is None
+
+    def test_irys_balance_unreachable_fires(self):
+        """Alert fires (WARNING) when Irys node is unreachable."""
+        from fabric.watchdog.checks.irys_balance import check
+
+        config = {
+            "irys_node_url": "https://devnet.irys.xyz",
+            "irys_address": "walletXYZ",
+            "irys_rpc_timeout": 0.01,  # near-zero timeout to force failure
+        }
+        # We can't guarantee a connection error with a real hostname in CI,
+        # so mock the network layer.
+        import urllib.error
+        from unittest.mock import patch
+        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("timeout")):
+            alert = check(config)
+
+        assert alert is not None
+        assert alert.alert_class == "irys_balance"
+        from fabric.watchdog.models import Severity
+        assert alert.severity == Severity.WARNING
+
+    def test_irys_balance_no_address_skipped(self):
+        """No alert when irys_address is not configured."""
+        from fabric.watchdog.checks.irys_balance import check
+
+        config = {"irys_node_url": "https://devnet.irys.xyz"}
+        alert = check(config)
+        assert alert is None
+
+    def test_irys_balance_deterministic_id(self):
+        """Same address+node always produces the same alert_id."""
+        from fabric.watchdog.checks.irys_balance import check
+        from unittest.mock import patch, MagicMock
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({"balance": "0"}).encode()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            config = {
+                "irys_node_url": "https://devnet.irys.xyz",
+                "irys_address": "walletSTABLE",
+                "irys_balance_min": 1_000_000,
+            }
+            a1 = check(config)
+            a2 = check(config)
+
+        assert a1 is not None and a2 is not None
+        assert a1.alert_id == a2.alert_id
+
+
+# ---------------------------------------------------------------------------
+# Security: SSRF / URL allowlist
+# ---------------------------------------------------------------------------
+
+
+class TestSSRFUrlAllowlist:
+    """SSRF prevention: only allowlisted schemes and hostnames are permitted."""
+
+    def test_file_scheme_rejected(self):
+        from fabric.watchdog.url_validator import validate_url
+        with pytest.raises(ValueError, match="not allowed"):
+            validate_url("file:///etc/passwd", context="test")
+
+    def test_ftp_scheme_rejected(self):
+        from fabric.watchdog.url_validator import validate_url
+        with pytest.raises(ValueError, match="not allowed"):
+            validate_url("ftp://example.com/data", context="test")
+
+    def test_loopback_always_allowed(self):
+        from fabric.watchdog.url_validator import validate_url
+        # Should not raise
+        validate_url("http://127.0.0.1:4000/mcp", context="test")
+        validate_url("http://localhost:3000", context="test")
+
+    def test_private_ip_allowed(self):
+        from fabric.watchdog.url_validator import validate_url
+        # Tailnet/private ranges are fine
+        validate_url("http://100.64.1.1:8080/health", context="test")
+
+    def test_unknown_public_host_rejected(self):
+        from fabric.watchdog.url_validator import validate_url
+        with pytest.raises(ValueError, match="not in the watchdog URL allowlist"):
+            validate_url("https://mainnet-beta.solana.com", context="test")
+
+    def test_allowlisted_public_host_passes(self):
+        from fabric.watchdog.url_validator import validate_url
+        validate_url("https://api.devnet.solana.com", context="test")
+        validate_url("https://devnet.irys.xyz", context="test")
+        validate_url("https://api.telegram.org", context="test")
+
+    def test_solana_check_rejects_mainnet_url(self, tmp_path):
+        """solana_rpc check returns None (via exception swallow) for mainnet URL."""
+        from fabric.watchdog.checks.solana_rpc import check
+
+        config = {
+            "solana_rpc_url": "https://mainnet-beta.solana.com",
+            "solana_rpc_timeout": 1,
+        }
+        # validate_url raises ValueError; outer check() catches and returns None.
+        alert = check(config)
+        assert alert is None
+
+    def test_irys_check_rejects_file_url(self, tmp_path):
+        """irys_balance check returns None for file:// URL."""
+        from fabric.watchdog.checks.irys_balance import check
+
+        config = {
+            "irys_node_url": "file:///etc/passwd",
+            "irys_address": "walletABC",
+        }
+        alert = check(config)
+        assert alert is None
+
+
+# ---------------------------------------------------------------------------
+# Security: disabled_checks guard
+# ---------------------------------------------------------------------------
+
+
+class TestDisabledChecksGuard:
+    """Disabling a critical-class check without acknowledgement is rejected."""
+
+    def test_critical_check_not_disabled_without_ack(self, tmp_path):
+        """failed_attestation cannot be silently disabled."""
+        from fabric.watchdog.scheduler import _run_check
+
+        config = {
+            "disabled_checks": ["failed_attestation"],
+            # acknowledge_disable_consequences deliberately absent
+        }
+        # The check would contact the real network, so patch it to be safe.
+        with patch("importlib.import_module") as mock_import:
+            mock_mod = MagicMock()
+            mock_mod.check.return_value = None
+            mock_import.return_value = mock_mod
+            result = _run_check("fabric.watchdog.checks.failed_attestation", config)
+        # Should have run (not skipped) because ack was missing.
+        mock_mod.check.assert_called_once()
+
+    def test_critical_check_disabled_with_ack(self, tmp_path):
+        """failed_attestation is skipped when acknowledge_disable_consequences=true."""
+        from fabric.watchdog.scheduler import _run_check
+
+        config = {
+            "disabled_checks": ["failed_attestation"],
+            "acknowledge_disable_consequences": True,
+        }
+        result = _run_check("fabric.watchdog.checks.failed_attestation", config)
+        assert result is None
+
+    def test_non_critical_check_disabled_normally(self, tmp_path):
+        """Non-critical checks are disabled without requiring acknowledgement."""
+        from fabric.watchdog.scheduler import _run_check
+
+        config = {"disabled_checks": ["hung_tmux"]}
+        result = _run_check("fabric.watchdog.checks.hung_tmux", config)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Security: token scrubbing
+# ---------------------------------------------------------------------------
+
+
+class TestTokenScrubbing:
+    """Telegram bot token must not leak into log output."""
+
+    def test_scrub_token_removes_token(self):
+        from fabric.watchdog.telegram import _scrub_token
+
+        token = "bot123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"
+        url = f"https://api.telegram.org/{token}/sendMessage"
+        result = _scrub_token(url)
+        assert "123456789" not in result
+        assert "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi" not in result
+        assert "REDACTED" in result
+
+    def test_send_failure_logs_sanitized_message(self, tmp_path):
+        """When sendMessage fails, the logged message must not contain the token."""
+        import logging
+        import urllib.error
+        from unittest.mock import patch
+
+        from fabric.watchdog.telegram import TelegramPoster
+
+        log_records = []
+
+        class CapturingHandler(logging.Handler):
+            def emit(self, record):
+                log_records.append(self.format(record))
+
+        handler = CapturingHandler()
+        tg_logger = logging.getLogger("fabric.watchdog.telegram")
+        tg_logger.addHandler(handler)
+        try:
+            poster = TelegramPoster(
+                bot_token="987654321:ZYXWVUTSRQPONMLKJIHGFEDCBAzyxwvutsr",
+                chat_id="-100123456",
+            )
+            with patch("urllib.request.urlopen",
+                       side_effect=urllib.error.URLError("connection refused")):
+                poster._send("test message")
+        finally:
+            tg_logger.removeHandler(handler)
+
+        combined = " ".join(log_records)
+        assert "987654321" not in combined
+        assert "ZYXWVUTSRQPONMLKJIHGFEDCBAzyxwvutsr" not in combined
+
+
+# ---------------------------------------------------------------------------
+# State file permissions
+# ---------------------------------------------------------------------------
+
+
+class TestStateFileMode:
+    """State file must be written with mode 0640."""
+
+    def test_state_file_mode_0640(self, tmp_path):
+        """alerts.json is created with mode 0640."""
+        import stat
+        from fabric.watchdog.alert_state import AlertStateStore
+
+        state_file = tmp_path / "alerts.json"
+        store = AlertStateStore(state_file)
+        store.mark_seen("test-id-mode")
+
+        mode = oct(stat.S_IMODE(state_file.stat().st_mode))
+        assert mode == oct(0o640), f"Expected 0640, got {mode}"
+
+    def test_state_file_mode_preserved_after_update(self, tmp_path):
+        """Mode remains 0640 after mark_seen updates the file."""
+        import stat
+        from fabric.watchdog.alert_state import AlertStateStore
+
+        state_file = tmp_path / "alerts.json"
+        store = AlertStateStore(state_file)
+        store.mark_seen("id-one")
+        store.mark_seen("id-two")
+
+        mode = oct(stat.S_IMODE(state_file.stat().st_mode))
+        assert mode == oct(0o640), f"Expected 0640 after update, got {mode}"
+
+
+# ---------------------------------------------------------------------------
+# Alert state: alert_class binding
+# ---------------------------------------------------------------------------
+
+
+class TestAlertClassBinding:
+    """alert_class is stored and checked to prevent mismatched /turn-into-task."""
+
+    def test_mark_seen_stores_alert_class(self, tmp_path):
+        import json
+        from fabric.watchdog.alert_state import AlertStateStore
+
+        state_file = tmp_path / "alerts.json"
+        store = AlertStateStore(state_file)
+        store.mark_seen("bound-id", alert_class="disk_pressure")
+
+        raw = json.loads(state_file.read_text())
+        assert raw["bound-id"]["alert_class"] == "disk_pressure"
+
+    def test_check_seen_with_class_passes_correct(self, tmp_path):
+        from fabric.watchdog.alert_state import AlertStateStore
+
+        state_file = tmp_path / "alerts.json"
+        store = AlertStateStore(state_file)
+        store.mark_seen("id-x", alert_class="solana_rpc")
+
+        assert store.check_seen_with_class("id-x", "solana_rpc") is True
+
+    def test_check_seen_with_class_rejects_mismatch(self, tmp_path):
+        from fabric.watchdog.alert_state import AlertStateStore
+
+        state_file = tmp_path / "alerts.json"
+        store = AlertStateStore(state_file)
+        store.mark_seen("id-y", alert_class="solana_rpc")
+
+        assert store.check_seen_with_class("id-y", "disk_pressure") is False
+
+    def test_get_alert_class_returns_stored_class(self, tmp_path):
+        from fabric.watchdog.alert_state import AlertStateStore
+
+        state_file = tmp_path / "alerts.json"
+        store = AlertStateStore(state_file)
+        store.mark_seen("id-z", alert_class="failed_attestation")
+
+        assert store.get_alert_class("id-z") == "failed_attestation"
+
+    def test_get_alert_class_returns_none_for_unknown(self, tmp_path):
+        from fabric.watchdog.alert_state import AlertStateStore
+
+        state_file = tmp_path / "alerts.json"
+        store = AlertStateStore(state_file)
+
+        assert store.get_alert_class("nonexistent") is None
+
+
+# ---------------------------------------------------------------------------
+# Deterministic alert_id
+# ---------------------------------------------------------------------------
+
+
+class TestDeterministicAlertId:
+    """deterministic_alert_id produces stable ids for same inputs."""
+
+    def test_same_input_same_id(self):
+        from fabric.watchdog.alert_state import deterministic_alert_id
+
+        a = deterministic_alert_id("solana_rpc", "https://api.devnet.solana.com")
+        b = deterministic_alert_id("solana_rpc", "https://api.devnet.solana.com")
+        assert a == b
+
+    def test_different_class_different_id(self):
+        from fabric.watchdog.alert_state import deterministic_alert_id
+
+        a = deterministic_alert_id("solana_rpc", "sig")
+        b = deterministic_alert_id("irys_balance", "sig")
+        assert a != b
+
+    def test_different_sig_different_id(self):
+        from fabric.watchdog.alert_state import deterministic_alert_id
+
+        a = deterministic_alert_id("solana_rpc", "sig1")
+        b = deterministic_alert_id("solana_rpc", "sig2")
+        assert a != b
+
+    def test_returns_64_char_hex(self):
+        from fabric.watchdog.alert_state import deterministic_alert_id
+        import re
+
+        result = deterministic_alert_id("test", "data")
+        assert len(result) == 64
+        assert re.match(r"^[0-9a-f]{64}$", result)

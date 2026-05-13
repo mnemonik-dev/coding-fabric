@@ -4,6 +4,8 @@ Unit tests for turn_into_task command handler.
 TDD anchors:
     test_turn_into_task_creates_kaneo_card
     test_unknown_alert_id_returns_friendly_error
+    test_unauthorized_caller_rejected
+    test_no_operator_ids_configured_rejects_all
 """
 
 from __future__ import annotations
@@ -14,6 +16,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from fabric.watchdog.models import Alert, Severity
+
+# Shared authorized operator set injected into tests that need an authorized caller.
+_ALLOWED_OP = frozenset([12345])
+_ALLOWED_UID = 12345
 
 
 class TestTurnIntoTask:
@@ -45,9 +51,11 @@ class TestTurnIntoTask:
             text=f"/turn-into-task {alert.alert_id}",
             config=config,
             reply=replies.append,
+            caller_user_id=_ALLOWED_UID,
             alert_store=store,
             kaneo_client=mock_kaneo,
             alert_registry={alert.alert_id: alert},
+            _operator_ids=_ALLOWED_OP,
         )
 
         mock_kaneo.create_card.assert_called_once_with(alert)
@@ -70,8 +78,10 @@ class TestTurnIntoTask:
             text="/turn-into-task 00000000-0000-0000-0000-000000000000",
             config=config,
             reply=replies.append,
+            caller_user_id=_ALLOWED_UID,
             alert_store=store,
             kaneo_client=mock_kaneo,
+            _operator_ids=_ALLOWED_OP,
         )
 
         mock_kaneo.create_card.assert_not_called()
@@ -87,6 +97,8 @@ class TestTurnIntoTask:
             text="/turn-into-task",
             config={},
             reply=replies.append,
+            caller_user_id=_ALLOWED_UID,
+            _operator_ids=_ALLOWED_OP,
         )
         assert len(replies) == 1
         assert "Usage" in replies[0]
@@ -117,9 +129,11 @@ class TestTurnIntoTask:
             text=f"/turn-into-task {alert.alert_id}",
             config=config,
             reply=replies.append,
+            caller_user_id=_ALLOWED_UID,
             alert_store=store,
             kaneo_client=mock_kaneo,
             alert_registry={alert.alert_id: alert},
+            _operator_ids=_ALLOWED_OP,
         )
 
         assert len(replies) == 1
@@ -145,10 +159,90 @@ class TestTurnIntoTask:
             text=f"/turn-into-task {alert_id}",
             config=config,
             reply=replies.append,
+            caller_user_id=_ALLOWED_UID,
             alert_store=store,
             kaneo_client=mock_kaneo,
             alert_registry={},  # empty registry
+            _operator_ids=_ALLOWED_OP,
         )
 
         mock_kaneo.create_card.assert_called_once()
         assert "card-99" in replies[0]
+
+
+class TestTurnIntoTaskAuthorization:
+    """Authorization: only allowlisted Telegram user_ids may invoke /turn-into-task."""
+
+    def test_unauthorized_caller_rejected(self, tmp_path):
+        """A caller not in WATCHDOG_OPERATOR_USER_IDS receives a rejection message."""
+        from fabric.watchdog.turn_into_task import handle_command
+        from fabric.watchdog.alert_state import AlertStateStore
+
+        state_file = tmp_path / "alerts.json"
+        store = AlertStateStore(state_file)
+        store.mark_seen("aaaa-0000")
+
+        mock_kaneo = MagicMock()
+        replies = []
+
+        handle_command(
+            text="/turn-into-task aaaa-0000",
+            config={},
+            reply=replies.append,
+            caller_user_id=99999,  # not in allowlist
+            alert_store=store,
+            kaneo_client=mock_kaneo,
+            _operator_ids=frozenset([12345]),
+        )
+
+        mock_kaneo.create_card.assert_not_called()
+        assert len(replies) == 1
+        assert "not authorized" in replies[0].lower()
+
+    def test_none_caller_id_rejected(self, tmp_path):
+        """caller_user_id=None is treated as unauthorized."""
+        from fabric.watchdog.turn_into_task import handle_command
+        from fabric.watchdog.alert_state import AlertStateStore
+
+        state_file = tmp_path / "alerts.json"
+        store = AlertStateStore(state_file)
+        store.mark_seen("bbbb-0001")
+
+        mock_kaneo = MagicMock()
+        replies = []
+
+        handle_command(
+            text="/turn-into-task bbbb-0001",
+            config={},
+            reply=replies.append,
+            caller_user_id=None,
+            alert_store=store,
+            kaneo_client=mock_kaneo,
+            _operator_ids=frozenset([12345]),
+        )
+
+        mock_kaneo.create_card.assert_not_called()
+        assert "not authorized" in replies[0].lower()
+
+    def test_empty_operator_ids_rejects_all(self, tmp_path):
+        """When WATCHDOG_OPERATOR_USER_IDS is empty, all callers are rejected."""
+        from fabric.watchdog.turn_into_task import handle_command
+        from fabric.watchdog.alert_state import AlertStateStore
+
+        state_file = tmp_path / "alerts.json"
+        store = AlertStateStore(state_file)
+        store.mark_seen("cccc-0002")
+
+        replies = []
+
+        handle_command(
+            text="/turn-into-task cccc-0002",
+            config={},
+            reply=replies.append,
+            caller_user_id=12345,
+            alert_store=store,
+            _operator_ids=frozenset(),  # empty
+        )
+
+        assert len(replies) == 1
+        assert "not available" in replies[0].lower() or "not authorized" in replies[0].lower()

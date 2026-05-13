@@ -19,7 +19,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from fabric.watchdog.alert_state import deterministic_alert_id
 from fabric.watchdog.models import Alert, Severity
+from fabric.watchdog.url_validator import validate_url
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +53,9 @@ def _check(config: dict[str, Any]) -> Alert | None:
         logger.debug("irys_address not configured; skipping irys_balance check")
         return None
 
+    # Reject file://, ftp://, public IPs not in allowlist (e.g. mainnet).
+    validate_url(node_url, context="irys_node_url")
+
     url = f"{node_url}/account/balance/{address}"
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
@@ -63,6 +68,7 @@ def _check(config: dict[str, Any]) -> Alert | None:
             alert_class="irys_balance",
             severity=Severity.WARNING,
             evidence=evidence,
+            alert_id=deterministic_alert_id("irys_balance", f"{node_url}:{address}"),
             extra={"node_url": node_url, "error": str(exc)},
         )
 
@@ -76,6 +82,7 @@ def _check(config: dict[str, Any]) -> Alert | None:
             alert_class="irys_balance",
             severity=Severity.WARNING,
             evidence=evidence,
+            alert_id=deterministic_alert_id("irys_balance", f"{node_url}:{address}"),
             extra={"balance": balance, "min_balance": min_balance},
         )
 

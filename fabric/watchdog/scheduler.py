@@ -63,13 +63,46 @@ _PER_CHECK_TIMEOUT = 30  # seconds
 _BATCH_THRESHOLD = 3     # >3 alerts -> digest
 
 
+# Checks that belong to the critical-class (AC11-AC16 attestation chain).
+# Disabling any of these defeats the corresponding audit controls.
+_CRITICAL_CLASS_CHECKS: frozenset[str] = frozenset([
+    "failed_attestation",
+])
+
+
 def _run_check(module_name: str, config: dict[str, Any]) -> Alert | None:
-    """Import check module and call check(config), returning Alert or None."""
-    alert_class = config.get("disabled_checks", [])
+    """Import check module and call check(config), returning Alert or None.
+
+    Config keys:
+        disabled_checks (list[str]): check names to skip.
+        acknowledge_disable_consequences (bool): must be explicitly True when
+            disabling a critical-class check; otherwise the disable is ignored
+            and a warning is logged.  This documents operator intent and
+            prevents silent security regressions (e.g. disabling
+            ``failed_attestation`` defeats AC11-AC16).
+    """
+    disabled_checks: list[str] = config.get("disabled_checks", [])
     check_name = module_name.rsplit(".", 1)[-1]
-    if check_name in alert_class:
-        logger.debug("scheduler: check %s is disabled via config", check_name)
-        return None
+    if check_name in disabled_checks:
+        if check_name in _CRITICAL_CLASS_CHECKS:
+            ack = config.get("acknowledge_disable_consequences", False)
+            if not ack:
+                logger.error(
+                    "scheduler: refusing to disable critical-class check %s — "
+                    "disabling failed_attestation defeats AC11-AC16. "
+                    "Set acknowledge_disable_consequences=true in config to override.",
+                    check_name,
+                )
+                # Fall through and run the check rather than silently skip it.
+            else:
+                logger.warning(
+                    "scheduler: critical-class check %s disabled with acknowledged consequences",
+                    check_name,
+                )
+                return None
+        else:
+            logger.debug("scheduler: check %s is disabled via config", check_name)
+            return None
     try:
         mod = importlib.import_module(module_name)
         return mod.check(config)
@@ -111,7 +144,7 @@ class Scheduler:
 
         # Persist before sending so a crash during send doesn't re-trigger.
         for alert in new_alerts:
-            self._state.mark_seen(alert.alert_id)
+            self._state.mark_seen(alert.alert_id, alert_class=alert.alert_class)
 
         self._dispatch(new_alerts)
         return new_alerts
@@ -143,7 +176,8 @@ class Scheduler:
             for mod in _CHECK_MODULES
         }
         # Shut down the pool without waiting so the loop below controls timing.
-        executor.shutdown(wait=False)
+        # cancel_futures=True cancels pending (not-yet-started) futures immediately.
+        executor.shutdown(wait=False, cancel_futures=True)
 
         for future, mod in futures.items():
             try:

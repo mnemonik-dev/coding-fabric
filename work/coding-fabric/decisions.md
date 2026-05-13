@@ -1787,3 +1787,53 @@ Reliability-engineer lens:
 - fabric/watchdog/README.md
 - **Total: ~1 060 lines of source, ~580 lines of tests**
 
+---
+
+## Task 18 — Watchdog review round 2 (security + reliability fixes)
+
+**Status:** complete | **Agent:** python-sage
+
+**Summary:** Addressed all 12 issues raised by security-auditor-round1, reliability-engineer-round1, and code-reviewer-round1. Test count grew from 34 to 74 (all green).
+
+**Key decisions:**
+
+1. **Caller authorization (CRIT):** Added `caller_user_id: int | None` parameter to `handle_command`. Authorization gate reads `WATCHDOG_OPERATOR_USER_IDS` (comma-separated int list, sops-managed) via `_load_operator_ids()`. Empty allowlist rejects all. The `_operator_ids` override kwarg enables clean unit testing without env pollution.
+
+2. **Token leakage (CRIT):** The Telegram Bot API requires the token in the URL path — unavoidable. Mitigation: a `_scrub_token()` regex (`_TOKEN_RE`) replaces any `bot<digits>:<base64>` pattern before exceptions reach log handlers. Tested with a capturing log handler to assert zero token chars in output.
+
+3. **State file mode 0640 (major):** `os.chmod(tmp_path, 0o640)` applied to the temp file before `os.replace()` so the final file inherits the correct permissions atomically. Init write now also acquires the flock (fix 11). Tested with `stat.S_IMODE` assertions.
+
+4. **SSRF/URL allowlist (major):** New `url_validator.py` module with `validate_url()`. Policy: http/https only; loopback/localhost/RFC-1918/CGNAT (100.64.0.0/10, Tailscale) always allowed; public hostnames only via explicit `_ALLOWED_PUBLIC_HOSTS` frozenset (devnet.solana, devnet.irys, api.telegram.org). Wired into solana_rpc, irys_balance, failed_attestation checks.
+
+5. **HTML injection (major):** Dropped `parse_mode: "HTML"` from Telegram payloads (defaults to plain text). Evidence and alert_class are each individually sanitized before concatenation in `_format_alert` / `_format_digest`.
+
+6. **disabled_checks typo + critical-class guard (major):** Renamed local var `alert_class` to `disabled_checks`. Added `_CRITICAL_CLASS_CHECKS` frozenset (`failed_attestation`). Disabling a critical check without `acknowledge_disable_consequences=true` is refused with an error log and the check runs anyway.
+
+7. **alert_id/alert_class binding (minor):** `mark_seen()` gains `alert_class: str = ""` and stores it in the JSON entry. New `check_seen_with_class()` and `get_alert_class()` methods. Placeholder branch in `turn_into_task.py` calls `get_alert_class()` so the card is bound to the stored class, not "unknown".
+
+8. **is_seen() TOCTOU (minor):** `is_seen()` now acquires the flock (same as `mark_seen()`), making check-and-set atomic.
+
+9. **Deterministic alert_id (minor):** Added `deterministic_alert_id(alert_class, sig)` (SHA-256 hex) in `alert_state.py`. Applied in solana_rpc, irys_balance, failed_attestation, stale_swarms, stale_lkg. Caps repeated notifications to 1/24h for the same ongoing outage.
+
+10. **cancel_futures=True (low):** Added to `executor.shutdown(wait=False, cancel_futures=True)`.
+
+11. **Init write without flock (low):** Merged into an `_acquire`/`_release` block in `__init__`.
+
+12. **Missing tests (code review):** Added `TestStaleSwarms` (4), `TestStaleLkg` (4), `TestIrysBalance` (5), `TestSSRFUrlAllowlist` (8), `TestDisabledChecksGuard` (3), `TestTokenScrubbing` (2), `TestStateFileMode` (2), `TestAlertClassBinding` (5), `TestDeterministicAlertId` (4), `TestTurnIntoTaskAuthorization` (3).
+
+**New files:**
+- fabric/watchdog/url_validator.py
+
+**Modified files:**
+- fabric/watchdog/alert_state.py
+- fabric/watchdog/telegram.py
+- fabric/watchdog/turn_into_task.py
+- fabric/watchdog/scheduler.py
+- fabric/watchdog/checks/solana_rpc.py
+- fabric/watchdog/checks/irys_balance.py
+- fabric/watchdog/checks/failed_attestation.py
+- fabric/watchdog/checks/stale_swarms.py
+- fabric/watchdog/checks/stale_lkg.py
+- fabric/watchdog/tests/test_checks.py (+40 tests)
+- fabric/watchdog/tests/test_turn_into_task.py (+3 tests, updated 5)
+
