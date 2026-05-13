@@ -23,7 +23,10 @@ log() {
 acquire_lock() {
   local timeout=30
   local elapsed=0
-  while [[ -f "$LOCK_FILE" ]]; do
+  local lock_fd=9
+
+  # Atomic lock acquisition using noclobber + redirect (POSIX-portable)
+  while ! ( set -o noclobber; exec {lock_fd}>>"$LOCK_FILE" ) 2>/dev/null; do
     if [[ $elapsed -ge $timeout ]]; then
       log "ERROR: lock held for >$timeout sec; aborting"
       return 1
@@ -31,7 +34,9 @@ acquire_lock() {
     sleep 1
     ((elapsed++))
   done
-  touch "$LOCK_FILE"
+
+  # Successfully acquired; log PID for debugging
+  echo "$$:$(date +'%Y-%m-%dT%H:%M:%SZ')" >&$lock_fd
 }
 
 release_lock() {
@@ -90,11 +95,21 @@ main() {
     git tag -d "$TAG_NAME" || true
   fi
 
-  git tag -a -m "Last known good — $BRANCH at $(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$TAG_NAME" HEAD
+  # Create signed tag (requires git config user.signingkey to be set)
+  if git config --get-all user.signingkey &>/dev/null; then
+    git tag -s -m "Last known good — $BRANCH at $(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$TAG_NAME" HEAD || {
+      log "WARN: failed to sign tag (check gpg/ssh key config); falling back to annotated"
+      git tag -a -m "Last known good — $BRANCH at $(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$TAG_NAME" HEAD
+    }
+  else
+    log "WARN: user.signingkey not configured; creating annotated (unsigned) tag"
+    git tag -a -m "Last known good — $BRANCH at $(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$TAG_NAME" HEAD
+  fi
 
   if git config --get-all remote.origin.url &>/dev/null; then
-    if git push --force origin "$TAG_NAME" 2>&1; then
-      log "OK: pushed $TAG_NAME to origin"
+    # Use --force-with-lease instead of --force to prevent history rewrite
+    if git push --force-with-lease origin "$TAG_NAME" 2>&1; then
+      log "OK: pushed $TAG_NAME to origin (with lease protection)"
     else
       log "WARN: failed to push $TAG_NAME; may not have remote permission"
     fi

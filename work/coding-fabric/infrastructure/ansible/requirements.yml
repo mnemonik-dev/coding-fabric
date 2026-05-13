@@ -1,0 +1,12 @@
+---
+# Ansible collections required for safe-mode-rollback.yml and fabric deployment
+collections:
+  - name: community.sops
+    version: ">=1.0.0"
+  - name: community.general
+    version: ">=7.0.0"
+  - name: ansible.posix
+    version: ">=1.5.0"
+
+# Installation:
+#   ansible-galaxy install -r infrastructure/ansible/requirements.yml

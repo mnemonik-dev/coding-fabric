@@ -4,6 +4,11 @@
 # Stops fabric services, reverts mnemonic-loop to last-known-good, restarts services.
 # Idempotent; blocks on concurrent execution; posts ops banner on completion.
 #
+# PREREQUISITES:
+#  - sops + age key configured for decrypting infrastructure/ansible/inventory/group_vars/all/secrets.sops.yml
+#  - git config user.signingkey set on deployment host (to verify tag signatures)
+#  - Ansible collections: community.sops (for encrypted var loading)
+#
 
 - name: Safe-mode rollback
   hosts: all
@@ -22,6 +27,24 @@
       - fabric-services
 
   pre_tasks:
+    - name: Load sops-encrypted secrets
+      community.sops.load_vars:
+        file: infrastructure/ansible/inventory/group_vars/all/secrets.sops.yml
+        name: sops_vars
+      register: sops_load
+      no_log: yes
+
+    - name: Verify telegram_bot_token loaded
+      fail:
+        msg: "telegram_bot_token not found in sops secrets; check sops config and age key"
+      when: sops_vars.telegram_bot_token is not defined or sops_vars.telegram_bot_token | length == 0
+      no_log: yes
+
+    - name: Set secret vars from sops
+      set_fact:
+        telegram_bot_token: "{{ sops_vars.telegram_bot_token }}"
+        telegram_ops_topic: "{{ sops_vars.telegram_ops_topic }}"
+      no_log: yes
     - name: Acquire exclusive lock (prevent concurrent rollback)
       block:
         - name: Check if lock is held
@@ -34,7 +57,6 @@
             path: "{{ lock_file }}"
             state: absent
             timeout: "{{ lock_timeout }}"
-          ignore_errors: yes
           when: lock_stat.stat.exists
 
         - name: Create lock file
@@ -86,6 +108,13 @@
           register: tag_check
           failed_when: tag_check.rc != 0
 
+        - name: Verify tag signature
+          shell:
+            cmd: "git verify-tag {{ tag_name }} 2>&1"
+            chdir: "{{ mnemonic_loop_clone_path }}"
+          register: verify_result
+          failed_when: verify_result.rc != 0
+
         - name: Checkout last-known-good tag
           shell:
             cmd: "git checkout {{ tag_name }}"
@@ -96,13 +125,22 @@
           debug:
             msg: "Checked out {{ tag_name }} at commit {{ checkout_result.stdout }}"
       rescue:
-        - name: Post error alert to ops
-          community.general.telegram:
-            token: "{{ telegram_bot_token }}"
-            chat_id: "{{ telegram_ops_topic }}"
-            msg: |
-              Error: Could not checkout {{ tag_name }} in mnemonic-loop
-              {{ ansible_hostname }}: {{ ansible_failed_result.msg }}
+        - name: Sanitize error message for Telegram
+          set_fact:
+            error_msg: "{{ (ansible_failed_result.msg | default('Unknown error')) | regex_replace('[\"\\\\]', '_') | truncate(200, True, '...') }}"
+          no_log: yes
+
+        - name: Post error alert to ops via curl
+          shell:
+            cmd: |
+              set +x
+              curl -s -X POST "https://api.telegram.org/bot{{ telegram_bot_token }}/sendMessage" \
+                -H "Content-Type: application/json" \
+                -d "$(jq -n --arg msg "SEVERITY: HIGH\n\nCheckout Error\nHost: {{ ansible_hostname }}\nMessage: $ERROR_MSG" '{chat_id:"{{ telegram_ops_topic }}", text: $msg}')"
+            chdir: "{{ mnemonic_loop_clone_path }}"
+          environment:
+            ERROR_MSG: "{{ error_msg }}"
+          no_log: yes
           ignore_errors: yes
 
         - name: Release lock and abort
@@ -131,13 +169,21 @@
           debug:
             msg: "Deploy completed for fabric-services; see logs for details"
       rescue:
-        - name: Post deploy error alert to ops
-          community.general.telegram:
-            token: "{{ telegram_bot_token }}"
-            chat_id: "{{ telegram_ops_topic }}"
-            msg: |
-              CRITICAL: Safe-mode rollback failed during deploy phase
-              {{ ansible_hostname }}: {{ ansible_failed_result.msg }}
+        - name: Sanitize deploy error message
+          set_fact:
+            deploy_error_msg: "{{ (ansible_failed_result.msg | default('Deploy phase failed')) | regex_replace('[\"\\\\]', '_') | truncate(200, True, '...') }}"
+          no_log: yes
+
+        - name: Post deploy error alert to ops via curl
+          shell:
+            cmd: |
+              set +x
+              curl -s -X POST "https://api.telegram.org/bot{{ telegram_bot_token }}/sendMessage" \
+                -H "Content-Type: application/json" \
+                -d "$(jq -n --arg msg "SEVERITY: HIGH\n\nDeploy Error\nHost: {{ ansible_hostname }}\nMessage: $DEPLOY_ERROR_MSG" '{chat_id:"{{ telegram_ops_topic }}", text: $msg}')"
+          environment:
+            DEPLOY_ERROR_MSG: "{{ deploy_error_msg }}"
+          no_log: yes
           ignore_errors: yes
 
         - name: Release lock and abort
@@ -164,29 +210,29 @@
 
     - name: Post ops success banner to Telegram
       block:
-        - name: Sanitize hostname for Telegram
-          set_fact:
-            safe_hostname: "{{ ansible_hostname | regex_replace('[^a-zA-Z0-9_-]', '_') }}"
-
         - name: Format success message
           set_fact:
             success_msg: |
-              Safe-mode rollback completed
-              Hostname: {{ safe_hostname }}
+              SEVERITY: HIGH
+
+              Safe-mode rollback completed successfully
+              Hostname: {{ ansible_hostname | regex_replace('[^a-zA-Z0-9_-]', '_') }}
               Reverted to: {{ tag_name }}
               Timestamp: {{ ansible_date_time.iso8601 }}
               Status: All fabric services restarted
+            safe_msg: ""
+          no_log: yes
 
-        - name: Escape message for Telegram API
-          set_fact:
-            escaped_msg: "{{ success_msg | replace('\"', '\\\"') | replace('\\', '\\\\') }}"
-
-        - name: Post banner via Telegram
+        - name: Post banner via Telegram (JSON-safe encoding)
           shell:
             cmd: |
+              set +x
               curl -s -X POST "https://api.telegram.org/bot{{ telegram_bot_token }}/sendMessage" \
                 -H "Content-Type: application/json" \
-                -d '{"chat_id":"{{ telegram_ops_topic }}","text":"{{ escaped_msg }}"}'
+                -d "$(jq -n --arg msg '$SUCCESS_MSG' '{chat_id:"{{ telegram_ops_topic }}", text: $msg}')"
+          environment:
+            SUCCESS_MSG: "{{ success_msg }}"
+          no_log: yes
           ignore_errors: yes
       ignore_errors: yes
 

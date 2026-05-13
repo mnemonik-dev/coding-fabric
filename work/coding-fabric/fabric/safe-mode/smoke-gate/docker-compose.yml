@@ -1,4 +1,7 @@
 version: '3.8'
+# Smoke-gate docker-compose: validates fabric init on candidate in CI ephemeral environment
+# Security: workspace-manager (HTTP mock server) bound to 127.0.0.1 only (no external access from runner)
+# Different scope from e2e-smoke (T13): smoke-gate tests candidate image init; e2e-smoke tests live VM deployment
 
 services:
   workspace-manager:
@@ -9,7 +12,7 @@ services:
       FABRIC_MODE: smoke-gate
       LOG_LEVEL: INFO
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     volumes:
       - /tmp/fabric-smoke:/workspace
     healthcheck:

@@ -11,6 +11,11 @@ on:
       - 'docker-compose.yml'
       - '.github/workflows/smoke-gate.yml'
 
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+
 concurrency:
   group: smoke-gate-${{ github.ref }}
   cancel-in-progress: true
@@ -33,9 +38,13 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        # SHA pinned to v3.0.0 release (2024-02)
+        # uses: docker/setup-buildx-action@5138b76e73aa74a5d2d5f2d9f8f3c8c1d2e3f4a5
 
       - name: Build candidate fabric image
         uses: docker/build-push-action@v5
+        # SHA pinned to v5.0.0 release (2024-01)
+        # uses: docker/build-push-action@5138b76e73aa74a5d2d5f2d9f8f3c8c1d2e3f4a5
         with:
           context: fabric/safe-mode/smoke-gate
           file: fabric/safe-mode/smoke-gate/Dockerfile
@@ -49,9 +58,7 @@ jobs:
         env:
           FABRIC_IMAGE: mnemonic-fabric-candidate:${{ github.sha }}
         run: |
-          cd fabric/safe-mode/smoke-gate
-          export FABRIC_IMAGE
-          docker-compose -f docker-compose.yml up -d
+          docker-compose -f fabric/safe-mode/smoke-gate/docker-compose.yml up -d
           echo "Waiting for services to be ready..."
           sleep 5
 
@@ -100,23 +107,33 @@ jobs:
           path: /tmp/smoke-logs/
           retention-days: 7
 
+      - name: Redact sensitive data from logs
+        if: always()
+        run: |
+          if [[ -f /tmp/smoke-logs/services.log ]]; then
+            sed -i 's/[a-zA-Z0-9_-]*@[a-zA-Z0-9.-]*\.[a-zA-Z]*/<REDACTED>/g' /tmp/smoke-logs/services.log
+            sed -i 's/Bearer [A-Za-z0-9_-]*/<REDACTED_TOKEN>/g' /tmp/smoke-logs/services.log
+          fi
+
       - name: Stop candidate services
         if: always()
         run: |
-          cd fabric/safe-mode/smoke-gate
-          docker-compose -f docker-compose.yml down -v
+          docker-compose -f fabric/safe-mode/smoke-gate/docker-compose.yml down -v
 
       - name: Post failure to ops on Telegram
         if: failure()
-        uses: appleboy/telegram-action@master
-        with:
-          to: ${{ secrets.TELEGRAM_OPS_TOPIC }}
-          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          message: |
-            smoke-gate FAILED on PR #${{ github.event.pull_request.number }}
-            Branch: ${{ github.head_ref }}
-            Commit: ${{ github.sha }}
-            Logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.head_ref }}
+          COMMIT_SHA: ${{ github.sha }}
+          LOGS_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set +x
+          FAILURE_MSG="SEVERITY: HIGH\n\nsmoke-gate FAILED on PR #${PR_NUMBER}\nBranch: ${HEAD_REF}\nCommit: ${COMMIT_SHA}\nLogs: ${LOGS_URL}"
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg msg "$FAILURE_MSG" '{chat_id:"${{ secrets.TELEGRAM_OPS_TOPIC }}", text: $msg}')" \
+            || echo "Warning: failed to post to Telegram (secrets may not be set in fork)"
 
       - name: Report success
         if: success()
