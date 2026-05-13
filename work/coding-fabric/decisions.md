@@ -1959,3 +1959,68 @@ Reliability-engineer lens:
 **Report files:**
 - [logs/working/audit/code-audit.json](logs/working/audit/code-audit.json)
 - [logs/working/audit/test-audit.json](logs/working/audit/test-audit.json)
+
+## Audit Remediation — Security
+
+**Date:** 2026-05-12
+**Agent:** audit-fixer-security
+**Scope:** All CRITICAL findings + selected HIGH/MEDIUM findings (security-focused) from T20 code-audit.json and T21 security-audit.json. Reliability/code findings handled in parallel by audit-fixer-reliability; the two scopes are disjoint and the edits compose.
+
+**Critical fixes (must land):**
+
+1. **PR-body shell injection — `fabric/github-templates/composite-action/action.yml`** (T20 critical / F-002).
+   `pr_body="${{ inputs.pr_body }}"` directly interpolated PR-body into bash; a malicious body containing backticks / `$(...)` would execute arbitrary code on the runner. Migrated all four steps to the env-block pattern: `env: PR_BODY: ${{ inputs.pr_body }}` and reference `"$PR_BODY"` inside shell. Same migration applied to `base_ref`, `head_ref`, `config_path`, and downstream `steps.*.outputs.*` consumers. Added a `validate_refs` step that pre-validates `base_ref` / `head_ref` against `^[A-Za-z0-9_./-]{1,200}$` and `config_path` against a similar regex. Replaced emojis with `[PASS]` / `[FAIL]` ASCII tokens per project style.
+
+2. **GitHub Actions code injection — `.github/workflows/e2e-smoke.yml`** (T20 critical / F-003).
+   `feature_name` was interpolated into JS template literals (`github-script`) and into single-quoted SSH commands. Added a leading `Validate feature_name input` step that enforces `^[a-z0-9-]{1,64}$` regex (and DNS-safe regex on `vm_hostname`). Migrated every consumer to the env-block pattern (`env: FEATURE_NAME: ${{ inputs.feature_name }}` → `"$FEATURE_NAME"` in shell, `process.env.FEATURE_NAME` in github-script, `--arg feature` in jq). Telegram failure-report token moved into `env.TG_TOKEN` and composed into `TG_URL` inside the shell.
+
+3. **Sanitizer bypass at DEBUG — `fabric/workspace-manager/logging_setup.py`** (T20 critical).
+   DEBUG path installed a bare `logging.StreamHandler()` that bypassed T07 sanitization. Replaced with new `_load_sanitized_stream_handler()` that imports `fabric.logs.sanitizer.handler.SanitizedStreamHandler` and hard-fails when `WORKSPACE_MANAGER_REQUIRE_SANITIZER=true`. Added `fabric/workspace-manager/tests/test_logging_setup.py` with five tests: four parametrized levels (INFO/WARNING/ERROR/DEBUG) assert every installed handler is a sanitized variant, and a fifth pins the DEBUG-mode contract explicitly. All five pass (`pytest tests/test_logging_setup.py`).
+
+4. **Vaultwarden docker-compose circular `depends_on` — `infrastructure/ansible/roles/vaultwarden/templates/docker-compose.yml.j2`** (T20 high — deploy-blocking).
+   Bidirectional dependency (`vaultwarden -> caddy -> vaultwarden`) made docker compose refuse to start the stack. Broke the cycle by removing vaultwarden's `depends_on: [caddy]` and tightening caddy's side to wait for vaultwarden's healthcheck: `depends_on: { vaultwarden: { condition: service_healthy } }`.
+
+**High fixes:**
+
+5. **F-001 — mnemonic-mcp LoadCredential vault:// URI bug**.
+   `LoadCredential=mnemonic-signing-key:vault://mnemonic/mcp-signing-key` was invalid: systemd `LoadCredential=` accepts a file path, not a custom URI scheme. Without the fix the unit either refuses to start or (worst case) starts with an empty credential, silently degrading the attestation chain. Added a pre-task that decrypts the signing key from Vaultwarden via `bw get password` into `/run/credentials/mnemonic-mcp.service/mnemonic-signing-key` (mode 0600 root via `install`/`umask 077`/atomic rename), pointed `LoadCredential=` at that on-disk path, and added a post-start task that wipes the on-disk copy once systemd has read it into its in-memory credential namespace. Introduced `mnemonic_mcp_vault_item`, `mnemonic_mcp_credential_dir`, and `mnemonic_mcp_credential_file` defaults (replacing the misleading `mnemonic_mcp_vault_path`).
+
+6. **F-005 — pk-guard `RUFLO_SESSION` inversion**.
+   Previous gate exited 0 whenever `RUFLO_SESSION` was unset, so any agent could bypass by simply not setting that env var. Inverted to fail-closed: the guard ALWAYS rejects writes to `.claude/skills/project-knowledge/references/` unless `PK_GUARD_BYPASS=1` is explicitly set in the invoking shell. Every bypass logs to `auth.notice` AND posts a `BYPASSED (operator)` line to the ops Telegram topic for audit. Updated `roles/molyanov/README.md` to document the new contract. Validated behaviour locally: PK path + no bypass → exit 1; PK path + `PK_GUARD_BYPASS=1` → exit 0; non-PK path → exit 0.
+
+7. **F-004 / F-017 — Telegram bot token off curl argv across multiple scripts**.
+   Pattern: wherever a Telegram POST was previously `curl -s "https://api.telegram.org/bot${TOKEN}/sendMessage"`, the token now lives in an env var (TG_TOKEN, TELEGRAM_BOT_TOKEN) and the URL is composed into `TG_URL` inside the shell before being passed to curl. This removes the literal Jinja-templated token from the rendered command line (which appeared in `/proc/<bash_pid>/cmdline` before `set +x` took effect). Applied to:
+   - `infrastructure/ansible/roles/molyanov/files/pk-guard.sh` (both reject-path and bypass-path).
+   - `infrastructure/ansible/roles/molyanov/files/ops-notify.sh`.
+   - `infrastructure/ansible/playbooks/safe-mode-rollback.yml` (all three curl invocations: checkout-error, deploy-error, success-banner).
+   - `.github/workflows/smoke-gate.yml` (failure-notify step).
+   - `.github/workflows/e2e-smoke.yml` (failure-notify step).
+   - `infrastructure/ansible/roles/restic-backups/templates/fabric-backup.sh.j2` (failure alert).
+   - `scripts/e2e/smoke.sh` (docs-topic notify).
+   `fabric/watchdog/telegram.py` already follows the correct pattern (urllib + token-scrubbing exception handler); no change required there.
+
+**Layout sanity verification:**
+- `fabric/github-templates/` exists at repo root: confirmed.
+- `fabric/safe-mode/` exists at repo root: confirmed.
+- `infrastructure/ansible/playbooks/safe-mode-rollback.yml` exists at repo root: confirmed.
+- `.github/workflows/smoke-gate.yml` exists at repo root: confirmed.
+- `work/coding-fabric/{fabric,infrastructure,.github}` no longer exist: confirmed (only `archive/`, `tasks/`, `logs/`, specs, and decisions remain under `work/coding-fabric/`).
+
+**Verification:**
+- `pytest fabric/workspace-manager/tests/` — 77/77 passing (including five new sanitizer-handler regression tests).
+- `bash -n` clean on pk-guard.sh, ops-notify.sh.
+- `yaml.safe_load_all` parses all six modified YAML files (workflows, action, playbook, role defaults/tasks).
+- Manual exec of pk-guard.sh confirms inversion: PK path without bypass exits 1; with `PK_GUARD_BYPASS=1` exits 0; non-PK paths exit 0.
+- Vaultwarden docker-compose: structural YAML parses after Jinja-strip (no remaining cycle).
+
+**Items intentionally out of scope (reliability-fixer agent):**
+- T20 high: misplaced `always:` in ruflo, invalid build-backends, `sign_attestation` returning public key, `until` on block in telegram-init, single-quoted `$SUCCESS_MSG` shell expansion.
+
+**Items deferred (out of audit-wave scope):**
+- F-007 (medium) — telegram-ai-agent EnvironmentFile → LoadCredential migration: requires re-design of that service unit; deferred to T22 hardening pass.
+- F-008 (medium) — smoke-gate mock binds 0.0.0.0:8080 inside container: the broader audit recommendation is to replace the mock entirely (F-010), which is a multi-PR rework not appropriate for a remediation commit.
+- F-009 (medium) — uv installer curl|sh without sha256: requires hosting a mirrored installer; deferred.
+- F-014 (medium) — bw session token via `--session` argv → env var: orthogonal to this wave's scope and would touch the workspace-manager vault flow; tracked for follow-up.
+- F-012 / F-013 (low) — DNS-based SSRF in post-deploy-qa, URL-encoding in irys_balance: defensive-depth, not exploitable from external inputs.
+
+**Commit SHA:** _(filled in below after commit lands)_

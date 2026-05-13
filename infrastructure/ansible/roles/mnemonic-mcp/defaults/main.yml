@@ -19,12 +19,17 @@ mnemonic_mcp_systemd_unit: mnemonic-mcp.service
 mnemonic_mcp_service_user: op
 mnemonic_mcp_service_group: op
 
-mnemonic_mcp_vault_path: "vault://mnemonic/mcp-signing-key"
+# Vaultwarden item that holds the mnemonic-mcp signing key (decrypted via bw at deploy time)
+mnemonic_mcp_vault_item: "mnemonic/mcp-signing-key"
+
+# On-disk path where the Ansible pre-task materialises the signing key (mode 0600 root).
+# systemd LoadCredential= expects a real file path on disk, NOT a custom vault:// URI scheme
+# (Finding F-001 in T21 security-audit).  The file is placed under /run/credentials/...
+# (tmpfs, ephemeral) and removed in an `always:` cleanup task after the service is started.
+mnemonic_mcp_credential_dir: "/run/credentials/mnemonic-mcp.service"
+mnemonic_mcp_credential_file: "{{ mnemonic_mcp_credential_dir }}/mnemonic-signing-key"
 
 solana_devnet_rpc_url: "https://api.devnet.solana.com"
 arweave_testnet_url: "https://testnet.arweave.net"
 
 mnemonic_mcp_healthcheck_timeout: 10
-
-# mnemonic_mcp_vault_path is a vault REFERENCE, not a credential;
-# the actual signing key is never materialized in ansible variables

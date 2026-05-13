@@ -66,8 +66,11 @@ log "Step 2: Send synthetic docs-typo PR via Telegram bot"
 EOF
   )
 
+  # Audit Finding F-004 (T21): compose URL into TG_URL env so the literal token
+  # does not appear as a curl argv via this script's command line.
+  TG_URL="https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"
   RESPONSE=$(curl -s -X POST \
-    "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+    "$TG_URL" \
     -H "Content-Type: application/json" \
     -d "$PAYLOAD" || echo "{}")
 

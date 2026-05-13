@@ -131,15 +131,23 @@
           no_log: yes
 
         - name: Post error alert to ops via curl
+          # Audit F-004 / F-017: Token kept in TG_TOKEN env var inside curl-host
+          # shell.  Previous form Jinja-templated `{{ telegram_bot_token }}` directly
+          # into the rendered command line — visible to /proc/<bash_pid>/cmdline
+          # before set +x took effect.
           shell:
             cmd: |
               set +x
-              curl -s -X POST "https://api.telegram.org/bot{{ telegram_bot_token }}/sendMessage" \
+              TG_URL="https://api.telegram.org/bot${TG_TOKEN}/sendMessage"
+              curl -s -X POST "$TG_URL" \
                 -H "Content-Type: application/json" \
-                -d "$(jq -n --arg msg "SEVERITY: HIGH\n\nCheckout Error\nHost: {{ ansible_hostname }}\nMessage: $ERROR_MSG" '{chat_id:"{{ telegram_ops_topic }}", text: $msg}')"
+                -d "$(jq -n --arg msg "SEVERITY: HIGH\n\nCheckout Error\nHost: $ANSIBLE_HOSTNAME\nMessage: $ERROR_MSG" --arg topic "$TG_TOPIC" '{chat_id:$topic, text: $msg}')"
             chdir: "{{ mnemonic_loop_clone_path }}"
           environment:
             ERROR_MSG: "{{ error_msg }}"
+            TG_TOKEN: "{{ telegram_bot_token }}"
+            TG_TOPIC: "{{ telegram_ops_topic }}"
+            ANSIBLE_HOSTNAME: "{{ ansible_hostname }}"
           no_log: yes
           ignore_errors: yes
 
@@ -175,14 +183,19 @@
           no_log: yes
 
         - name: Post deploy error alert to ops via curl
+          # Audit F-004 / F-017: same env-var pattern as the checkout-error post.
           shell:
             cmd: |
               set +x
-              curl -s -X POST "https://api.telegram.org/bot{{ telegram_bot_token }}/sendMessage" \
+              TG_URL="https://api.telegram.org/bot${TG_TOKEN}/sendMessage"
+              curl -s -X POST "$TG_URL" \
                 -H "Content-Type: application/json" \
-                -d "$(jq -n --arg msg "SEVERITY: HIGH\n\nDeploy Error\nHost: {{ ansible_hostname }}\nMessage: $DEPLOY_ERROR_MSG" '{chat_id:"{{ telegram_ops_topic }}", text: $msg}')"
+                -d "$(jq -n --arg msg "SEVERITY: HIGH\n\nDeploy Error\nHost: $ANSIBLE_HOSTNAME\nMessage: $DEPLOY_ERROR_MSG" --arg topic "$TG_TOPIC" '{chat_id:$topic, text: $msg}')"
           environment:
             DEPLOY_ERROR_MSG: "{{ deploy_error_msg }}"
+            TG_TOKEN: "{{ telegram_bot_token }}"
+            TG_TOPIC: "{{ telegram_ops_topic }}"
+            ANSIBLE_HOSTNAME: "{{ ansible_hostname }}"
           no_log: yes
           ignore_errors: yes
 
@@ -224,14 +237,23 @@
           no_log: yes
 
         - name: Post banner via Telegram (JSON-safe encoding)
+          # Audit F-004 / F-017: TG_TOKEN env -> TG_URL env -> curl "$TG_URL"
+          # so the literal Jinja-rendered token is never on the rendered argv.
+          # SUCCESS_MSG is exported via `environment:` below. The previous
+          # version used single quotes around `$SUCCESS_MSG` which prevented
+          # bash from expanding the variable, sending the literal string
+          # `$SUCCESS_MSG` to Telegram instead of the rendered banner.
           shell:
             cmd: |
               set +x
-              curl -s -X POST "https://api.telegram.org/bot{{ telegram_bot_token }}/sendMessage" \
+              TG_URL="https://api.telegram.org/bot${TG_TOKEN}/sendMessage"
+              curl -s -X POST "$TG_URL" \
                 -H "Content-Type: application/json" \
-                -d "$(jq -n --arg msg '$SUCCESS_MSG' '{chat_id:"{{ telegram_ops_topic }}", text: $msg}')"
+                -d "$(jq -n --arg msg "$SUCCESS_MSG" --arg topic "$TG_TOPIC" '{chat_id:$topic, text: $msg}')"
           environment:
             SUCCESS_MSG: "{{ success_msg }}"
+            TG_TOKEN: "{{ telegram_bot_token }}"
+            TG_TOPIC: "{{ telegram_ops_topic }}"
           no_log: yes
           ignore_errors: yes
       ignore_errors: yes

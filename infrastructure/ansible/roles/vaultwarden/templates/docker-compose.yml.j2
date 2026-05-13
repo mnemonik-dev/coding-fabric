@@ -25,8 +25,11 @@ services:
       timeout: 10s
       retries: 3
       start_period: 60s
-    depends_on:
-      - caddy
+    # NOTE: vaultwarden intentionally has NO depends_on.  Caddy is the reverse
+    # proxy in front of vaultwarden — only caddy needs to wait for vaultwarden
+    # to be healthy.  The previous bidirectional `depends_on` produced a
+    # `circular reference: vaultwarden -> caddy -> vaultwarden` error from
+    # docker compose and prevented the stack from starting (audit T20-HIGH).
 
   caddy:
     image: {{ vaultwarden_caddy_image }}
@@ -47,7 +50,8 @@ services:
       retries: 3
       start_period: 30s
     depends_on:
-      - vaultwarden
+      vaultwarden:
+        condition: service_healthy
 
 networks:
   vaultwarden:

@@ -56,13 +56,19 @@ ${log_tail}
 
   if [[ -n "${TELEGRAM_BOT_TOKEN:-}" ]] && [[ -n "${TELEGRAM_OPS_CHAT_ID:-}" ]]; then
     # Use jq to build JSON with proper escaping (prevents JSON injection)
-    local json_body=$(jq -n \
+    local json_body
+    json_body=$(jq -n \
       --arg chat_id "${TELEGRAM_OPS_CHAT_ID}" \
       --arg text "${message}" \
       '{chat_id: $chat_id, text: $text, parse_mode: "MarkdownV2"}')
 
-    curl -s -X POST \
-      "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+    # Audit Finding F-004 (T21): the bot token is composed into TG_URL inside
+    # the shell so it does not appear in this script's argv as a literal Jinja
+    # substitution.  curl's argv does briefly contain the URL; that exposure
+    # window is mitigated by systemd User=op + service hardening on the
+    # fabric-backup unit.
+    local tg_url="https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"
+    curl -s -X POST "${tg_url}" \
       -H "Content-Type: application/json" \
       -d "${json_body}" > /dev/null 2>&1 || true
   fi

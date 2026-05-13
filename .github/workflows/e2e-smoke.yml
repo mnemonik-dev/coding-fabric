@@ -51,6 +51,24 @@ jobs:
     # Total timeout: 5 (tailscale) + 5 (ping) + 5 (scp) + 10 (smoke) + 20 (DAG poll) + 5 (verify) = 50 min adjusted to 35 (with cleanup slack)
     timeout-minutes: 35
     steps:
+      - name: Validate feature_name input (script-injection guard)
+        env:
+          FEATURE_NAME: ${{ inputs.feature_name }}
+          VM_HOSTNAME: ${{ inputs.vm_hostname }}
+        run: |
+          # Strict allow-list: lowercase letters, digits, hyphen; 1-64 chars.
+          # Mitigates GH Actions script-injection of feature_name into shell/SSH/JS contexts.
+          if ! [[ "$FEATURE_NAME" =~ ^[a-z0-9-]{1,64}$ ]]; then
+            echo "ERROR: feature_name must match ^[a-z0-9-]{1,64}\$ (got: <redacted-input>)"
+            exit 1
+          fi
+          # vm_hostname is operator-supplied via workflow_dispatch; constrain to DNS-safe charset.
+          if ! [[ "$VM_HOSTNAME" =~ ^[A-Za-z0-9.-]{1,253}$ ]]; then
+            echo "ERROR: vm_hostname must be DNS-safe"
+            exit 1
+          fi
+          echo "feature_name validated"
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
@@ -65,25 +83,29 @@ jobs:
 
       - name: Validate Tailscale connectivity
         timeout-minutes: 5
+        env:
+          VM_HOSTNAME: ${{ inputs.vm_hostname }}
         run: |
           echo "Checking Tailscale status..."
           tailscale status
 
           echo "Verifying VM is reachable..."
-          if ! tailscale ping -c 1 "${{ inputs.vm_hostname }}" > /dev/null 2>&1; then
-            echo "ERROR: Cannot ping ${{ inputs.vm_hostname }}"
+          if ! tailscale ping -c 1 "$VM_HOSTNAME" > /dev/null 2>&1; then
+            echo "ERROR: Cannot ping $VM_HOSTNAME"
             exit 1
           fi
           echo "VM connectivity verified"
 
       - name: Copy smoke.sh to VM
         timeout-minutes: 5
+        env:
+          VM_HOSTNAME: ${{ inputs.vm_hostname }}
         run: |
           # smoke.sh is deployed by fabric-services Ansible role to /usr/local/bin/fabric-smoke.sh
           # However, we copy per-run to ensure CI-tested version runs (prevents stale deploy drift)
           if ! scp -o StrictHostKeyChecking=no \
             scripts/e2e/smoke.sh \
-            "op@${{ inputs.vm_hostname }}:/tmp/smoke.sh"; then
+            "op@${VM_HOSTNAME}:/tmp/smoke.sh"; then
             echo "ERROR: Failed to copy smoke.sh to VM"
             exit 1
           fi
@@ -92,11 +114,16 @@ jobs:
       - name: Run smoke test on VM
         id: smoke
         timeout-minutes: 10
+        env:
+          FEATURE_NAME: ${{ inputs.feature_name }}
+          VM_HOSTNAME: ${{ inputs.vm_hostname }}
         run: |
-          echo "Starting smoke test with feature_name=${{ inputs.feature_name }}"
+          echo "Starting smoke test with feature_name=$FEATURE_NAME"
 
-          if ! tailscale ssh "op@${{ inputs.vm_hostname }}" \
-            "bash /tmp/smoke.sh '${{ inputs.feature_name }}'"; then
+          # feature_name is regex-validated upstream to ^[a-z0-9-]{1,64}$, so the remote
+          # single-quoted argv is safe (no quotes / shell metas possible).
+          if ! tailscale ssh "op@${VM_HOSTNAME}" \
+            "bash /tmp/smoke.sh '${FEATURE_NAME}'"; then
             echo "ERROR: smoke.sh failed"
             exit 1
           fi
@@ -105,10 +132,14 @@ jobs:
       - name: Poll Mnemonic MCP for 5-node DAG
         id: dag-poll
         timeout-minutes: 20
+        env:
+          FEATURE_NAME: ${{ inputs.feature_name }}
+          VM_HOSTNAME: ${{ inputs.vm_hostname }}
+          DAG_POLL_MAX_MINUTES: ${{ env.DAG_POLL_MAX_MINUTES }}
         run: |
-          echo "Polling for 5-node DAG (max ${{ env.DAG_POLL_MAX_MINUTES }} minutes)..."
+          echo "Polling for 5-node DAG (max ${DAG_POLL_MAX_MINUTES} minutes)..."
 
-          MAX_POLLS=$((${{ env.DAG_POLL_MAX_MINUTES }} * 2))
+          MAX_POLLS=$((DAG_POLL_MAX_MINUTES * 2))
           POLL_INTERVAL=30
           POLL_COUNT=0
           DAG_FOUND=false
@@ -116,11 +147,11 @@ jobs:
           while [ $POLL_COUNT -lt $MAX_POLLS ]; do
             echo "Poll #$((POLL_COUNT + 1))/$MAX_POLLS (${POLL_COUNT}*30s elapsed)..."
 
-            DAG_OUTPUT=$(tailscale ssh "op@${{ inputs.vm_hostname }}" \
-              "mnemonic_recall --feature='${{ inputs.feature_name }}' --json 2>/dev/null" || echo "")
+            DAG_OUTPUT=$(tailscale ssh "op@${VM_HOSTNAME}" \
+              "mnemonic_recall --feature='${FEATURE_NAME}' --json 2>/dev/null" || echo "")
 
             if [ -z "$DAG_OUTPUT" ]; then
-              echo "  → No DAG yet, waiting..."
+              echo "  - No DAG yet, waiting..."
               POLL_COUNT=$((POLL_COUNT + 1))
               sleep $POLL_INTERVAL
               continue
@@ -130,7 +161,7 @@ jobs:
             NODE_COUNT=$(echo "$DAG_OUTPUT" | jq -r '.[] | select(.parent != null) | .id' 2>/dev/null | wc -l)
             TOTAL_COUNT=$(echo "$DAG_OUTPUT" | jq -r '.[] | .id' 2>/dev/null | wc -l)
 
-            echo "  → Found $TOTAL_COUNT nodes, $NODE_COUNT with parents"
+            echo "  - Found $TOTAL_COUNT nodes, $NODE_COUNT with parents"
 
             if [ "$TOTAL_COUNT" -eq 5 ]; then
               echo "SUCCESS: 5-node DAG detected"
@@ -151,23 +182,25 @@ jobs:
           fi
 
       - name: Verify DAG structure
+        env:
+          FEATURE_NAME: ${{ inputs.feature_name }}
+          DAG_JSON: ${{ steps.dag-poll.outputs.dag_json }}
         run: |
-          DAG_JSON='${{ steps.dag-poll.outputs.dag_json }}'
-
           echo "Validating DAG structure..."
-          echo "$DAG_JSON" | jq '.' > /tmp/dag.json
+          printf '%s' "$DAG_JSON" | jq '.' > /tmp/dag.json
 
           # Load expected DAG schema (5-node parent chain: user-spec -> tech-spec -> task -> pre-deploy -> deploy)
           cp scripts/e2e/expected-dag.json /tmp/expected-dag.json
 
-          # Verify node count, required fields, parent chain integrity, and feature match
+          # feature_name passed via --arg so jq treats it as a literal string (no injection).
           if ! jq -e \
             --slurpfile expected /tmp/expected-dag.json \
+            --arg feature "$FEATURE_NAME" \
             '
               . as $actual |
               (length == 5) as $len_ok |
               (all(.id != null and .timestamp != null and .feature != null)) as $fields_ok |
-              (all(.feature == "'"'"'${{ inputs.feature_name }}'"'"'")) as $feature_ok |
+              (all(.feature == $feature)) as $feature_ok |
               (
                 ($actual[0].parent == null) and
                 ($actual[1].parent == $actual[0].id) and
@@ -195,10 +228,12 @@ jobs:
           jq '.' /tmp/dag.json
 
       - name: Verify worktree cleanup
+        env:
+          VM_HOSTNAME: ${{ inputs.vm_hostname }}
         run: |
           echo "Verifying worktree cleanup on VM..."
 
-          WORKTREE_COUNT=$(tailscale ssh "op@${{ inputs.vm_hostname }}" \
+          WORKTREE_COUNT=$(tailscale ssh "op@${VM_HOSTNAME}" \
             "ls -1 ~/code/mnemonic-workspaces 2>/dev/null | wc -l" || echo "0")
 
           echo "Active worktrees: $WORKTREE_COUNT"
@@ -211,11 +246,14 @@ jobs:
       - name: Sign smoke run via Mnemonic MCP
         id: sign-smoke
         if: success()
+        env:
+          FEATURE_NAME: ${{ inputs.feature_name }}
+          VM_HOSTNAME: ${{ inputs.vm_hostname }}
         run: |
           echo "Signing smoke run attestation..."
 
-          ATTESTATION=$(tailscale ssh "op@${{ inputs.vm_hostname }}" \
-            "mnemonic_sign_memory --feature='${{ inputs.feature_name }}' --phase=e2e-smoke-pass --type=agent.state 2>/dev/null" || echo "")
+          ATTESTATION=$(tailscale ssh "op@${VM_HOSTNAME}" \
+            "mnemonic_sign_memory --feature='${FEATURE_NAME}' --phase=e2e-smoke-pass --type=agent.state 2>/dev/null" || echo "")
 
           if [ -z "$ATTESTATION" ]; then
             echo "WARNING: Could not reach Mnemonic MCP for attestation (MCP may be temporarily unavailable)"
@@ -229,9 +267,14 @@ jobs:
       - name: Comment on commit (success)
         if: success()
         uses: actions/github-script@v7
+        env:
+          FEATURE_NAME: ${{ inputs.feature_name }}
+          ATTESTATION_ID: ${{ steps.sign-smoke.outputs.attestation_id }}
         with:
           script: |
-            const feature = '${{ inputs.feature_name }}';
+            // Read inputs from process.env (safe) rather than ${{ }} template literals
+            // to avoid GH Actions JS injection if feature_name contained quotes.
+            const feature = process.env.FEATURE_NAME;
             const attestationId = process.env.ATTESTATION_ID || 'unavailable';
             const comment = `e2e-smoke PASSED\n\nFeature: ${feature}\n5-node DAG verified, worktree cleanup confirmed.\nAttestation: ${attestationId}`;
 
@@ -241,19 +284,24 @@ jobs:
               commit_sha: context.sha,
               body: comment
             });
-        env:
-          ATTESTATION_ID: ${{ steps.sign-smoke.outputs.attestation_id }}
 
       - name: Report failure to ops
         if: failure()
+        env:
+          FEATURE_NAME: ${{ inputs.feature_name }}
+          VM_HOSTNAME: ${{ inputs.vm_hostname }}
+          RUN_ID: ${{ github.run_id }}
+          TG_TOKEN: ${{ secrets.TELEGRAM_OPS_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TELEGRAM_OPS_CHAT_ID }}
+          TG_THREAD_ID: ${{ secrets.TELEGRAM_OPS_THREAD_ID }}
         run: |
-          if [ -z "${{ secrets.TELEGRAM_OPS_BOT_TOKEN }}" ]; then
+          if [ -z "${TG_TOKEN}" ]; then
             echo "TELEGRAM_OPS_BOT_TOKEN not configured, skipping ops notification"
             exit 0
           fi
 
           # Collect last 50 lines of diagnostic via SSH
-          DIAGNOSTIC=$(tailscale ssh "op@${{ inputs.vm_hostname }}" \
+          DIAGNOSTIC=$(tailscale ssh "op@${VM_HOSTNAME}" \
             "journalctl -u smoke-test -n 50 2>/dev/null || tail -50 /tmp/smoke-test.log 2>/dev/null" || echo "No diagnostic log available")
 
           # Sanitize secrets: strip sk-* (OpenAI keys), api_* (Anthropic), base58 keys (43-44 chars), and JWK fragments
@@ -266,12 +314,15 @@ jobs:
 
           # Build Telegram message with diagnostics (truncate to 1000 chars for readability)
           DIAG_PREVIEW="${SANITIZED:0:1000}"
-          TEXT="e2e-smoke FAILED on feature=${{ inputs.feature_name }}%0Arun=${{ github.run_id }}%0Alast 50 lines: %0A${DIAG_PREVIEW}"
+          TEXT="e2e-smoke FAILED on feature=${FEATURE_NAME}%0Arun=${RUN_ID}%0Alast 50 lines: %0A${DIAG_PREVIEW}"
 
-          # POST to Telegram ops channel
-          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_OPS_BOT_TOKEN }}/sendMessage" \
-            -d "chat_id=${{ secrets.TELEGRAM_OPS_CHAT_ID }}" \
-            -d "message_thread_id=${{ secrets.TELEGRAM_OPS_THREAD_ID }}" \
+          # Token kept in env var TG_URL only; never on curl argv where it would be visible
+          # via /proc/<pid>/cmdline. Env-vars are isolated to the process via /proc/<pid>/environ
+          # (readable only by same UID).
+          TG_URL="https://api.telegram.org/bot${TG_TOKEN}/sendMessage"
+          curl -s -X POST "$TG_URL" \
+            -d "chat_id=${TG_CHAT_ID}" \
+            -d "message_thread_id=${TG_THREAD_ID}" \
             -d "text=$TEXT" \
             -d "parse_mode=Markdown" \
             --output /tmp/telegram-response.json

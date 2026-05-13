@@ -12,31 +12,41 @@ Install molyanov-ai-dev slash commands and Project Knowledge guard hook for codi
 
 ## Project Knowledge Guard Mechanism
 
-### Scope
+### Scope (fail-closed)
 
-The `pk-guard.sh` hook **only fires** when the `RUFLO_SESSION` environment variable is set (non-empty). This ensures:
+The `pk-guard.sh` hook **always rejects** writes that target paths matching
+`.claude/skills/project-knowledge/references/`, regardless of whether
+`RUFLO_SESSION` is set. This is fail-closed by design (audit Finding F-005 in
+T21 security-audit): the previous version gated enforcement on
+`RUFLO_SESSION`, which an agent could trivially bypass by unsetting the env
+var before invoking the hook.
 
-- Does not fire on operator's manual edits (`git add`, `vim`)
-- Does not fire on read-only operations (`git diff`, `cat`)
-- Fires only within ruflo-invoked write contexts (workspace tasks)
+The guard returns immediately (exit 0) for any path that does NOT touch the PK
+references tree, so it is safe to install as a generic pre-write hook.
 
 ### Enforcement
 
-When `RUFLO_SESSION=<task-id>` is set and a write targets any path matching `.claude/skills/project-knowledge/references/`:
+When a write targets any path matching `.claude/skills/project-knowledge/references/`:
 
-1. **Reject**: Exit code 1, blocking the write
-2. **Log**: Message to systemd journal via `logger -t molyanov-pk-guard` (sanitized by Task 07 filter)
-3. **Alert**: POST to Telegram ops-topic via bot token (if available)
+1. **Reject**: Exit code 1, blocking the write.
+2. **Log**: Message to systemd journal via `logger -t molyanov-pk-guard` (sanitized by Task 07 filter).
+3. **Alert**: POST to Telegram ops-topic via bot token (plain text — no `parse_mode=HTML` per audit F-006).
 
-### Bypass Procedure
+### Operator Bypass Procedure
 
-**Emergency only** (requires operator verification):
+The only way to allow a PK-references write is to set `PK_GUARD_BYPASS=1` in
+the invoking shell. This bypass is intended for deliberate operator-interactive
+sessions only (never agents, never CI). Every bypass is logged to
+`auth.notice` and an ops-topic Telegram message records the bypass for
+post-hoc audit.
 
 ```bash
-env -i RUFLO_SESSION= <command that writes to PK refs>
+# Operator-interactive bypass (deliberate write to PK references).
+PK_GUARD_BYPASS=1 vim ~/code/<feature>/.claude/skills/project-knowledge/references/architecture.md
 ```
 
-Setting `RUFLO_SESSION=""` disables the guard for that invocation. All such bypasses are logged.
+Do NOT export `PK_GUARD_BYPASS` for an entire shell session; scope it to a
+single command so the guard re-engages immediately after.
 
 ## Dependencies
 
@@ -89,14 +99,14 @@ molecule test -s molyanov
 Smoke test (operator verification):
 
 ```bash
-# From test worktree
+# From test worktree (no RUFLO_SESSION needed — guard is fail-closed)
 cd ~/code/mnemonic-workspaces/test-task-1
-RUFLO_SESSION=test-task-1 ruflo memory write .claude/skills/project-knowledge/references/architecture.md "test" 2>&1
-# Should exit non-zero; ops-topic receives alert
+ruflo memory write .claude/skills/project-knowledge/references/architecture.md "test" 2>&1
+# Should exit non-zero; ops-topic receives alert.
 
-# Bypass (emergency):
-env -i RUFLO_SESSION= bash -c 'echo "test" > .claude/skills/project-knowledge/references/test.md'
-# Should succeed (emergency override logged)
+# Operator bypass (deliberate write):
+PK_GUARD_BYPASS=1 ruflo memory write .claude/skills/project-knowledge/references/test.md "test"
+# Should succeed; operator-bypass log emitted to journal + ops-topic.
 ```
 
 ## Cross-Role Coupling

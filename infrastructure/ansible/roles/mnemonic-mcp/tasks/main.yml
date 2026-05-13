@@ -96,8 +96,39 @@
   no_log: true
   notify: reload mnemonic-mcp systemd
 
+- name: Ensure systemd LoadCredential drop-dir exists (mode 0700 root)
+  ansible.builtin.file:
+    path: "{{ mnemonic_mcp_credential_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Materialise mnemonic-mcp signing key from Vaultwarden into /run/credentials/
+  # systemd LoadCredential= expects a file path; the previous vault:// URI was invalid
+  # (Finding F-001).  We decrypt the key from Vaultwarden at deploy time, write to
+  # the systemd credential directory mode 0600 owner root, then point LoadCredential
+  # at that on-disk path.  The directory lives on tmpfs (/run) so it is wiped at
+  # reboot; the file is also explicitly removed in the `always:` cleanup below.
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      install -m 0700 -o root -g root -d "{{ mnemonic_mcp_credential_dir }}"
+      umask 077
+      bw --session "$BW_SESSION" get password "{{ mnemonic_mcp_vault_item }}" \
+        > "{{ mnemonic_mcp_credential_file }}.tmp"
+      chmod 0600 "{{ mnemonic_mcp_credential_file }}.tmp"
+      chown root:root "{{ mnemonic_mcp_credential_file }}.tmp"
+      mv "{{ mnemonic_mcp_credential_file }}.tmp" "{{ mnemonic_mcp_credential_file }}"
+  args:
+    creates: "{{ mnemonic_mcp_credential_file }}"
+  environment:
+    BW_SESSION: "{{ bw_session_token }}"
+  no_log: true
+  register: signing_key_materialised
+
 - name: Render systemd service unit with LoadCredential
-  template:
+  ansible.builtin.template:
     src: mnemonic-mcp.service.j2
     dest: /etc/systemd/system/{{ mnemonic_mcp_systemd_unit }}
     owner: root
@@ -214,3 +245,12 @@
   register: mnemonic_mcp_final_status
   failed_when: mnemonic_mcp_final_status.status.ActiveState != 'active'
   changed_when: false
+
+- name: Wipe on-disk signing key after systemd has copied it into the credential namespace
+  # Once systemd LoadCredential= has read the file at unit start, the on-disk copy is
+  # redundant; systemd serves the key from its in-memory credential store to the unit.
+  # Wiping reduces the post-start exposure window of the plaintext key on /run.
+  ansible.builtin.file:
+    path: "{{ mnemonic_mcp_credential_file }}"
+    state: absent
+  no_log: true

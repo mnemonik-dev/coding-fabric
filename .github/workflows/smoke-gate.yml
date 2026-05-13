@@ -127,12 +127,23 @@ jobs:
           HEAD_REF: ${{ github.head_ref }}
           COMMIT_SHA: ${{ github.sha }}
           LOGS_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          # Token kept in env-only (not in template-expanded curl argv) per audit F-004.
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_OPS_TOPIC: ${{ secrets.TELEGRAM_OPS_TOPIC }}
         run: |
           set +x
+          if [ -z "${TG_TOKEN}" ]; then
+            echo "TELEGRAM_BOT_TOKEN not configured (fork PR?); skipping notification"
+            exit 0
+          fi
           FAILURE_MSG="SEVERITY: HIGH\n\nsmoke-gate FAILED on PR #${PR_NUMBER}\nBranch: ${HEAD_REF}\nCommit: ${COMMIT_SHA}\nLogs: ${LOGS_URL}"
-          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+          # Compose URL from env-resident TG_TOKEN inside the shell — the workflow YAML
+          # never template-expands the secret into a curl argv, which prevents the secret
+          # from being captured in a rendered-step trace.
+          TG_URL="https://api.telegram.org/bot${TG_TOKEN}/sendMessage"
+          curl -s -X POST "$TG_URL" \
             -H "Content-Type: application/json" \
-            -d "$(jq -n --arg msg "$FAILURE_MSG" '{chat_id:"${{ secrets.TELEGRAM_OPS_TOPIC }}", text: $msg}')" \
+            -d "$(jq -n --arg msg "$FAILURE_MSG" --arg topic "$TG_OPS_TOPIC" '{chat_id:$topic, text: $msg}')" \
             || echo "Warning: failed to post to Telegram (secrets may not be set in fork)"
 
       - name: Report success
