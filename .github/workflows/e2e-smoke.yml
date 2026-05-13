@@ -171,6 +171,7 @@ jobs:
         timeout-minutes: 5
         env:
           MERGE_SHA: ${{ inputs.merge_sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           echo "Verifying docs PR merge SHA: $MERGE_SHA"
 
@@ -186,8 +187,6 @@ jobs:
           RESOLVED=$(cat /tmp/sha-check.out)
           echo "Merge SHA resolved: $RESOLVED"
           echo "resolved_sha=$RESOLVED" >> "$GITHUB_OUTPUT"
-        env:
-          GH_TOKEN: ${{ github.token }}
 
       - name: Verify worktree cleanup via workspace-manager API
         id: worktree-cleanup

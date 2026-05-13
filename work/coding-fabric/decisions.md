@@ -2069,3 +2069,114 @@ Reliability-engineer lens:
 
 **Deferred for operator bootstrap (one-time, ~30 min):** bootstrap-checklist.md §1–§9.
 
+---
+
+## Round 2 — User-driven scope change (2026-05-12)
+
+**Status:** applied | **Agent:** coding-fabric-refactor-2
+
+After Wave 8 pre-deploy QA the user issued a single set of scope changes
+covering three concerns. This section records what changed and why; the
+underlying tech-spec / user-spec files were also updated to mark the
+attestation work as DEFERRED.
+
+### Change 1 — Descope `mnemonic-mcp` attestation integration
+
+**Decision.** The local Mnemonic MCP server is not yet production-ready, so
+attestation integration is moved out of `coding-fabric` scope and into a
+separate backlog feature `mnemonic-attestation-integration` (see
+`work/mnemonic-attestation-integration/user-spec.md`).
+
+**Effect in code.**
+- `roles/mnemonic-mcp/defaults/main.yml`: new master switch
+  `mnemonic_mcp_enabled: false` (default).
+- `roles/mnemonic-mcp/tasks/main.yml`: real install + hook wiring now lives
+  under a `when: mnemonic_mcp_enabled | bool` block. When disabled, the role
+  installs 5 no-op stub hooks (`user-spec.sh`, `tech-spec.sh`,
+  `task-complete.sh`, `pre-deploy.sh`, `post-deploy.sh`) under
+  `/etc/mnemonic-mcp/hooks/`. Each stub exits 0 silently and logs
+  `attestation skipped (mnemonic-mcp disabled — see backlog:
+  mnemonic-attestation-integration)` to journald via `logger -t
+  mnemonic-mcp-stub`.
+- `playbooks/deploy.yml`: role still in the order list but gated; the
+  post-task health-check loop omits `mnemonic-mcp` from its systemd service
+  poll when the role is disabled.
+- `.github/workflows/e2e-smoke.yml`: 5-node DAG poll + `Sign smoke run via
+  Mnemonic MCP` step gated behind a new `mnemonic_mcp_enabled` workflow
+  input (default false). New verdict: `smoke.sh` end-to-end + optional
+  `merge_sha` verification + `curl /worktrees | jq 'length == 0'`.
+- `.github/workflows/post-deploy-avp.yml`: `sign-attestation` job gated
+  behind the same input. AVP step 2 verdict simplified from "5-node DAG
+  verify" to "PR end-to-end completes".
+- `scripts/avp/steps/step-2.sh`: rewritten to the PR-completion +
+  worktree-cleanup verdict; DAG check survives as an opt-in branch behind
+  `MNEMONIC_MCP_ENABLED=1`.
+- `work/coding-fabric/user-spec.md`: AC11–AC16 each appended with
+  `[DEFERRED to backlog: mnemonic-attestation-integration]`; §11 Open
+  questions gains an entry recording the descope.
+- `work/coding-fabric/tech-spec.md`: D14 row appended with the DEFERRED
+  marker; §2.6 prepended with a DEFERRED note; §2.3 role 9 row marked
+  "OPTIONAL, disabled by default".
+- `work/mnemonic-attestation-integration/user-spec.md` (new) — backlog
+  stub: goal, scope, dependencies (MCP v1.0+, key generation procedure,
+  full-mode operational policy), open questions.
+
+**Cross-role contracts preserved.** kaneo Caddy import, T07 sanitizer
+import, workspace-manager HTTP API contract (`GET /worktrees`, `GET
+/health`) are unchanged.
+
+### Change 2 — `ruflo` install: switch from installer.sh to git clone + npm build
+
+**Source.** `https://github.com/ruvnet/ruflo` at tag `v3.6.30`, MIT.
+Upstream package.json declares `name: "claude-flow"`, `bin: { "claude-flow":
+"./bin/cli.js" }`, type module, build script `tsc`. Both `package-lock.json`
+and `pnpm-lock.yaml` are present at the tag.
+
+**Decision: `npm ci`.** Selected `npm` because `package-lock.json` is the
+canonical lockfile in upstream (the pnpm lockfile is an artefact but the
+project's `scripts.build` and CI both use `npm`).
+
+**Effect in code.**
+- `roles/ruflo/defaults/main.yml`: replaced `ruflo_installer_sha256` with
+  `ruflo_repo`, `ruflo_version: "v3.6.30"`, `ruflo_install_dir: "/opt/ruflo"`.
+- `roles/ruflo/tasks/main.yml`: replaced the installer download +
+  SHA256-verify + `bash installer.sh` flow with:
+  1. ensure `git` is installed;
+  2. detect / install Node.js ≥ 20 via NodeSource `setup_20.x` when absent or
+     below 20.x;
+  3. `ansible.builtin.git` clone to `ruflo_install_dir` at `ruflo_version`
+     (depth 1, `update: yes`, `force: yes`);
+  4. `npm ci` then `npm run build`;
+  5. verify via `node /opt/ruflo/bin/cli.js --version`.
+- `roles/ruflo/README.md`: updated variable table, installation steps, smoke
+  test command.
+
+### Change 3 — `molyanov` install: clone + symlink, pinned to v0.3.0
+
+**Source.** `https://github.com/pavel-molyanov/molyanov-ai-dev` at tag
+`v0.3.0` (latest stable; "Feature Execution Hardening & Skill Tester Merge",
+2026-03-23). MIT. Shell + bash hooks, no compile step.
+
+**Effect in code.**
+- `roles/molyanov/defaults/main.yml`: introduced `molyanov_repo`,
+  `molyanov_version: "v0.3.0"`, `molyanov_install_dir:
+  "/opt/molyanov-ai-dev"`; back-compat aliases kept for the legacy
+  `molyanov_skills_*` variable names that the template files reference.
+- `roles/molyanov/tasks/main.yml`: clone to `/opt/molyanov-ai-dev`, then
+  symlink `<install_dir>/skills` to
+  `~/.claude/skills/molyanov-ai-dev` so Claude Code discovers the bundle.
+  Verification asserts the destination is a symlink pointing at the install
+  dir's `skills/` (rather than a regular directory).
+- `roles/molyanov/README.md`: clarified the new symlink-based install
+  layout.
+
+### Constraints honoured
+
+- `fabric/watchdog/tests/` and `fabric/workspace-manager/tests/` (the suites
+  that do not depend on the MCP server) still pass — confirmed via
+  `python3 -m pytest` (155 passed before and after the changes).
+- No tests touch the Mnemonic MCP hook templates directly, so the descope is
+  a pure feature-flag / no-op stub addition; no test regressions expected.
+- Cross-role contracts (kaneo Caddy import, T07 sanitizer import,
+  workspace-manager HTTP API) untouched.
+
