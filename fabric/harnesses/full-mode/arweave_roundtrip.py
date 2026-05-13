@@ -3,12 +3,16 @@ Arweave testnet round-trip test.
 
 Uploads attestation to Arweave testnet, waits for finalization,
 and verifies retrieval. In stub mode, mocks responses.
+
+CRITICAL: In full mode, RPC URL is validated to prevent mainnet submission.
 """
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Dict, Any
+from urllib.parse import urlparse
 
 HARNESS_DIR = Path(__file__).parent
 FIXTURES_DIR = HARNESS_DIR / "fixtures"
@@ -17,6 +21,32 @@ STUB_AR_TX = FIXTURES_DIR / "stub-arweave-tx.json"
 MNEMONIC_MODE = os.getenv("MNEMONIC_MODE", "stub")
 ARWEAVE_RPC_URL = os.getenv("ARWEAVE_RPC_URL", "http://localhost:1984")
 FINALIZATION_TIMEOUT = 60
+FINALIZATION_SLEEP_SECONDS = 1
+
+# Arweave testnet allowlist — prevents accidental mainnet submission
+ALLOWED_ARWEAVE_HOSTS = {
+    "testnet.arweave.net",
+    "localhost",
+    "127.0.0.1",
+}
+
+
+def validate_rpc_url(url: str, mode: str) -> None:
+    """
+    Validate RPC URL against testnet allowlist in full mode.
+    Raises RuntimeError if URL points to mainnet or unknown host.
+    """
+    if mode != "full":
+        return
+
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+
+    if host not in ALLOWED_ARWEAVE_HOSTS:
+        raise RuntimeError(
+            f"SECURITY: Refusing non-testnet Arweave RPC URL: {host}. "
+            f"Allowed hosts: {ALLOWED_ARWEAVE_HOSTS}"
+        )
 
 
 def load_stub_ar_tx() -> Dict[str, Any]:
@@ -68,23 +98,36 @@ def upload_to_arweave(attestation_data: bytes) -> str:
 
 def wait_for_finalization(tx_id: str) -> bool:
     """
-    Poll Arweave for transaction finalization.
+    Poll Arweave for transaction finalization with timeout.
+    Sleeps between attempts to avoid rate-limiting.
     In stub mode, returns True immediately.
     """
     if MNEMONIC_MODE == "full":
         try:
             import requests
 
+            deadline = time.monotonic() + (FINALIZATION_TIMEOUT * FINALIZATION_SLEEP_SECONDS)
+
             for attempt in range(FINALIZATION_TIMEOUT):
-                response = requests.get(f"{ARWEAVE_RPC_URL}/tx/{tx_id}")
+                if time.monotonic() > deadline:
+                    return False
+
+                response = requests.get(
+                    f"{ARWEAVE_RPC_URL}/tx/{tx_id}", timeout=30
+                )
                 if response.status_code == 200:
                     status = response.json()
                     if status.get("status") == 200:
                         return True
                     print(f"  Attempt {attempt+1}: status {status.get('status')}")
+
+                # Sleep before next attempt, unless this is the last iteration
+                if attempt < FINALIZATION_TIMEOUT - 1:
+                    time.sleep(FINALIZATION_SLEEP_SECONDS)
+
             return False
         except Exception as e:
-            print(f"Finalization check failed: {e}")
+            print(f"Finalization check failed: {type(e).__name__}")
             return False
     else:
         print(f"[STUB] Transaction finalized: {tx_id}")
@@ -93,19 +136,21 @@ def wait_for_finalization(tx_id: str) -> bool:
 
 def retrieve_from_arweave(tx_id: str) -> bytes:
     """
-    Retrieve attestation from Arweave.
+    Retrieve attestation from Arweave with timeout.
     """
     if MNEMONIC_MODE == "full":
         try:
             import requests
 
-            response = requests.get(f"{ARWEAVE_RPC_URL}/tx/{tx_id}/data")
+            response = requests.get(
+                f"{ARWEAVE_RPC_URL}/tx/{tx_id}/data", timeout=30
+            )
             if response.status_code == 200:
                 return response.content
             else:
                 raise RuntimeError(f"Retrieval failed: {response.status_code}")
         except Exception as e:
-            raise RuntimeError(f"Failed to retrieve from Arweave: {e}")
+            raise RuntimeError(f"Failed to retrieve from Arweave: {type(e).__name__}")
     else:
         return json.dumps(
             {"version": 1, "claim": "test-attestation", "timestamp": 1234567890}
@@ -115,6 +160,13 @@ def retrieve_from_arweave(tx_id: str) -> bytes:
 def main():
     """Execute Arweave round-trip test."""
     print(f"Starting Arweave round-trip (mode={MNEMONIC_MODE})...")
+
+    # Validate RPC URL before proceeding
+    try:
+        validate_rpc_url(ARWEAVE_RPC_URL, MNEMONIC_MODE)
+    except RuntimeError as e:
+        print(f"RPC URL validation failed: {e}")
+        raise
 
     attestation = {"version": 1, "claim": "test-attestation", "timestamp": 1234567890}
 

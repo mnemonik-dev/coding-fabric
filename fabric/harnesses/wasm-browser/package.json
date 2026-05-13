@@ -8,10 +8,10 @@
     "test:headed": "playwright test --headed"
   },
   "devDependencies": {
-    "@playwright/test": "^1.40.0",
-    "typescript": "^5.0.0"
+    "@playwright/test": "1.40.0",
+    "typescript": "5.0.1"
   },
   "dependencies": {
-    "wasm-bindgen": "^0.2"
+    "wasm-bindgen": "0.2.92"
   }
 }

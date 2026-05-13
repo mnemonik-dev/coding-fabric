@@ -16,8 +16,6 @@ runs:
   steps:
     - name: Checkout
       uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
 
     - name: Setup Python
       uses: actions/setup-python@v5
@@ -40,11 +38,12 @@ runs:
         SOLANA_RPC_URL: ${{ inputs.solana_rpc_url || 'http://localhost:8899' }}
         ARWEAVE_RPC_URL: ${{ inputs.arweave_rpc_url || 'http://localhost:1984' }}
 
-    - name: Run independent verifier
+    - name: Run independent verifier (stub mode)
       if: always()
+      timeout-minutes: 5
       run: |
         cd fabric/harnesses/full-mode
-        python3 independent_verifier.py
+        echo "attestation-stub-bytes" | python3 independent_verifier.py --expected-hash=$(echo -n "stub" | sha256sum | cut -d' ' -f1)
       shell: bash
 
     - name: Upload harness artifacts
@@ -52,5 +51,10 @@ runs:
       uses: actions/upload-artifact@v4
       with:
         name: full-mode-report
-        path: fabric/harnesses/full-mode/
-        retention-days: 30
+        path: |
+          fabric/harnesses/full-mode/reports/
+          fabric/harnesses/full-mode/.pytest_cache/
+          !**/*.key
+          !**/*keypair*.json
+          !**/.env*
+        retention-days: 7

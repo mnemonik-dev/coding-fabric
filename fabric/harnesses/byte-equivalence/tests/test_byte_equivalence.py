@@ -1,7 +1,9 @@
+import hashlib
 import json
 import os
 import subprocess
 import sys
+import pytest
 from pathlib import Path
 
 HARNESS_DIR = Path(__file__).parent.parent
@@ -43,16 +45,14 @@ def serialize_with_ts(data):
 
 
 def serialize_with_wasm(data):
+    """Load and invoke WASM serializer from pkg directory."""
     try:
-        import importlib.util
-
         wasm_module_path = HARNESS_DIR / "wasm" / "pkg" / "mnemonic_serializer_wasm.js"
         if not wasm_module_path.exists():
             return None
 
-        spec = importlib.util.spec_from_file_location(
-            "wasm_module", wasm_module_path
-        )
+        # WASM would be loaded and called here; currently a stub.
+        # Real implementation: load WASM module, invoke serialize(), return bytes.
         return None
     except Exception:
         return None
@@ -73,18 +73,20 @@ def test_stub_fixture_valid():
 def test_rust_serializer_basic():
     data = load_fixture(STUB_FIXTURE)
     result = serialize_with_rust(data)
-    if result:
-        assert isinstance(result, str)
-        assert len(result) > 0
-        assert all(c in "0123456789abcdef" for c in result.lower())
+    if result is None:
+        pytest.skip("rust serializer not built")
+    assert isinstance(result, str)
+    assert len(result) > 0
+    assert all(c in "0123456789abcdef" for c in result.lower())
 
 
 def test_ts_serializer_basic():
     data = load_fixture(STUB_FIXTURE)
     result = serialize_with_ts(data)
-    if result:
-        assert isinstance(result, str)
-        assert len(result) > 0
+    if result is None:
+        pytest.skip("typescript serializer not built")
+    assert isinstance(result, str)
+    assert len(result) > 0
 
 
 def test_byte_equivalence_rust_ts():
@@ -92,21 +94,35 @@ def test_byte_equivalence_rust_ts():
     rust_output = serialize_with_rust(data)
     ts_output = serialize_with_ts(data)
 
-    if rust_output and ts_output:
-        assert (
-            rust_output == ts_output
-        ), f"Rust ({rust_output}) != TS ({ts_output})"
+    if rust_output is None:
+        pytest.skip("rust serializer not built")
+    if ts_output is None:
+        pytest.skip("typescript serializer not built")
+
+    assert (
+        rust_output == ts_output
+    ), f"Rust ({rust_output}) != TS ({ts_output})"
 
 
 def test_fixture_mutation_detection():
+    """
+    Verify that a single-byte mutation in the fixture produces a different hash.
+    Uses deterministic SHA256 instead of Python's non-deterministic hash().
+    """
     original = load_fixture(STUB_FIXTURE)
     mutated = original.copy()
     mutated["nonce"] = 43
 
-    original_hash = hash(json.dumps(original))
-    mutated_hash = hash(json.dumps(mutated))
+    original_bytes = json.dumps(original, sort_keys=True).encode("utf-8")
+    mutated_bytes = json.dumps(mutated, sort_keys=True).encode("utf-8")
 
-    assert original_hash != mutated_hash, "Fixture mutation not detectable"
+    original_hash = hashlib.sha256(original_bytes).hexdigest()
+    mutated_hash = hashlib.sha256(mutated_bytes).hexdigest()
+
+    assert original_hash != mutated_hash, (
+        "Fixture mutation not detectable: "
+        f"original hash {original_hash} == mutated hash {mutated_hash}"
+    )
 
 
 if __name__ == "__main__":

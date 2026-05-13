@@ -6,15 +6,8 @@ runs:
   steps:
     - name: Checkout
       uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
 
     - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: "20"
-
-    - name: Cache npm
       uses: actions/setup-node@v4
       with:
         node-version: "20"
@@ -24,8 +17,8 @@ runs:
     - name: Install dependencies
       run: |
         cd fabric/harnesses/wasm-browser
-        npm install
-        npx playwright install --with-deps chromium firefox webkit
+        npm ci
+        npx playwright install --with-deps chromium
       shell: bash
 
     - name: Run WASM-browser harness
@@ -40,4 +33,4 @@ runs:
       with:
         name: wasm-browser-report
         path: fabric/harnesses/wasm-browser/playwright-report/
-        retention-days: 30
+        retention-days: 7

@@ -1,101 +1,103 @@
 """
 Independent verifier binary.
 
-Reconstructs full attestation from on-chain hashes.
-Can be invoked as subprocess from devnet/arweave tests.
+Performs actual independent verification by:
+1. Reading attestation bytes from stdin or --attestation-file
+2. Computing canonical hash (SHA256)
+3. Comparing against --expected-hash
+4. Reporting pass/fail via exit code
+
+This verifier runs as a subprocess and maintains a separate trust boundary
+from the main signing/submission harness.
 
 Usage:
-  python3 independent_verifier.py <solana_tx_sig> <arweave_tx_id>
+  python3 independent_verifier.py --attestation-file=<file> --expected-hash=<hex>
+  OR
+  cat attestation.cbor | python3 independent_verifier.py --expected-hash=<hex>
 """
 
+import hashlib
 import json
 import sys
 from pathlib import Path
-from typing import Dict, Any
-
-HARNESS_DIR = Path(__file__).parent
+from typing import Optional
 
 
-def verify_solana_attestation(tx_sig: str) -> Dict[str, Any]:
+def compute_canonical_hash(data: bytes) -> str:
     """
-    Fetch and verify attestation from Solana transaction.
-    Returns reconstructed attestation object.
+    Compute SHA256 hash of attestation bytes.
+    Returns hex string.
     """
-    print(f"[Verifier] Fetching Solana tx: {tx_sig}")
-
-    stub_result = {
-        "signature": tx_sig,
-        "block": 123456,
-        "timestamp": 1234567890,
-        "attestation": {"version": 1, "claim": "verified-from-chain"},
-    }
-
-    return stub_result
+    return hashlib.sha256(data).hexdigest()
 
 
-def verify_arweave_attestation(tx_id: str) -> Dict[str, Any]:
+def verify_attestation(
+    attestation_bytes: bytes, expected_hash: str
+) -> bool:
     """
-    Fetch and verify attestation from Arweave transaction.
-    Returns reconstructed attestation object.
+    Verify that attestation bytes hash to expected value.
+    Returns True if hashes match.
     """
-    print(f"[Verifier] Fetching Arweave tx: {tx_id}")
+    computed = compute_canonical_hash(attestation_bytes)
 
-    stub_result = {
-        "transaction_id": tx_id,
-        "finalized": True,
-        "data": {"version": 1, "claim": "verified-from-ar"},
-    }
+    print(f"[Verifier] Attestation size: {len(attestation_bytes)} bytes")
+    print(f"[Verifier] Computed hash:  {computed}")
+    print(f"[Verifier] Expected hash:  {expected_hash}")
 
-    return stub_result
-
-
-def cross_verify(solana_result: Dict[str, Any], arweave_result: Dict[str, Any]) -> bool:
-    """
-    Cross-verify attestations from both chains.
-    Returns True if they match.
-    """
-    print("[Verifier] Cross-verifying...")
-
-    sol_att = solana_result.get("attestation", {})
-    ar_data = arweave_result.get("data", {})
-
-    if sol_att.get("version") != ar_data.get("version"):
-        print("  WARNING: Version mismatch")
+    if computed == expected_hash:
+        print("[Verifier] PASS: Attestation hash matches expected")
+        return True
+    else:
+        print("[Verifier] FAIL: Attestation hash mismatch")
         return False
 
-    print("  OK: Attestations match across chains")
-    return True
 
-
-def main(solana_tx: str = None, arweave_tx: str = None) -> int:
+def main() -> int:
     """
     Main verification routine.
+    Parses command-line args, reads attestation, verifies hash.
     Returns 0 on success, 1 on failure.
     """
-    print("[Verifier] Starting independent verification...")
+    attestation_file: Optional[str] = None
+    expected_hash: Optional[str] = None
 
+    # Parse command-line arguments
+    for arg in sys.argv[1:]:
+        if arg.startswith("--attestation-file="):
+            attestation_file = arg.split("=", 1)[1]
+        elif arg.startswith("--expected-hash="):
+            expected_hash = arg.split("=", 1)[1]
+
+    if not expected_hash:
+        print("[Verifier] ERROR: --expected-hash=<hex> is required")
+        return 1
+
+    # Read attestation bytes
     try:
-        solana_result = verify_solana_attestation(solana_tx or "stub-sig")
-        print(f"[Verifier] Solana result: {solana_result}")
+        if attestation_file:
+            with open(attestation_file, "rb") as f:
+                attestation_bytes = f.read()
+            print(f"[Verifier] Read {len(attestation_bytes)} bytes from {attestation_file}")
+        else:
+            # Read from stdin
+            attestation_bytes = sys.stdin.buffer.read() if hasattr(sys.stdin, "buffer") else sys.stdin.read().encode()
+            print(f"[Verifier] Read {len(attestation_bytes)} bytes from stdin")
 
-        arweave_result = verify_arweave_attestation(arweave_tx or "stub-tx-id")
-        print(f"[Verifier] Arweave result: {arweave_result}")
+        if not attestation_bytes:
+            print("[Verifier] ERROR: No attestation data provided")
+            return 1
 
-        if cross_verify(solana_result, arweave_result):
-            print("[Verifier] PASS: Independent verification succeeded")
+        # Verify hash
+        if verify_attestation(attestation_bytes, expected_hash):
             return 0
         else:
-            print("[Verifier] FAIL: Attestations do not match")
             return 1
 
     except Exception as e:
-        print(f"[Verifier] ERROR: {e}")
+        print(f"[Verifier] ERROR: {type(e).__name__}: {str(e)[:100]}")
         return 1
 
 
 if __name__ == "__main__":
-    solana_arg = sys.argv[1] if len(sys.argv) > 1 else None
-    arweave_arg = sys.argv[2] if len(sys.argv) > 2 else None
-
-    exit_code = main(solana_arg, arweave_arg)
+    exit_code = main()
     sys.exit(exit_code)

@@ -91,39 +91,55 @@ async def test_arweave_roundtrip_stub():
     assert len(retrieved) > 0
 
 
-@pytest.mark.asyncio
-async def test_independent_verifier_stub():
-    """Test independent verifier with stub data."""
-    import sys
+def test_independent_verifier_subprocess():
+    """Test independent verifier as subprocess with real hash verification."""
+    import subprocess
+    import hashlib
 
-    sys.path.insert(0, str(HARNESS_DIR))
-    from independent_verifier import verify_solana_attestation, cross_verify
+    # Test attestation data
+    attestation_data = b'{"version": 1, "claim": "test-attestation"}'
+    expected_hash = hashlib.sha256(attestation_data).hexdigest()
 
-    sol_result = verify_solana_attestation("stub-sig")
-    assert "signature" in sol_result
-    assert "attestation" in sol_result
+    # Run verifier as subprocess (correct approach)
+    result = subprocess.run(
+        [
+            "python3",
+            str(HARNESS_DIR / "independent_verifier.py"),
+            f"--attestation-file=/dev/stdin",
+            f"--expected-hash={expected_hash}",
+        ],
+        input=attestation_data,
+        capture_output=True,
+        text=False,
+    )
 
-    ar_result = {
-        "transaction_id": "stub-id",
-        "data": {"version": 1, "claim": "verified-from-ar"},
-    }
-
-    match = cross_verify(sol_result, ar_result)
-    assert isinstance(match, bool)
+    # Verify exit code 0 on matching hash
+    assert result.returncode == 0, f"Verifier failed: {result.stderr.decode()}"
+    assert b"PASS" in result.stdout
 
 
 def test_fixture_mutation_detection():
-    """Verify that mutating stub fixtures causes detection."""
+    """
+    Verify that mutating stub fixtures causes hash change.
+    Uses deterministic SHA256 hash, not Python's non-deterministic hash().
+    """
+    import hashlib
+
     with open(HARNESS_DIR / "fixtures" / "stub-solana-tx.json") as f:
         original = json.load(f)
 
     mutated = original.copy()
     mutated["slot"] = 999999
 
-    original_sig = original["signature"]
-    mutated_sig = mutated["signature"]
+    original_bytes = json.dumps(original, sort_keys=True).encode("utf-8")
+    mutated_bytes = json.dumps(mutated, sort_keys=True).encode("utf-8")
 
-    assert original_sig == mutated_sig
+    original_hash = hashlib.sha256(original_bytes).hexdigest()
+    mutated_hash = hashlib.sha256(mutated_bytes).hexdigest()
+
+    assert original_hash != mutated_hash, (
+        f"Mutation not detected: {original_hash} == {mutated_hash}"
+    )
     assert original["slot"] != mutated["slot"]
 
 

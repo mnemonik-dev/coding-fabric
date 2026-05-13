@@ -1,0 +1,8 @@
+/Users/syi/src/sessions/coding-fabric/fabric/harnesses/byte-equivalence/rust/target/release/deps/unicode_ident-2db9c0eb0bc0ee2e.d: /Users/syi/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-ident-1.0.24/src/lib.rs /Users/syi/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-ident-1.0.24/src/tables.rs
+
+/Users/syi/src/sessions/coding-fabric/fabric/harnesses/byte-equivalence/rust/target/release/deps/libunicode_ident-2db9c0eb0bc0ee2e.rlib: /Users/syi/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-ident-1.0.24/src/lib.rs /Users/syi/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-ident-1.0.24/src/tables.rs
+
+/Users/syi/src/sessions/coding-fabric/fabric/harnesses/byte-equivalence/rust/target/release/deps/libunicode_ident-2db9c0eb0bc0ee2e.rmeta: /Users/syi/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-ident-1.0.24/src/lib.rs /Users/syi/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-ident-1.0.24/src/tables.rs
+
+/Users/syi/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-ident-1.0.24/src/lib.rs:
+/Users/syi/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-ident-1.0.24/src/tables.rs:

@@ -4,11 +4,13 @@ all: test
 
 install:
 	@echo "Installing Playwright dependencies..."
-	npm install --silent 2>&1 | head -10
+	npm ci 2>&1 | head -10
 
 build: install
 	@echo "Building WASM bindings..."
 	@if [ -d "wasm" ]; then cd wasm && npm run build 2>&1 | head -10; fi
+	@echo "Installing Playwright browsers..."
+	npx playwright install --with-deps chromium 2>&1 | head -5
 
 test: build
 	@echo "Running WASM browser tests..."

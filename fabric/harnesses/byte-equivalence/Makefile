@@ -6,7 +6,7 @@ build: build-rust build-wasm build-ts
 
 build-rust:
 	@echo "Building Rust serializer..."
-	cd rust && cargo build --release 2>&1 | head -20
+	cd rust && cargo build --release --locked 2>&1 | head -20
 
 build-wasm:
 	@echo "Building WASM via wasm-pack..."
@@ -14,8 +14,8 @@ build-wasm:
 
 build-ts:
 	@echo "Building TypeScript serializer..."
-	cd ts && npm install --silent 2>&1 | head -10
-	cd ts && npm run build --silent 2>&1 | head -10
+	cd ts && npm ci 2>&1 | head -10
+	cd ts && npm run build 2>&1 | head -10
 
 test: build
 	@echo "Running byte-equivalence tests..."
