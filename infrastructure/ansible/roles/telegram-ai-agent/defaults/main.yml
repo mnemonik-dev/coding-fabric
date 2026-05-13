@@ -1,11 +1,11 @@
 ---
-# Upstream pin configuration
-# Defaults to mnemonic-org fork during PR-pending phase; switch to upstream after PR merge
-telegram_ai_agent_repo: "https://github.com/mnemonic-org/telegram-ai-agent.git"
-# OPERATOR ACTION: Replace v0.0.0-mnemonic.1 with actual commit SHA from mnemonic-org/telegram-ai-agent
-# containing cwd:DYNAMIC patch from feature mnemonic-tg-bridge before first deploy.
-# Failing fast on placeholder is better than silent drift.
-telegram_ai_agent_pin: "v0.0.0-mnemonic.1"
+# Fork repo (own-the-fork strategy — see work/mnemonic-tg-bridge/user-spec.md).
+# Source of truth: mnemonik-dev/telegram-ai-agent. Pavel-molyanov upstream is a
+# read-only sync source for periodic bug-fix rebase.
+telegram_ai_agent_repo: "https://github.com/mnemonik-dev/telegram-ai-agent.git"
+# Pinned release tag: v0.1.0+mnemonik.1 includes the cwd:DYNAMIC HTTP resolver
+# feature (5c82583 → 1ceaccb, audit-remediated, 72 tests green).
+telegram_ai_agent_pin: "v0.1.0+mnemonik.1"
 
 # Installation paths
 telegram_ai_agent_home: "/opt/telegram-ai-agent"
