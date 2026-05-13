@@ -1,0 +1,43 @@
+name: Byte-Equivalence Harness
+description: "Verify CBOR serialization byte-equivalence across Rust/TS/WASM"
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: wasm32-unknown-unknown
+
+    - name: Install wasm-pack
+      run: curl https://rustwasm.org/wasm-pack/installer/init.sh -sSf | sh
+      shell: bash
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: "20"
+
+    - name: Cache Rust
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: fabric/harnesses/byte-equivalence/rust
+
+    - name: Run byte-equivalence harness
+      run: |
+        cd fabric/harnesses/byte-equivalence
+        make verify
+      shell: bash
+
+    - name: Upload harness report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: byte-equivalence-report
+        path: fabric/harnesses/byte-equivalence/
+        retention-days: 30

@@ -1,0 +1,43 @@
+name: WASM-Browser Harness
+description: "Verify WASM bindings in browser environment via Playwright"
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: "20"
+
+    - name: Cache npm
+      uses: actions/setup-node@v4
+      with:
+        node-version: "20"
+        cache: "npm"
+        cache-dependency-path: fabric/harnesses/wasm-browser/package-lock.json
+
+    - name: Install dependencies
+      run: |
+        cd fabric/harnesses/wasm-browser
+        npm install
+        npx playwright install --with-deps chromium firefox webkit
+      shell: bash
+
+    - name: Run WASM-browser harness
+      run: |
+        cd fabric/harnesses/wasm-browser
+        make verify
+      shell: bash
+
+    - name: Upload test report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: wasm-browser-report
+        path: fabric/harnesses/wasm-browser/playwright-report/
+        retention-days: 30

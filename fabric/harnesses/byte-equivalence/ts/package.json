@@ -1,0 +1,21 @@
+{
+  "name": "mnemonic-serializer-ts",
+  "version": "0.1.0",
+  "description": "TypeScript CBOR serializer for byte-equivalence testing",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest",
+    "serialize": "node dist/serializer.js"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/node": "^20.0.0",
+    "jest": "^29.0.0",
+    "@types/jest": "^29.0.0",
+    "ts-jest": "^29.0.0"
+  },
+  "dependencies": {
+    "cbor": "^9.0.0"
+  }
+}

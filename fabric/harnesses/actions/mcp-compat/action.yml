@@ -1,0 +1,36 @@
+name: MCP-Compatibility Harness
+description: "Validate MCP client compatibility against golden traces"
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+        cache: "pip"
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pytest pytest-asyncio
+      shell: bash
+
+    - name: Run MCP-compat harness
+      run: |
+        cd fabric/harnesses/mcp-compat
+        make verify
+      shell: bash
+
+    - name: Upload harness report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: mcp-compat-report
+        path: fabric/harnesses/mcp-compat/
+        retention-days: 30
