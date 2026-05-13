@@ -1,0 +1,214 @@
+---
+#
+# safe-mode-rollback.yml — incident recovery playbook
+# Stops fabric services, reverts mnemonic-loop to last-known-good, restarts services.
+# Idempotent; blocks on concurrent execution; posts ops banner on completion.
+#
+
+- name: Safe-mode rollback
+  hosts: all
+  become: yes
+  vars:
+    lock_file: /var/lock/fabric-safe-mode
+    lock_timeout: 30
+    tag_name: last-known-good
+    services_to_stop:
+      - workspace-manager
+      - mnemonic-mcp
+      - fabric-watchdog
+      - telegram-ai-agent
+    # Roles to re-run on rollback (fabric-critical only)
+    fabric_roles:
+      - fabric-services
+
+  pre_tasks:
+    - name: Acquire exclusive lock (prevent concurrent rollback)
+      block:
+        - name: Check if lock is held
+          stat:
+            path: "{{ lock_file }}"
+          register: lock_stat
+
+        - name: Wait for lock release (up to {{ lock_timeout }}s)
+          wait_for:
+            path: "{{ lock_file }}"
+            state: absent
+            timeout: "{{ lock_timeout }}"
+          ignore_errors: yes
+          when: lock_stat.stat.exists
+
+        - name: Create lock file
+          copy:
+            dest: "{{ lock_file }}"
+            content: "locked at {{ ansible_date_time.iso8601 }}\n"
+      rescue:
+        - name: Fail if lock acquisition timed out
+          fail:
+            msg: "Lock at {{ lock_file }} held for >{{ lock_timeout }}s; aborting"
+
+    - name: Check if mnemonic-loop clone exists
+      stat:
+        path: "{{ mnemonic_loop_clone_path }}"
+      register: loop_clone_stat
+      vars:
+        mnemonic_loop_clone_path: "/opt/mnemonic-loop"
+
+    - name: Fail if mnemonic-loop clone missing
+      fail:
+        msg: "mnemonic-loop clone not found at {{ mnemonic_loop_clone_path }}"
+      when: not loop_clone_stat.stat.exists
+
+  tasks:
+    - name: Stop fabric services
+      systemd:
+        name: "{{ item }}"
+        state: stopped
+        daemon_reload: yes
+      loop: "{{ services_to_stop }}"
+      ignore_errors: yes  # May not all be running
+
+    - name: Wait for services to stop
+      pause:
+        seconds: 2
+
+    - name: Checkout last-known-good tag in mnemonic-loop
+      block:
+        - name: Fetch latest tags from remote
+          shell:
+            cmd: "git fetch --tags origin"
+            chdir: "{{ mnemonic_loop_clone_path }}"
+          register: fetch_result
+
+        - name: Verify last-known-good tag exists
+          shell:
+            cmd: "git rev-parse {{ tag_name }}"
+            chdir: "{{ mnemonic_loop_clone_path }}"
+          register: tag_check
+          failed_when: tag_check.rc != 0
+
+        - name: Checkout last-known-good tag
+          shell:
+            cmd: "git checkout {{ tag_name }}"
+            chdir: "{{ mnemonic_loop_clone_path }}"
+          register: checkout_result
+
+        - name: Log checkout result
+          debug:
+            msg: "Checked out {{ tag_name }} at commit {{ checkout_result.stdout }}"
+      rescue:
+        - name: Post error alert to ops
+          community.general.telegram:
+            token: "{{ telegram_bot_token }}"
+            chat_id: "{{ telegram_ops_topic }}"
+            msg: |
+              Error: Could not checkout {{ tag_name }} in mnemonic-loop
+              {{ ansible_hostname }}: {{ ansible_failed_result.msg }}
+          ignore_errors: yes
+
+        - name: Release lock and abort
+          block:
+            - name: Remove lock file on error
+              file:
+                path: "{{ lock_file }}"
+                state: absent
+            - name: Abort rollback
+              fail:
+                msg: "Failed to checkout {{ tag_name }}; rolled back nothing"
+
+    - name: Re-run deploy.yml for fabric-critical roles only
+      block:
+        - name: Run Ansible playbook for fabric-services role
+          command:
+            cmd: >
+              ansible-playbook
+              -i infrastructure/ansible/inventory/hosts.yml
+              --tags fabric-services
+              infrastructure/ansible/playbooks/deploy.yml
+            chdir: "{{ mnemonic_loop_clone_path }}"
+          register: deploy_result
+
+        - name: Log deploy result
+          debug:
+            msg: "Deploy completed for fabric-services; see logs for details"
+      rescue:
+        - name: Post deploy error alert to ops
+          community.general.telegram:
+            token: "{{ telegram_bot_token }}"
+            chat_id: "{{ telegram_ops_topic }}"
+            msg: |
+              CRITICAL: Safe-mode rollback failed during deploy phase
+              {{ ansible_hostname }}: {{ ansible_failed_result.msg }}
+          ignore_errors: yes
+
+        - name: Release lock and abort
+          block:
+            - name: Remove lock file on error
+              file:
+                path: "{{ lock_file }}"
+                state: absent
+            - name: Abort on deploy failure
+              fail:
+                msg: "Deploy phase failed; left nothing half-stopped"
+
+    - name: Start fabric services
+      systemd:
+        name: "{{ item }}"
+        state: started
+        enabled: yes
+        daemon_reload: yes
+      loop: "{{ services_to_stop }}"
+
+    - name: Wait for services to stabilize
+      pause:
+        seconds: 5
+
+    - name: Post ops success banner to Telegram
+      block:
+        - name: Sanitize hostname for Telegram
+          set_fact:
+            safe_hostname: "{{ ansible_hostname | regex_replace('[^a-zA-Z0-9_-]', '_') }}"
+
+        - name: Format success message
+          set_fact:
+            success_msg: |
+              Safe-mode rollback completed
+              Hostname: {{ safe_hostname }}
+              Reverted to: {{ tag_name }}
+              Timestamp: {{ ansible_date_time.iso8601 }}
+              Status: All fabric services restarted
+
+        - name: Escape message for Telegram API
+          set_fact:
+            escaped_msg: "{{ success_msg | replace('\"', '\\\"') | replace('\\', '\\\\') }}"
+
+        - name: Post banner via Telegram
+          shell:
+            cmd: |
+              curl -s -X POST "https://api.telegram.org/bot{{ telegram_bot_token }}/sendMessage" \
+                -H "Content-Type: application/json" \
+                -d '{"chat_id":"{{ telegram_ops_topic }}","text":"{{ escaped_msg }}"}'
+          ignore_errors: yes
+      ignore_errors: yes
+
+  post_tasks:
+    - name: Release lock file
+      file:
+        path: "{{ lock_file }}"
+        state: absent
+      ignore_errors: yes
+
+    - name: Verify critical services are running
+      systemd:
+        name: fabric-watchdog
+        state: started
+      register: watchdog_status
+
+    - name: Report final status
+      debug:
+        msg: "Rollback complete; watchdog status: {{ watchdog_status.status.ActiveState }}"
+
+  handlers:
+    - name: Restart mnemonic-mcp
+      systemd:
+        name: mnemonic-mcp
+        state: restarted

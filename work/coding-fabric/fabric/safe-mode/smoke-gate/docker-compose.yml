@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  workspace-manager:
+    image: ${FABRIC_IMAGE:-mnemonic-fabric-candidate:latest}
+    container_name: fabric-workspace-manager
+    environment:
+      SERVICE_NAME: workspace-manager
+      FABRIC_MODE: smoke-gate
+      LOG_LEVEL: INFO
+    ports:
+      - "8080:8080"
+    volumes:
+      - /tmp/fabric-smoke:/workspace
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    networks:
+      - fabric-net
+
+  mnemonic-mcp:
+    image: ${FABRIC_IMAGE:-mnemonic-fabric-candidate:latest}
+    container_name: fabric-mnemonic-mcp
+    environment:
+      SERVICE_NAME: mnemonic-mcp
+      FABRIC_MODE: smoke-gate
+      LOG_LEVEL: INFO
+    volumes:
+      - /tmp/fabric-smoke:/workspace
+    depends_on:
+      workspace-manager:
+        condition: service_healthy
+    networks:
+      - fabric-net
+
+  fabric-watchdog:
+    image: ${FABRIC_IMAGE:-mnemonic-fabric-candidate:latest}
+    container_name: fabric-watchdog
+    environment:
+      SERVICE_NAME: fabric-watchdog
+      FABRIC_MODE: smoke-gate
+      LOG_LEVEL: INFO
+    volumes:
+      - /tmp/fabric-smoke:/workspace
+    depends_on:
+      workspace-manager:
+        condition: service_healthy
+    networks:
+      - fabric-net
+
+networks:
+  fabric-net:
+    driver: bridge
+
+volumes:
+  fabric-smoke:
+    driver: local
