@@ -1,0 +1,121 @@
+{
+  "status": "changes_required",
+  "summary": {
+    "totalFindings": 11,
+    "critical": 3,
+    "major": 5,
+    "minor": 3
+  },
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "A08: Software and Data Integrity Failures",
+      "title": "wasm-pack installer fetched via unverified curl|sh pipe",
+      "description": "actions/byte-equivalence/action.yml installs wasm-pack via `curl https://rustwasm.org/wasm-pack/installer/init.sh -sSf | sh`. The installer is downloaded and executed as root in CI with no checksum/signature verification. A compromise of rustwasm.org, a MITM on the runner, or a DNS hijack lets attackers execute arbitrary code in the CI runner, which (depending on caller workflow permissions) can exfiltrate GITHUB_TOKEN, secrets, and push tampered conformance results that gate PR merges.",
+      "location": "fabric/harnesses/actions/byte-equivalence/action.yml:18",
+      "impact": "Full CI runner compromise; tampered build artifacts; secret exfiltration; ability to spoof conformance pass for malicious PRs since T16 dispatches this composite action as the merge gate.",
+      "recommendation": "Pin a specific wasm-pack release and verify SHA256. Example:\n```yaml\n- name: Install wasm-pack\n  run: |\n    curl -sSfL -o wasm-pack.tar.gz https://github.com/rustwasm/wasm-pack/releases/download/v0.12.1/wasm-pack-v0.12.1-x86_64-unknown-linux-musl.tar.gz\n    echo \"<expected_sha256>  wasm-pack.tar.gz\" | sha256sum -c -\n    tar -xzf wasm-pack.tar.gz --strip-components=1\n    sudo mv wasm-pack /usr/local/bin/\n  shell: bash\n```\nOr use a maintained pinned action like `jetli/wasm-pack-action@v0.4.0` (still pin by SHA, not tag).",
+      "cwe": "CWE-494"
+    },
+    {
+      "severity": "critical",
+      "category": "A04: Insecure Design",
+      "title": "Full-mode SOLANA_RPC_URL/ARWEAVE_RPC_URL accept arbitrary endpoints (no mainnet guard)",
+      "description": "devnet_roundtrip.py reads `SOLANA_RPC_URL` from env with no validation that it points to devnet/testnet. Same for `ARWEAVE_RPC_URL`. In `actions/full-mode/action.yml`, both URLs are passed straight from composite `inputs` to the harness. A caller workflow (or attacker-controlled PR if `pull_request_target` is ever used) can set `SOLANA_RPC_URL=https://api.mainnet-beta.solana.com` and the harness will happily try to submit real attestations using whatever keypair is configured for `SOLANA_KEYPAIR_PATH`. README explicitly says 'devnet/testnet' but the code does not enforce it.",
+      "location": "fabric/harnesses/full-mode/devnet_roundtrip.py:19, fabric/harnesses/full-mode/arweave_roundtrip.py:18, fabric/harnesses/actions/full-mode/action.yml:40-41",
+      "impact": "Accidental or malicious mainnet attestation submission spending real SOL or producing real on-chain artifacts attributed to the project keypair. Reputational damage and financial loss.",
+      "recommendation": "Validate URL against an allowlist before use:\n```python\nALLOWED_SOLANA_HOSTS = {'api.devnet.solana.com', 'api.testnet.solana.com', 'localhost', '127.0.0.1'}\nfrom urllib.parse import urlparse\nhost = urlparse(SOLANA_RPC_URL).hostname or ''\nif MNEMONIC_MODE == 'full' and host not in ALLOWED_SOLANA_HOSTS:\n    raise RuntimeError(f'Refusing non-devnet/testnet RPC: {host}')\n```\nApply the same check at composite-action level so the gate fails before any subprocess runs.",
+      "cwe": "CWE-20"
+    },
+    {
+      "severity": "critical",
+      "category": "A04: Insecure Design",
+      "title": "Independent verifier is not actually independent (shared process, shared state, no separate trust boundary)",
+      "description": "The task acceptance criterion calls for an 'independent_verifier' that crosses a trust boundary. In practice:\n1. tests/test_full_mode_stub.py imports `verify_solana_attestation` and `cross_verify` directly via `sys.path.insert(0, ...)` and calls them as in-process functions — no subprocess isolation, shared globals/imports, and any mocking of `requests`/`solana` performed by upstream tests bleeds in.\n2. actions/full-mode/action.yml invokes `python3 independent_verifier.py` with NO arguments — main() falls back to `'stub-sig'`/`'stub-tx-id'`, so the verifier never reads the real tx IDs produced by the previous round-trip step. It always returns success on stub literals.\n3. verify_solana_attestation/verify_arweave_attestation return hard-coded `stub_result` dicts containing `version: 1` regardless of input — so cross_verify will always pass for any inputs that share that version field.\nResult: the 'independent verification' acceptance gate is structurally incapable of catching a divergence between signer output and on-chain state. A malicious PR that breaks Solana/Arweave consensus would still see this gate pass.",
+      "location": "fabric/harnesses/full-mode/independent_verifier.py:19-49, fabric/harnesses/full-mode/tests/test_full_mode_stub.py:95-112, fabric/harnesses/actions/full-mode/action.yml:43-47",
+      "impact": "False sense of security; T17 conformance gate provides no real protection against schema/signature drift in full-mode PRs. Attestations that diverge from canonical form can ship to production.",
+      "recommendation": "Make the verifier a true separate-process boundary:\n1. Pass real tx IDs from the previous step via job outputs: `python3 independent_verifier.py \"$SOL_TX\" \"$AR_TX\"`.\n2. Have the verifier perform an independent RPC fetch (with its own deps, ideally its own venv) rather than re-using the in-process clients. Compare hash of fetched content against an expected hash captured during sign step.\n3. Make `cross_verify` strict: compare canonical CBOR/hash bytes, not just `version`.\n4. Tests should invoke the verifier as a subprocess (`subprocess.run([sys.executable, 'independent_verifier.py', ...], check=True)`) so the trust boundary is exercised the same way CI does.",
+      "cwe": "CWE-1188"
+    },
+    {
+      "severity": "major",
+      "category": "A05: Security Misconfiguration",
+      "title": "Composite actions upload entire harness directory as long-lived artifact",
+      "description": "All four actions/*/action.yml steps end with `actions/upload-artifact@v4` and `path: fabric/harnesses/<name>/` plus `retention-days: 30`. When full-mode runs in real mode, the harness directory may contain the Solana keypair file (if `SOLANA_KEYPAIR_PATH` points inside the harness), `.env` files, npm logs, pip caches, and pytest cache files. byte-equivalence uploads `rust/target/` (release binaries with debug symbols and any embedded build-time secrets) and `ts/node_modules/`. Artifacts are downloadable by anyone with read access to the repo for 30 days.",
+      "location": "fabric/harnesses/actions/byte-equivalence/action.yml:37-43, fabric/harnesses/actions/mcp-compat/action.yml:30-36, fabric/harnesses/actions/wasm-browser/action.yml:37-43, fabric/harnesses/actions/full-mode/action.yml:50-56",
+      "impact": "Credential leakage if keypair/env files end up in harness dir; very large artifacts inflate storage costs; old report retention extends exposure window for any leaked content.",
+      "recommendation": "Restrict to specific report sub-paths and exclude sensitive globs. Example for full-mode:\n```yaml\n- uses: actions/upload-artifact@v4\n  with:\n    name: full-mode-report\n    path: |\n      fabric/harnesses/full-mode/reports/\n      !**/*.key\n      !**/*keypair*.json\n      !**/.env*\n      !**/node_modules/**\n      !**/target/**\n    retention-days: 7\n```\nFor byte-equivalence, drop `node_modules` and `target/` via explicit excludes; for full-mode add hard-coded keypair exclusions.",
+      "cwe": "CWE-538"
+    },
+    {
+      "severity": "major",
+      "category": "A02: Cryptographic Failures",
+      "title": "Solana keypair loaded without path or permission validation",
+      "description": "devnet_roundtrip.py:45-48 reads `SOLANA_KEYPAIR_PATH` (default `~/.config/solana/id.json`), runs `Path(keypair_path).expanduser()`, and opens the file for reading with no:\n- check that the resolved path stays within an expected directory (no path-traversal guard);\n- check that file mode is 0600 (Solana CLI itself warns on world-readable keypairs);\n- check that the file is actually a 64-byte secret key array (a malformed/attacker-supplied file could cause solana-py to misbehave).\nAlso, the keypair is loaded inside the `sign_attestation` function which returns only the public key — the secret bytes remain in process memory longer than necessary with no scrubbing.",
+      "location": "fabric/harnesses/full-mode/devnet_roundtrip.py:45-49",
+      "impact": "If keypair path comes from an attacker-influenced env (e.g., a workflow set up by a malicious PR), reading arbitrary files via symlinks; world-readable keypair lingers undetected; secret material kept in memory.",
+      "recommendation": "Add validation:\n```python\nkp_path = Path(os.environ['SOLANA_KEYPAIR_PATH']).expanduser().resolve()\nst = kp_path.stat()\nif stat.S_IMODE(st.st_mode) & 0o077:\n    raise RuntimeError(f'Keypair {kp_path} has insecure permissions; chmod 600')\nwith open(kp_path, 'rb') as f:\n    secret = bytearray(f.read())\nkeypair = Keypair.from_secret_key(bytes(secret))\nfor i in range(len(secret)): secret[i] = 0  # best-effort scrub\n```\nAlso require the env var explicitly in full mode rather than silently defaulting to `~/.config/solana/id.json`.",
+      "cwe": "CWE-732"
+    },
+    {
+      "severity": "major",
+      "category": "A06: Vulnerable and Outdated Components",
+      "title": "Dependencies unpinned; npm install (not npm ci); pip install without hashes",
+      "description": "Multiple components allow non-deterministic dependency resolution:\n- byte-equivalence/ts/package.json: `cbor: ^9.0.0`, `typescript: ^5.0.0`, dev deps all caret-ranged. Makefile uses `npm install --silent` (not `npm ci`) so lockfile is not strictly enforced and security warnings are suppressed.\n- wasm-browser/package.json: `@playwright/test: ^1.40.0`, `wasm-bindgen: ^0.2` (caret). Makefile `npm install --silent`; action.yml `npm install` (still not ci).\n- All composite actions: `pip install pytest pytest-asyncio [requests]` with no version pin and no `--require-hashes`.\n- byte-equivalence/rust/Cargo.toml: `serde = 1.0`, `ciborium = 0.2`, `hex = 0.4` — these are minimum-version specs that resolve to latest compatible; OK because Cargo.lock is committed, but build-rust runs `cargo build --release` which respects lockfile only if `--locked` is passed (it isn't).\n- wasm-browser/action.yml: `npx playwright install --with-deps chromium firefox webkit` installs system packages with sudo and downloads browser binaries — large surface, no integrity check.",
+      "location": "fabric/harnesses/byte-equivalence/ts/package.json:11-21, fabric/harnesses/byte-equivalence/Makefile:9, fabric/harnesses/wasm-browser/package.json:11-17, fabric/harnesses/wasm-browser/Makefile:7, fabric/harnesses/actions/mcp-compat/action.yml:18-22, fabric/harnesses/actions/full-mode/action.yml:28-32, fabric/harnesses/actions/wasm-browser/action.yml:24-29",
+      "impact": "Supply-chain compromise of any transitive dep produces non-reproducible builds; conformance results become non-deterministic; CI run today and tomorrow can disagree on the same commit.",
+      "recommendation": "1. Replace `npm install` with `npm ci` everywhere; require `package-lock.json` in repo.\n2. Pin pip deps with hashes via a requirements file:\n```\npytest==8.3.3 --hash=sha256:...\npytest-asyncio==0.24.0 --hash=sha256:...\nrequests==2.32.3 --hash=sha256:...\n```\nand `pip install --require-hashes -r requirements.txt`.\n3. Pass `--locked` to `cargo build --release` so Cargo.lock is enforced.\n4. Drop `--silent` from build commands so npm audit findings surface.\n5. Pin Playwright browser version explicitly and run `npx playwright install` without `--with-deps` if not strictly needed (skip apt installs).",
+      "cwe": "CWE-1104"
+    },
+    {
+      "severity": "major",
+      "category": "A05: Security Misconfiguration",
+      "title": "Composite actions and webServer bind without permissions/network restrictions",
+      "description": "1. None of the four `action.yml` files declare `permissions:` — they inherit whatever the caller workflow grants. If the caller passes `permissions: write-all` or default contents:write, the harness steps (including the unpinned curl|sh, pip install, npm install, playwright install) execute with write tokens. Defense-in-depth would force `permissions: contents: read` at the composite step.\n2. wasm-browser/playwright.config.ts launches `npx http-server . -p 3000 -c-1` serving the entire harness directory — including `fixtures/`, `tests/`, `package.json`, and any artifacts written during the run. Bound to 0.0.0.0 by default in http-server. Anything written into the harness dir (golden traces, .env, keypair if mistakenly placed there) is reachable while the test runs.\n3. `reuseExistingServer: !process.env.CI` means in CI the test launches the server fresh, but in dev a stale server with mutated content can poison subsequent test runs.",
+      "location": "fabric/harnesses/actions/*/action.yml (all four), fabric/harnesses/wasm-browser/playwright.config.ts:32-37",
+      "impact": "Excess GitHub-Actions privilege if caller is sloppy; local-network exfil channel during browser test window; stale-server test pollution.",
+      "recommendation": "1. Add explicit minimum permissions to each composite step:\n```yaml\n# in caller workflow that invokes these composite actions:\npermissions:\n  contents: read\n```\nor inline at the job level. Document this requirement in each action's README.\n2. Bind http-server to localhost only: `command: \"npx http-server . -p 3000 -c-1 -a 127.0.0.1\"`.\n3. Serve only a sub-directory (`./public/`) instead of `.` so test source/fixtures aren't web-reachable.",
+      "cwe": "CWE-732"
+    },
+    {
+      "severity": "major",
+      "category": "A10: Server-Side Request Forgery (SSRF)",
+      "title": "Arweave/Solana RPC calls accept user-supplied URLs without scheme or host validation",
+      "description": "arweave_roundtrip.py performs `requests.post(f\"{ARWEAVE_RPC_URL}/tx\", ...)` and `requests.get(f\"{ARWEAVE_RPC_URL}/tx/{tx_id}\")` and `.../data` using a URL composed by string concatenation from `os.getenv('ARWEAVE_RPC_URL', ...)`. devnet_roundtrip.py does the same with `Client(SOLANA_RPC_URL)`. There is:\n- no scheme validation (an attacker setting `ARWEAVE_RPC_URL=file:///etc/passwd` or `http://169.254.169.254/...` is accepted);\n- no host allowlist (link-local / RFC1918 / cloud-metadata endpoints reachable from the runner);\n- `requests.get` calls on lines 79 and 102 have NO `timeout=` argument (only the POST on line 52 does), so a slow-loris server can hang CI indefinitely.",
+      "location": "fabric/harnesses/full-mode/arweave_roundtrip.py:52-58, fabric/harnesses/full-mode/arweave_roundtrip.py:79, fabric/harnesses/full-mode/arweave_roundtrip.py:102, fabric/harnesses/full-mode/devnet_roundtrip.py:69, fabric/harnesses/full-mode/devnet_roundtrip.py:90",
+      "impact": "SSRF to GitHub Actions metadata or internal cloud endpoints from runner; CI hang/DoS from missing timeouts; data exfil via attacker-controlled RPC URL receiving signed attestations.",
+      "recommendation": "Combine with the RPC allowlist from finding #2:\n```python\nfrom urllib.parse import urlparse\np = urlparse(ARWEAVE_RPC_URL)\nif p.scheme not in {'http', 'https'}:\n    raise RuntimeError(f'Bad scheme {p.scheme}')\nif p.hostname in {None, '', 'localhost'} and MNEMONIC_MODE == 'full':\n    raise RuntimeError('localhost not allowed in full mode')\n```\nAdd `timeout=30` to every `requests.get/post` call. Consider using a `Session` with a `HTTPAdapter` that has connect+read timeouts and disables redirects to non-allowlisted hosts.",
+      "cwe": "CWE-918"
+    },
+    {
+      "severity": "minor",
+      "category": "A05: Security Misconfiguration",
+      "title": "`actions/checkout@v4` with fetch-depth: 0 in every composite step",
+      "description": "All four composite actions check out the repo with `fetch-depth: 0` (full history). This is unnecessary for these harnesses (they only need the current tree) and increases the size of the workspace that downstream `upload-artifact` could accidentally include. It also slows runs and increases the attack window for any tampering between checkout and upload.",
+      "location": "fabric/harnesses/actions/*/action.yml:7-10 (all four)",
+      "impact": "Larger artifact uploads; slower CI; no functional need for full history.",
+      "recommendation": "Drop `fetch-depth: 0` (defaults to 1) unless a step actually needs git history. If history is needed for a future step, set the minimum required depth.",
+      "cwe": "CWE-1188"
+    },
+    {
+      "severity": "minor",
+      "category": "best-practice",
+      "title": "GitHub composite actions reference third-party actions by mutable tag",
+      "description": "Composite actions reference `actions/checkout@v4`, `actions/setup-python@v5`, `actions/setup-node@v4`, `actions/upload-artifact@v4`, `dtolnay/rust-toolchain@stable`, `Swatinem/rust-cache@v2`. All are mutable tags — the tag can be moved to a different commit at any time. GitHub recommends pinning third-party (and first-party) actions to full SHA-1 commit SHAs in security-sensitive workflows.",
+      "location": "fabric/harnesses/actions/byte-equivalence/action.yml:8,13,22,27,39, fabric/harnesses/actions/mcp-compat/action.yml:8,13,32, fabric/harnesses/actions/wasm-browser/action.yml:8,13,18,38, fabric/harnesses/actions/full-mode/action.yml:18,23,52",
+      "impact": "If any referenced action repo is compromised and a tag is moved, the harness executes attacker code with the caller workflow's token. Same risk class as finding #1, lower likelihood (Anthropic-style: tag-pin is widely accepted, SHA-pin is hardening).",
+      "recommendation": "Pin by SHA:\n```yaml\n- uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11  # v4.1.1\n```\nUse dependabot for action updates so SHAs are bumped deliberately. Enable repo setting 'Require actions to be created by GitHub or verified creators'.",
+      "cwe": "CWE-829"
+    },
+    {
+      "severity": "minor",
+      "category": "A09: Security Logging and Monitoring Failures",
+      "title": "Harnesses print stub data and error contents to stdout without redacting",
+      "description": "devnet_roundtrip.py prints health responses, signatures, and exception messages directly via `print(f\"   Tx: {tx_sig}\")` and `raise RuntimeError(f\"Failed to load keypair: {e}\")`. When run in `full` mode, exception strings from `solana-py` or `requests` may include URL credentials embedded in `ARWEAVE_RPC_URL` (e.g., `https://user:token@arweave.example/...`) or partial keypair bytes if a parse error includes the buffer. These prints land in the GitHub Actions log, which is retained and may be visible to fork contributors depending on repo settings.",
+      "location": "fabric/harnesses/full-mode/devnet_roundtrip.py:51,75,97,116, fabric/harnesses/full-mode/arweave_roundtrip.py:63,87,108",
+      "impact": "Accidental secret/PII disclosure in CI logs.",
+      "recommendation": "1. Sanitize errors before printing: `print(f'Failed to load keypair: {type(e).__name__}')` rather than `{e}`.\n2. Strip userinfo from any URL before logging: `urlparse(url)._replace(netloc=parsed.hostname).geturl()`.\n3. Use `::add-mask::` in GitHub Actions for any value derived from secrets so it is masked in subsequent log output.",
+      "cwe": "CWE-532"
+    }
+  ]
+}

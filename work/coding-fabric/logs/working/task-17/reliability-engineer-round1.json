@@ -1,0 +1,212 @@
+{
+  "review": "T17 Conformance Harness Reliability Review — Round 1",
+  "reviewer": "reliability-engineer",
+  "date": "2026-05-12",
+  "checks": [
+    {
+      "id": "C1",
+      "name": "Deterministic exit codes",
+      "status": "PARTIAL_FAIL",
+      "findings": [
+        {
+          "harness": "byte-equivalence",
+          "finding": "Makefile verify target delegates to pytest; pytest propagates non-zero exit on failure — PASS for normal pytest flow. However, serialize_with_rust and serialize_with_ts silently return None on subprocess failure; test_rust_serializer_basic and test_ts_serializer_basic gate the assertion with `if result:`, meaning a missing binary produces no assertion failure and the test PASSES with exit 0. This masks toolchain-build failures silently.",
+          "severity": "HIGH"
+        },
+        {
+          "harness": "full-mode",
+          "finding": "action.yml runs `python3 independent_verifier.py` as a composite step with `if: always()` but does NOT check the exit code of that step for overall job failure. The step's exit code propagates naturally for composite actions only when the step itself fails — here the verifier correctly uses sys.exit(), so exit propagation is intact. However, the Makefile `verify` target calls only `make test`, not `make verify-independent`, meaning the independent verifier is never invoked via `make verify`. The action.yml calls it directly as a separate step, which is the intended path — but that step has no `timeout-minutes:` limit.",
+          "severity": "MEDIUM"
+        },
+        {
+          "harness": "wasm-browser",
+          "finding": "Makefile verify pipes through `npx playwright test 2>&1`; the pipe does NOT consume the exit code — the `2>&1` redirect does not mask exit codes in bash. Playwright exits non-zero on failure, so this is acceptable. Exit codes appear deterministic.",
+          "severity": "INFO"
+        },
+        {
+          "harness": "mcp-compat",
+          "finding": "Makefile verify delegates to pytest. Exit code deterministic.",
+          "severity": "PASS"
+        }
+      ]
+    },
+    {
+      "id": "C2",
+      "name": "Mutation testing: single-byte fixture change causes loud failure",
+      "status": "FAIL",
+      "findings": [
+        {
+          "harness": "byte-equivalence",
+          "finding": "test_fixture_mutation_detection (test_byte_equivalence.py:101) mutates the in-memory copy of the fixture and asserts that Python's built-in hash() returns different values. Python hash() is non-deterministic across interpreter runs (PYTHONHASHSEED) and is not a cryptographic hash — this test proves nothing about byte-level determinism or serialization sensitivity. The test does not re-run the Rust/TS serializer against the mutated fixture and compare outputs. A byte change to the fixture file on disk would not be detected by this test at all.",
+          "severity": "CRITICAL"
+        },
+        {
+          "harness": "full-mode",
+          "finding": "test_fixture_mutation_detection (test_full_mode_stub.py:115) checks that `original_sig == mutated_sig` (i.e., the signature field is unchanged after mutating slot) — this assertion always passes since the signature is not derived from slot in stub mode. It does not actually verify that a mutated fixture causes downstream serialization or hash mismatch. The test provides false reassurance.",
+          "severity": "CRITICAL"
+        },
+        {
+          "harness": "wasm-browser",
+          "finding": "WASM fixture mutation detection (wasm-equivalence.spec.ts:53) compares JSON.stringify of two in-memory objects with different nonce values. This correctly detects the string inequality but the `hashes_differ` label is misleading — no actual hash is computed. More importantly, the test does not invoke any WASM serialization path; it exercises only JSON.stringify. A byte change to the fixture loaded from disk would not be tested.",
+          "severity": "HIGH"
+        },
+        {
+          "harness": "mcp-compat",
+          "finding": "test_trace_mutation_detection (test_mcp_compat.py:79) performs a deep-copy of the golden trace, mutates one field, and asserts inequality. This is an in-memory identity check, not a fixture-on-disk mutation test. A single byte change to golden/stub.jsonl that produces valid JSON would not be caught unless the byte change altered the `id` field tested here.",
+          "severity": "HIGH"
+        }
+      ]
+    },
+    {
+      "id": "C3",
+      "name": "Network-dependent harnesses: timeout enforcement and retry policy",
+      "status": "FAIL",
+      "findings": [
+        {
+          "harness": "full-mode (Solana devnet)",
+          "finding": "devnet_roundtrip.py confirm_transaction() iterates `for _ in range(CONFIRM_TIMEOUT)` (30 iterations) but there is NO sleep between attempts — this is a busy-poll loop that will exhaust 30 iterations in microseconds, not 30 seconds. There is also no timeout on the RPC client.get_signature_status() HTTP call itself. In full mode this will either fail instantly or hang indefinitely on a slow RPC.",
+          "severity": "CRITICAL"
+        },
+        {
+          "harness": "full-mode (Arweave)",
+          "finding": "arweave_roundtrip.py wait_for_finalization() has the same busy-poll problem (FINALIZATION_TIMEOUT=60 loop with no sleep). requests.get() uses no explicit timeout parameter in the polling loop, only the upload step has `timeout=30`. A slow/hanging node will block the harness indefinitely.",
+          "severity": "CRITICAL"
+        },
+        {
+          "harness": "full-mode (Arweave)",
+          "finding": "No retry policy with backoff on 429/503 responses. The loop increments attempt count but does not implement exponential or linear backoff on rate-limit or server errors.",
+          "severity": "HIGH"
+        },
+        {
+          "harness": "wasm-browser",
+          "finding": "WASM fetch is simulated via HTTP-server (http-server on :3000). No network calls to external services, so timeout enforcement is not required for stub mode. The playwright webServer timeout is 120 s — acceptable.",
+          "severity": "PASS"
+        },
+        {
+          "harness": "action.yml (full-mode)",
+          "finding": "No `timeout-minutes:` on any step in full-mode/action.yml. A hung RPC call could block the GitHub Actions runner indefinitely.",
+          "severity": "HIGH"
+        }
+      ]
+    },
+    {
+      "id": "C4",
+      "name": "Playwright: retry config and pinned browser version",
+      "status": "FAIL",
+      "findings": [
+        {
+          "harness": "wasm-browser",
+          "finding": "playwright.config.ts sets `retries: process.env.CI ? 2 : 0` — CI retry is present. Workers are serialized on CI (`workers: 1`). This is acceptable for flake reduction.",
+          "severity": "PASS"
+        },
+        {
+          "harness": "wasm-browser",
+          "finding": "package.json pins `@playwright/test` to `^1.40.0` (caret range). This allows automatic minor/patch upgrades that can silently change the bundled browser binaries (Chromium, Firefox, WebKit). The action.yml runs `npx playwright install --with-deps chromium firefox webkit` without specifying a version, meaning the installed browsers track whatever version ships with the resolved @playwright/test package. Browser version is NOT pinned.",
+          "severity": "HIGH"
+        },
+        {
+          "harness": "wasm-browser",
+          "finding": "No global `timeout:` set in playwright.config.ts — default Playwright test timeout is 30 s, which is reasonable but undeclared (implicit).",
+          "severity": "LOW"
+        }
+      ]
+    },
+    {
+      "id": "C5",
+      "name": "Solana devnet rate-limit handling: backoff in full-mode",
+      "status": "FAIL",
+      "findings": [
+        {
+          "harness": "full-mode",
+          "finding": "devnet_roundtrip.py has no HTTP 429 detection in any RPC call. confirm_transaction() and verify_on_devnet() use the solana-py Client which may raise exceptions on rate-limit but there is no retry-with-backoff wrapper. A single rate-limit response will either raise an unhandled exception (caught by the outer try/except and surfaced as RuntimeError) or return None/False immediately without retry.",
+          "severity": "HIGH"
+        },
+        {
+          "harness": "full-mode",
+          "finding": "No jitter in any retry or polling loop. Under concurrent CI runs (matrix builds) all instances would hammer the devnet RPC at the same cadence, amplifying rate-limit pressure.",
+          "severity": "MEDIUM"
+        }
+      ]
+    },
+    {
+      "id": "C6",
+      "name": "Independent verifier subprocess: timeout enforcement and non-zero exit propagation",
+      "status": "PARTIAL_FAIL",
+      "findings": [
+        {
+          "harness": "full-mode",
+          "finding": "independent_verifier.py correctly calls sys.exit(exit_code) with 0 on success and 1 on failure — exit propagation is correct.",
+          "severity": "PASS"
+        },
+        {
+          "harness": "full-mode",
+          "finding": "action.yml invokes the verifier as a shell step (`python3 independent_verifier.py`) with no `timeout-minutes:`. If the verifier hangs (e.g., waiting on a real network call added in future), the step has no time bound.",
+          "severity": "MEDIUM"
+        },
+        {
+          "harness": "full-mode",
+          "finding": "The Makefile `verify` target does NOT invoke `verify-independent`. Only `make test` is called. The independent verifier is only executed via action.yml's explicit shell step. If someone runs `make verify` locally or in a non-action context, the independent verifier is skipped entirely.",
+          "severity": "HIGH"
+        },
+        {
+          "harness": "byte-equivalence",
+          "finding": "Rust and TS serializer subprocess calls in test_byte_equivalence.py have `timeout=5` — this is adequate for local subprocesses.",
+          "severity": "PASS"
+        }
+      ]
+    },
+    {
+      "id": "C7",
+      "name": "Fixture corpus size < 100 KB each",
+      "status": "PASS",
+      "findings": [
+        {
+          "harness": "all",
+          "finding": "All fixture JSON files are under 4 KB each (stub.json: ~20 bytes, stub-solana-tx.json: ~120 bytes, stub-arweave-tx.json: ~180 bytes, stub.jsonl: ~360 bytes). Well within the 100 KB threshold.",
+          "severity": "PASS"
+        }
+      ]
+    },
+    {
+      "id": "C8",
+      "name": "Composite actions: artifact upload on failure for debugging",
+      "status": "PARTIAL_FAIL",
+      "findings": [
+        {
+          "harness": "byte-equivalence",
+          "finding": "action.yml uploads artifact `byte-equivalence-report` with `if: always()` — present and correct.",
+          "severity": "PASS"
+        },
+        {
+          "harness": "full-mode",
+          "finding": "action.yml uploads artifact `full-mode-report` with `if: always()` — present. However, the upload path is `fabric/harnesses/full-mode/` which includes source files but not necessarily pytest XML/HTML reports (no `--junitxml` flag passed to pytest). Test result files are not explicitly generated.",
+          "severity": "LOW"
+        },
+        {
+          "harness": "mcp-compat",
+          "finding": "action.yml uploads `mcp-compat-report` with `if: always()` — present. Same observation about missing explicit pytest report output.",
+          "severity": "LOW"
+        },
+        {
+          "harness": "wasm-browser",
+          "finding": "action.yml uploads `playwright-report/` directory with `if: always()` — Playwright generates HTML reports there by default. This is the correct path for Playwright.",
+          "severity": "PASS"
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "critical": 4,
+    "high": 8,
+    "medium": 3,
+    "low": 3,
+    "pass": 8,
+    "top_issues": [
+      "Mutation detection tests are cosmetic: they use Python hash() (non-deterministic) or in-memory object comparison, never re-running the actual serializers against mutated fixture data. A byte change on disk goes undetected.",
+      "Solana devnet confirm_transaction() and Arweave wait_for_finalization() are tight busy-poll loops with no sleep, no RPC call timeout, and no backoff — a rate-limit or slow node causes either instant false-failure or indefinite hang.",
+      "Serializer subprocess failures return None silently; test assertions are gated with `if result:`, allowing toolchain-build failures to produce green tests.",
+      "Playwright browser version not pinned: @playwright/test ^1.40.0 caret range allows browser binary upgrades that can introduce flakes."
+    ]
+  },
+  "word_summary": "Four critical and eight high-severity issues found. Mutation detection tests are cosmetic—they compare in-memory hashes, never invoking serializers against mutated fixtures. Solana and Arweave polling loops are busy-polls with no sleep or RPC timeout, causing instant false-failure or indefinite hang under rate-limits. Serializer subprocess failures return None silently, letting toolchain breaks produce green exits. Playwright browser version is unpinned via caret range. The independent verifier is omitted from `make verify`, runs only via action.yml. Fixture sizes are all within limits; all four composite actions upload artifacts on failure."
+}

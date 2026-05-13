@@ -1,0 +1,225 @@
+{
+  "reviewer": "code-reviewer-round1",
+  "date": "2026-05-12",
+  "summary": "Four harnesses are structurally sound scaffolding but carry systemic weaknesses: byte-equivalence tests silently pass when binaries are absent (None-guard pattern), so CI can green without any real serialization; wasm-browser tests use JSON.stringify/crypto.createHash instead of WASM CBOR, meaning they never exercise WASM; Rust tests verify only round-trip, not canonical-byte output; endianness is not tested. Minor issues: no pytest fixtures/parametrize, mcp-compat lacks asyncio mode config, wasm-browser action duplicates setup-node, full-mode Makefile missing build target.",
+  "checks": {
+    "makefile_quality": {
+      "rating": "PASS_WITH_WARNINGS",
+      "findings": [
+        {
+          "harness": "byte-equivalence",
+          "issue": "build target chains real toolchain calls (cargo, wasm-pack, npm) with no stub-mode guard; CI will fail on missing toolchain rather than skipping gracefully",
+          "severity": "warning"
+        },
+        {
+          "harness": "byte-equivalence",
+          "issue": "test depends on build, so stub-only pytest run requires full Rust/Node toolchain even in CI stub mode",
+          "severity": "warning"
+        },
+        {
+          "harness": "full-mode",
+          "issue": "no build target defined; test target has no prerequisites, inconsistent with other harnesses",
+          "severity": "minor"
+        },
+        {
+          "harness": "all",
+          "issue": "all: test alias is consistent across all four; .PHONY declarations are correct; verify: test chain is idempotent",
+          "severity": "ok"
+        }
+      ]
+    },
+    "python_test_quality": {
+      "rating": "FAIL",
+      "findings": [
+        {
+          "harness": "byte-equivalence",
+          "issue": "test_rust_serializer_basic and test_byte_equivalence_rust_ts guard with 'if result:' — when binaries are absent both return None and the assertions are skipped entirely; tests pass vacuously in CI stub mode, defeating the harness purpose",
+          "severity": "critical"
+        },
+        {
+          "harness": "byte-equivalence",
+          "issue": "no pytest fixtures or parametrize; test vectors are hardcoded rather than loaded from fixtures/stub.json via a fixture; adding a new vector requires code changes",
+          "severity": "minor"
+        },
+        {
+          "harness": "byte-equivalence",
+          "issue": "serialize_with_wasm always returns None (import succeeds path is dead code — spec_from_file_location result is never used); WASM leg is untested",
+          "severity": "critical"
+        },
+        {
+          "harness": "mcp-compat",
+          "issue": "pytest-asyncio mode not configured; tests rely on implicit asyncio mode which requires pytest-asyncio >= 0.21 asyncio_mode='auto' or per-test mark; missing conftest.py with asyncio_mode setting may cause collection errors",
+          "severity": "warning"
+        },
+        {
+          "harness": "mcp-compat",
+          "issue": "test_golden_trace_format validates structure of static stub.jsonl but never compares live client output against the golden; the mutation-detection test only compares in-memory dicts, not persisted bytes",
+          "severity": "warning"
+        },
+        {
+          "harness": "full-mode",
+          "issue": "test_fixture_mutation_detection asserts original_sig == mutated_sig (slot changed, not signature); the test comment claims mutation detection but the assertion proves mutation is NOT detected in the signature field — logic is inverted",
+          "severity": "major"
+        },
+        {
+          "harness": "full-mode",
+          "issue": "test_attestation_data_integrity uses JSON round-trip, not CBOR; does not match the CBOR serialization contract described elsewhere in the spec",
+          "severity": "minor"
+        },
+        {
+          "harness": "full-mode",
+          "issue": "MNEMONIC_MODE env var is set inside test function body without cleanup/teardown; can leak across test cases in the same process",
+          "severity": "warning"
+        }
+      ]
+    },
+    "ts_wasm_browser": {
+      "rating": "FAIL",
+      "findings": [
+        {
+          "harness": "wasm-browser",
+          "issue": "test 'WASM serializer produces valid output' calls require('crypto') inside page.evaluate — Node.js built-ins are not available in a browser page context; this will throw and output will be null, but expect(output).toBeTruthy() may still pass if Playwright catches and returns null",
+          "severity": "critical"
+        },
+        {
+          "harness": "wasm-browser",
+          "issue": "no test ever imports or exercises the actual WASM module; tests only exercise JSON.stringify and in-memory object comparison — WASM byte-equivalence is not verified",
+          "severity": "critical"
+        },
+        {
+          "harness": "wasm-browser",
+          "issue": "playwright.config.ts sets workers: 1 in CI but fullyParallel: true globally; on CI these conflict — fullyParallel with workers:1 serializes all tests but the intent of fullyParallel is cross-file parallelism, making the CI config misleading",
+          "severity": "minor"
+        },
+        {
+          "harness": "wasm-browser",
+          "issue": "reporter: 'html' only; no list or line reporter for CI log output; failures are only visible by downloading the artifact",
+          "severity": "minor"
+        },
+        {
+          "harness": "wasm-browser",
+          "issue": "performance test threshold is 1ms per JSON.stringify call — this is not a WASM performance test",
+          "severity": "minor"
+        }
+      ]
+    },
+    "rust_byte_equivalence": {
+      "rating": "PASS_WITH_WARNINGS",
+      "findings": [
+        {
+          "harness": "byte-equivalence/rust",
+          "issue": "Cargo.toml is minimal and appropriate; edition 2021, clean dependency list (serde, ciborium, serde_json, hex)",
+          "severity": "ok"
+        },
+        {
+          "harness": "byte-equivalence/rust",
+          "issue": "lib.rs test only verifies round-trip structural equality (assert_eq!(original, decoded)), not that the encoded bytes match a canonical fixture hex string; a ciborium version bump that changes map ordering would pass the round-trip but break cross-language equivalence",
+          "severity": "major"
+        },
+        {
+          "harness": "byte-equivalence/rust",
+          "issue": "serializer binary uses .expect() with panic on failure; exit code will be non-zero via panic output but stderr message is not propagated clearly to the Python test harness",
+          "severity": "minor"
+        },
+        {
+          "harness": "byte-equivalence/rust",
+          "issue": "no #[deny(warnings)] or clippy CI step configured in Cargo.toml or action",
+          "severity": "minor"
+        }
+      ]
+    },
+    "fixture_injection_contracts": {
+      "rating": "PASS_WITH_WARNINGS",
+      "findings": [
+        {
+          "harness": "byte-equivalence",
+          "issue": "README documents the contract clearly: canonical-vectors.json injection path, hex comparison, stub format; contract is actionable",
+          "severity": "ok"
+        },
+        {
+          "harness": "mcp-compat",
+          "issue": "README documents JSONL format and RECORD=1 recording workflow; contract is clear",
+          "severity": "ok"
+        },
+        {
+          "harness": "wasm-browser",
+          "issue": "README describes wasm/pkg/ injection but does not specify the expected output format (hex string? Uint8Array?) that the browser test should compare against Rust output; contract is underspecified",
+          "severity": "warning"
+        },
+        {
+          "harness": "full-mode",
+          "issue": "README references 'fixtures/stub-attestation.json' in the stub fixture format section but this file does not exist; only stub-solana-tx.json and stub-arweave-tx.json are present",
+          "severity": "major"
+        },
+        {
+          "harness": "full-mode",
+          "issue": "MNEMONIC_MODE=full activation path is documented; env var contract is clear",
+          "severity": "ok"
+        }
+      ]
+    },
+    "cross_language_byte_equivalence": {
+      "rating": "FAIL",
+      "findings": [
+        {
+          "issue": "The Python harness compares hex strings output by Rust binary vs Node.js binary; this is string comparison of hex-encoded bytes, which is correct IF both outputs are canonically encoded. However the TS serializer uses the 'cbor' npm package while Rust uses ciborium — map key ordering between these libraries is not verified to be identical; a test with a multi-key struct would be needed",
+          "severity": "major"
+        },
+        {
+          "issue": "Endianness: CBOR integer encoding is big-endian by spec and both ciborium and cbor-js follow this; no explicit endianness test is present, and the stub fixture only uses u8 (version:1) and u64 (nonce:42) which fit in a single CBOR byte each, making endianness invisible in the current test vectors",
+          "severity": "major"
+        },
+        {
+          "issue": "The WASM leg (serialize_with_wasm) always returns None — three-way byte equivalence (Rust vs TS vs WASM) is never actually tested",
+          "severity": "critical"
+        },
+        {
+          "issue": "stub.json fixture uses only two fields with small integer values; no multi-byte integer, string with unicode, nested map, or array is tested — these are the cases where serializer divergence typically occurs",
+          "severity": "major"
+        }
+      ]
+    },
+    "composite_action_wrappers": {
+      "rating": "PASS_WITH_WARNINGS",
+      "findings": [
+        {
+          "issue": "All four actions use actions/checkout@v4 with fetch-depth: 0 and actions/upload-artifact@v4 with if: always() and retention-days: 30 — consistent structure",
+          "severity": "ok"
+        },
+        {
+          "issue": "byte-equivalence and wasm-browser actions do not install Python or pytest, but byte-equivalence's make verify calls python3 -m pytest; the action will fail if Python is not pre-installed on the runner",
+          "severity": "major"
+        },
+        {
+          "issue": "wasm-browser action has two setup-node@v4 steps (lines 12-14 for base setup, lines 17-22 for cache); the first step is redundant and will cause a double-install warning; the cache step should replace, not duplicate, the base step",
+          "severity": "warning"
+        },
+        {
+          "issue": "mcp-compat and full-mode actions pin Python to 3.11; byte-equivalence action omits a Python setup step entirely despite needing pytest",
+          "severity": "major"
+        },
+        {
+          "issue": "full-mode action passes inputs via env block but the python scripts read os.getenv directly with localhost defaults; the env: block in the action only applies to that specific run step, which is correct — but the independent verifier step has no env: block and will use localhost defaults regardless of action inputs",
+          "severity": "warning"
+        },
+        {
+          "issue": "no outputs defined in any action; callers cannot inspect pass/fail status programmatically without parsing step exit codes",
+          "severity": "minor"
+        }
+      ]
+    }
+  },
+  "critical_issues": [
+    "byte-equivalence Python tests pass vacuously when Rust/Node binaries are absent (None-guard pattern)",
+    "serialize_with_wasm always returns None — WASM leg is dead code",
+    "wasm-browser spec tests never load or call WASM; they test JSON.stringify only",
+    "Three-way byte equivalence (Rust vs TS vs WASM) is never exercised end-to-end"
+  ],
+  "major_issues": [
+    "Rust unit test asserts structural equality, not canonical byte output; cannot catch serializer drift across versions",
+    "Endianness invisible in stub fixture — all values fit in single CBOR bytes",
+    "full-mode README references stub-attestation.json which does not exist",
+    "byte-equivalence and wasm-browser composite actions omit Python/pytest setup steps",
+    "full-mode test_fixture_mutation_detection assertion logic is inverted"
+  ]
+}

@@ -1596,3 +1596,43 @@ Code-reviewer lens:
 6. **Lower-bound-only deps (medium)**: pins changed to `~=` (compatible release).
 
 7. **New edge-case tests**: `test_5xx_exhaustion_raises`, `test_empty_waves_dispatch`, `test_swarm_init_failure_raises_swarm_error`, `test_asyncio_cancel_during_retry_sleep`, `test_worktree_not_deleted_before_dispatch_returns`, `test_worktree_cleaned_on_swarm_completion_auto_cleanup`. Suite: 21 tests, all green.
+
+## Task 16 — PR conformance template + workflow + composite action
+
+**Status:** complete | **Commit:** b3b279f | **Agent:** pr-conformance (github-actions-pro)
+
+**Summary:** Delivered canonical PR template enforcing AC24 (4-section structure + 500-line diff cap) and workflow infrastructure for per-repo deployment via fabric-services Ansible role. Composite action provides reusable validation logic; task_type extraction enables downstream harness dispatch.
+
+**Key deliverables:**
+- `pull_request_template.md`: 4 required sections (What changed, Automated validation, Protocol conformance, Mnemonic attestation) with inline examples
+- `workflows/pr-conformance.yml`: triggered on PR open/sync; validates sections, enforces 500-line cap (summing insertions + deletions, excluding Co-Authored-By trailers and vendored paths), extracts task_type via regex, updates single status comment via peter-evans/find-comment
+- `composite-action/action.yml`: reusable step-action consumable as `./.github/composite-action/pr-conformance@v1`; outputs: conforms, sections_missing, shortstat, diff_exceeds_cap, task_type
+- `config.example.yml`: vendored-path exclusion sample (lockfiles, build artefacts, node_modules, etc.) + line-pattern matchers
+- `README.md`: 283 lines comprehensive setup guide including task_type dispatch matrix (byte-equivalence, mcp-compat, wasm-browser, full-mode), extraction regex pattern, testing strategy (5 smoke tests for missing section, oversized PR, compliant PR, valid task_type, invalid task_type)
+
+**Implementation details:**
+- Section validation: literal string matching on `## <section_name>`; empty sections_missing array if all present
+- Line counting: `git diff --shortstat` parsed via awk to sum insertions + deletions; excludes files in vendored_paths; zero-handling for empty diffs
+- Task type extraction: case-insensitive grep `task_type:` followed by sed to capture alphanumeric+dash value; converted to lowercase
+- Dispatcher: validates task_type against 4 harness types; outputs error if unknown; signals success for valid types (per-repo workflows will implement harness dispatch)
+- Permissions: contents:read, pull-requests:write, statuses:write (minimal)
+
+**Validation:**
+- actionlint on pr-conformance.yml: PASS (no syntax errors)
+- composite action: YAML syntax valid (verified via Python yaml.safe_load)
+- Task type extraction regex documented in README with examples
+
+**Files produced:**
+- fabric/github-templates/pull_request_template.md (67 lines)
+- fabric/github-templates/workflows/pr-conformance.yml (134 lines)
+- fabric/github-templates/composite-action/action.yml (149 lines)
+- fabric/github-templates/config.example.yml (53 lines)
+- fabric/github-templates/README.md (283 lines)
+- **Total: 686 lines across 5 files**
+
+**Deferred notes:**
+- Per-repo workflow integration: each of 6 master repos must copy pr-conformance.yml into .github/workflows/ and use `./.github/composite-action/pr-conformance@v1`
+- Smoke testing: manual PR creation in scratch repo recommended to verify section validation, line cap, and task_type extraction
+- Molyanov task-creator template update (mentioned in Task 16) is deferred to T11/T24 implementation
+
+---
