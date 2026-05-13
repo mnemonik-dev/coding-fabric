@@ -1,0 +1,103 @@
+{
+  "task": "T19",
+  "commit": "ab03286",
+  "reviewer": "reliability-engineer",
+  "round": 1,
+  "verdict": "FAIL",
+  "summary": "Six blocking defects. LKG lock has a TOCTOU race (file-existence poll, not flock). Rollback lock rescue block uses ignore_errors on wait_for so concurrent runs proceed anyway. Rollback failure path posts alert but severity label is absent from the Telegram message (not a high-severity ops alert). Smoke-gate smoke test (run.sh) is not the same source as scripts/e2e/smoke.sh — they are entirely different scripts. Smoke-gate has no branch-protection / required-status-check registration anywhere in code (no Terraform, no gh CLI, no GH API call). Docker-compose down in cleanup uses '-v' (destroys named volume) but named volume 'fabric-smoke' is declared separately — this is correct, however the 'Stop candidate services' step runs 'cd fabric/safe-mode/smoke-gate && docker-compose down -v' while health-check and run steps reference the file by explicit path from repo root, creating a path inconsistency that will fail if cwd drifts.",
+  "checks": [
+    {
+      "id": "LKG-IDEMPOTENCY",
+      "description": "Skip if HEAD already tagged as last-known-good",
+      "status": "PASS",
+      "notes": "Lines 82-90: existing tag SHA compared to HEAD SHA; returns 0 if equal."
+    },
+    {
+      "id": "LKG-LOOP-SKIP",
+      "description": "Skip if completed task IS in mnemonic-loop",
+      "status": "PASS",
+      "notes": "Line 64: branch == 'mnemonic-loop' short-circuits with return 0."
+    },
+    {
+      "id": "LKG-LOCK",
+      "description": "Lock file prevents concurrent LKG tag writes",
+      "status": "FAIL",
+      "severity": "HIGH",
+      "notes": "acquire_lock (lines 23-35) polls for file absence then calls 'touch' — classic TOCTOU race. Two concurrent invocations can both observe lock absent and both touch it. Must use 'set -o noclobber' with redirect, or flock(1)."
+    },
+    {
+      "id": "ROLLBACK-IDEMPOTENT",
+      "description": "Rollback playbook is idempotent",
+      "status": "PASS",
+      "notes": "git checkout of a fixed tag is idempotent; systemd start/stop with state: stopped/started are idempotent Ansible modules; file lock removed in post_tasks regardless of outcome."
+    },
+    {
+      "id": "ROLLBACK-FAILURE-ALERT",
+      "description": "Failure path on rollback posts high-severity ops alert and aborts",
+      "status": "FAIL",
+      "severity": "MEDIUM",
+      "notes": "Rescue blocks (lines 99-116 and 133-151) do post Telegram messages and call 'fail' to abort. However the Telegram message body contains no severity label, priority tag, or 'HIGH' / 'CRITICAL' marker beyond the word 'CRITICAL' only in the deploy-phase rescue (line 139). The checkout-phase rescue (line 102-106) says only 'Error: Could not checkout' — no severity signal. Abort path is present (fail: task) but the rescue block for lock acquisition (lines 44-47) has 'ignore_errors: yes' on the wait_for step, meaning a timeout there still attempts to create the lock file and proceed. The rescue never fires unless wait_for itself raises, which it won't with ignore_errors. Concurrent rollback is therefore NOT prevented by this block."
+    },
+    {
+      "id": "ROLLBACK-LOCK",
+      "description": "File lock prevents concurrent rollback execution",
+      "status": "FAIL",
+      "severity": "HIGH",
+      "notes": "Lock acquisition block (lines 26-47): wait_for has 'ignore_errors: yes'. If the lock file exists and wait_for times out, ignore_errors suppresses the error, the rescue block never fires, and 'Create lock file' still runs. Two concurrent playbook runs will both proceed past the lock step after the timeout. Remove ignore_errors and let wait_for failure propagate to the rescue which calls fail."
+    },
+    {
+      "id": "ROLLBACK-SCOPE",
+      "description": "Rollback re-runs fabric-services + downstream only, NOT base/tofu/vaultwarden/kaneo",
+      "status": "PASS",
+      "notes": "Line 121-128: ansible-playbook called with '--tags fabric-services' only. No base, tofu, vaultwarden, or kaneo tags included."
+    },
+    {
+      "id": "SMOKE-GATE-TIMEOUT",
+      "description": "Smoke-gate has 15-min hard cap",
+      "status": "PASS",
+      "notes": "Line 22: timeout-minutes: 15 on the job. Individual steps have sub-timeouts (2min health, 10min run). Total feasible within budget."
+    },
+    {
+      "id": "SMOKE-GATE-BLOCKS-MERGE",
+      "description": "Smoke-gate failure blocks merge (status check required)",
+      "status": "FAIL",
+      "severity": "HIGH",
+      "notes": "The workflow triggers on pull_request to mnemonic-loop and will mark the check failed, but there is no evidence of branch protection rules that make 'smoke-gate / E2E smoke test (15min budget)' a required status check. No Terraform github_branch_protection resource, no gh CLI call, no GH API payload found anywhere in the repo. Without enforcement in branch settings, the check is advisory only — a merge can proceed while the check is still running or failed."
+    },
+    {
+      "id": "SMOKE-GATE-SOURCE-OF-TRUTH",
+      "description": "smoke.sh is shared source-of-truth with T13 e2e-smoke",
+      "status": "FAIL",
+      "severity": "HIGH",
+      "notes": "Task spec (tasks/19.md line 78) says 'Smoke-gate docs-task is the same one used in T13 e2e smoke — keep one source'. The e2e-smoke workflow (e2e-smoke.yml) copies and runs scripts/e2e/smoke.sh. The smoke-gate workflow invokes fabric/safe-mode/smoke-gate/run.sh. These are entirely different scripts with different logic: run.sh hits a local HTTP API; smoke.sh sends a real Telegram message and polls a DAG. There is no import/exec relationship between them. The T13 source of truth requirement is violated."
+    },
+    {
+      "id": "SMOKE-GATE-EPHEMERAL-DOCKER",
+      "description": "Smoke-gate uses ephemeral docker-compose and cleans up after run",
+      "status": "PASS",
+      "notes": "'Stop candidate services' step (line 103-107) uses 'docker-compose down -v' which removes containers and volumes. Step has 'if: always()' so it runs on failure too. Note: path inconsistency — cleanup step uses 'cd fabric/safe-mode/smoke-gate' while other steps use explicit -f path from repo root; both reference the same file but the cd approach is fragile if cwd is ever non-root."
+    }
+  ],
+  "blocking_issues": [
+    {
+      "id": "LKG-LOCK",
+      "fix": "Replace poll+touch with: ( set -o noclobber; echo $$ > \"$LOCK_FILE\" ) 2>/dev/null || { log 'ERROR: concurrent run'; return 1; }  — or use flock -n \"$LOCK_FILE\" with a fd."
+    },
+    {
+      "id": "ROLLBACK-LOCK",
+      "fix": "Remove 'ignore_errors: yes' from the wait_for task so a timeout propagates to the rescue block, which then calls fail."
+    },
+    {
+      "id": "ROLLBACK-FAILURE-ALERT",
+      "fix": "Add 'SEVERITY: HIGH' or equivalent marker to both rescue Telegram messages to satisfy the high-severity ops alert requirement."
+    },
+    {
+      "id": "SMOKE-GATE-BLOCKS-MERGE",
+      "fix": "Add a github_branch_protection resource in infrastructure/tofu or a gh CLI call in a setup workflow that registers 'smoke-gate / E2E smoke test (15min budget)' as a required status check on mnemonic-loop."
+    },
+    {
+      "id": "SMOKE-GATE-SOURCE-OF-TRUTH",
+      "fix": "Have smoke-gate/run.sh exec or source scripts/e2e/smoke.sh, or restructure so both workflows invoke the same script entry point. A thin wrapper is acceptable but the core logic must be deduplicated."
+    }
+  ]
+}

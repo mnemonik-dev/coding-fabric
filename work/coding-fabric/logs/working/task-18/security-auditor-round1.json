@@ -1,0 +1,131 @@
+{
+  "status": "changes_required",
+  "summary": {
+    "totalFindings": 12,
+    "critical": 2,
+    "major": 6,
+    "minor": 4
+  },
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "A01: Broken Access Control",
+      "title": "/turn-into-task has no caller authorization — any participant in the ops topic can create Kaneo cards arbitrarily",
+      "description": "fabric/watchdog/turn_into_task.py:handle_command accepts a raw text payload and a reply callback, then unconditionally creates a Kaneo card whenever the alert_id is present in the 24h state cache. There is no verification that the caller is an authorized operator: no allowlist of Telegram user IDs, no admin role check, no comparison against the bot owner, no chat/topic ID guard. The task spec explicitly mentions this risk (\"could anyone in ops topic invoke it?\"). If the ops Telegram forum is ever expanded to non-trusted members (guest, contractor, leaked invite, group migration), any such user can spam Kaneo with cards for every alert_id that has fired in the last 24h, including arbitrary alert_ids that they observed in the topic. Worse, because the handler accepts an alert_id even when the registry lookup fails and synthesises a placeholder Alert (lines 92-103), an attacker who can guess or observe an alert_id can trigger card creation even without the original alert context.",
+      "location": "fabric/watchdog/turn_into_task.py:43-119",
+      "impact": "Unauthorized creation of tasks in Kaneo (resource abuse, ticket-pollution DoS), bypass of operator-only privilege boundary, possible information disclosure if Kaneo cards inherit notification rules. In a multi-tenant ops group this is privilege escalation from chat-participant to write-access on the task-tracker. Also enables phishing/social-engineering if attackers can dictate card titles/descriptions.",
+      "recommendation": "Enforce authorization inside handle_command. Pass and verify a caller identity (telegram_user_id, telegram_chat_id, telegram_thread_id) and check against an allowlist supplied via config (e.g. config['turn_into_task_allowed_user_ids'] and config['turn_into_task_allowed_chat_id']). Reject with a sanitized error otherwise. Example:\n\n  def handle_command(text, config, reply, *, caller_user_id, caller_chat_id, caller_thread_id, ...):\n      allowed_users = set(config.get('turn_into_task_allowed_user_ids', []))\n      allowed_chat = config.get('turn_into_task_allowed_chat_id')\n      allowed_thread = config.get('turn_into_task_allowed_topic_id')\n      if caller_user_id not in allowed_users:\n          reply(sanitize('Not authorized.'))\n          logger.warning('turn_into_task: unauthorized caller user_id=%s', caller_user_id)\n          return\n      if allowed_chat is not None and caller_chat_id != allowed_chat:\n          reply(sanitize('Wrong chat.')); return\n      if allowed_thread is not None and caller_thread_id != allowed_thread:\n          reply(sanitize('Wrong topic.')); return\n      ...\n\nAlso add an audit-log entry for every accepted and rejected invocation (caller id, alert_id, action).",
+      "cwe": "CWE-862"
+    },
+    {
+      "severity": "critical",
+      "category": "A09: Security Logging and Monitoring",
+      "title": "Telegram bot token is interpolated directly into the URL — log/exception leakage and traffic-capture risk",
+      "description": "fabric/watchdog/telegram.py:38, 129 builds the API URL as `https://api.telegram.org/bot{token}/sendMessage` and then logs the full URL or wrapping exceptions through the standard `logger.warning` path (line 146: `logger.warning(\"telegram: sendMessage failed: %s\", exc)`). The `urllib.error.HTTPError` exception's `repr()` includes the request URL, which means the bot token can land in the watchdog log when an HTTP error occurs (e.g. 401, 429). The SanitizedFileHandler may or may not strip Telegram bot tokens depending on the patterns it is configured with; the watchdog code has no defensive measure of its own. Once the token is in the log file (even sanitized), a log retention / log shipping pipeline may exfiltrate it before sanitization, and any third party observing the URL on the network sees the token in cleartext (TLS protects from passive sniffers, but TLS-terminating proxies, debug dumps, and any future HTTP fallback would expose it). Telegram explicitly documents that the token in the URL grants full bot control (read/write messages, leave chats, change profile).",
+      "location": "fabric/watchdog/telegram.py:38, 129, 146",
+      "impact": "Bot-token compromise. With the token, an attacker can read every message the bot can see (including any forwarded alerts and any user direct messages to the bot), impersonate the bot in the ops topic to send malicious /turn-into-task look-alikes or social-engineering links, and exhaust the bot's rate limit causing alert loss. Token rotation requires manual operator action and downstream-service reconfiguration.",
+      "recommendation": "(1) Strip or redact the token from any exception logging: catch the exception, replace `self._token` in `str(exc)` with `<redacted>` before logging. Example:\n\n  except (urllib.error.URLError, urllib.error.HTTPError, OSError) as exc:\n      msg = str(exc).replace(self._token, '<redacted-bot-token>')\n      logger.warning('telegram: sendMessage failed: %s', msg)\n\n(2) Add the Telegram bot-token regex to the SanitizedFileHandler patterns (`\\d{8,10}:[A-Za-z0-9_-]{35}` — Telegram bot token shape) so even non-watchdog code logging the URL is sanitized.\n(3) Consider passing the token in an HTTP header (`X-Telegram-Bot-Api-Secret-Token` is only for webhooks, but you can use a tiny proxy that maps a header to the URL form for outbound calls). At minimum, treat the token-in-URL as a known exposure and ensure both points 1 and 2 are wired up.",
+      "cwe": "CWE-532"
+    },
+    {
+      "severity": "major",
+      "category": "A05: Security Misconfiguration",
+      "title": "alerts.json state file is written world-readable (0644 default umask) — operator instructed mode 0640 op:op not enforced",
+      "description": "fabric/watchdog/alert_state.py:_write_raw uses `tempfile.mkstemp` (default mode 0600 on the temp file) then `os.replace` to atomically rename into place. However, no `os.chmod` is performed on the final file. On a typical systemd unit running as `op:op`, the resulting file mode depends on the original tempfile permissions (0600 for new) — but if the file already exists with looser permissions (e.g. created out-of-band by an operator using `touch` or by a prior test run that ran as a different user), `os.replace` preserves the temporary file's mode (0600), which is more restrictive than the spec's 0640 op:op. More importantly, the parent directory (`/home/op/.fabric/watchdog/state/`) is created with `mkdir(parents=True, exist_ok=True)` which inherits the user's umask — typically 0755 — making the directory world-traversable. There is no explicit permission enforcement in code, no documented systemd `RuntimeDirectoryMode=` or `StateDirectoryMode=`, and the systemd unit does not declare `StateDirectory=fabric-watchdog` (which would set 0750 by default). The existing checked-in `state/alerts.json` is mode 0644 (world-readable) per the directory listing.",
+      "location": "fabric/watchdog/alert_state.py:36, 82-101; fabric/watchdog/systemd/fabric-watchdog.service",
+      "impact": "Alert IDs and timing metadata become readable by any local user on the VM. While alert_ids are UUID4 (not secret by themselves), knowing which alert_ids exist enables an attacker with shell access (but no operator privileges) to invoke /turn-into-task with valid IDs and trigger Kaneo writes. Combined with finding #1 (no /turn-into-task authorization), this widens the attack surface from \"any ops-topic member\" to \"any local-shell user who can read the file and reach the bot\". File-mode misconfiguration is the classic precursor to operator-account compromise.",
+      "recommendation": "(1) Add explicit `os.chmod(self._path, 0o640)` immediately after `os.replace` in `_write_raw`. Set the parent dir to 0750:\n\n  state_file.parent.mkdir(parents=True, exist_ok=True, mode=0o750)\n  ...\n  os.replace(tmp_path, str(self._path))\n  os.chmod(str(self._path), 0o640)\n\n(2) In the systemd unit, prefer `StateDirectory=fabric-watchdog` with `StateDirectoryMode=0750` and switch `alert_state_file` default to `/var/lib/fabric-watchdog/alerts.json`. (3) Also chmod the `.lock` file to 0640.\n(4) Add a startup self-check that warns if file mode is wider than 0640 op:op.",
+      "cwe": "CWE-732"
+    },
+    {
+      "severity": "major",
+      "category": "A09: Security Logging and Monitoring",
+      "title": "systemd unit lacks no_log/MemoryDenyWriteExecute and credential-loading shim is invoked but never shown — secret-handling tasks not isolated",
+      "description": "fabric/watchdog/systemd/fabric-watchdog.service uses `LoadCredential=` for the four secrets (telegram-bot-token, telegram-ops-chat-id, kaneo-api-token, github-token), which is good. However: (a) The unit then runs `ExecStartPre=/home/op/.fabric/watchdog/scripts/load-credentials.sh` to export them as environment variables before launching the watchdog. This shell script is not shown in the repository, but if it uses `echo` / `cat` / `set -x` or runs with `StandardOutput=journal`, the secrets land in the system journal. The systemd journal is readable by members of the `adm` and `systemd-journal` groups on most distros. (b) `LoadCredential` is fine, but the shim **defeats** its main benefit (kernel keyring isolation) by re-exporting to `os.environ`. The Python code reads them via `os.environ.get`, which means a `/proc/<pid>/environ` read by any process with the same UID exposes them. (c) The unit is missing `MemoryDenyWriteExecute=true`, `PrivateUsers=true`, `RestrictNamespaces=true`, and `ProtectHostname=yes` is set but `KeyringMode=private` (which would isolate the loaded credentials) is not. (d) No `no_log` equivalent — systemd doesn't have ansible's no_log, but `LogExtraFields=` plus `Environment=` lines accept `Environment=SOMETHING=value` which echoes into the journal at unit-start time for debugging.",
+      "location": "fabric/watchdog/systemd/fabric-watchdog.service:19-31",
+      "impact": "Three downside paths: (i) `load-credentials.sh` may log secrets to the journal in plain text if it isn't carefully written. (ii) After ExecStartPre runs, the Python process has the secrets in `os.environ`, visible to any same-UID process via /proc. (iii) A misconfigured journal exporter (e.g. journald-to-Elastic) sends the secrets off-host. Combined finding #2 (token in URL leakage), token rotation cadence becomes critical.",
+      "recommendation": "(1) Add `load-credentials.sh` to the repo with secure content; use `set +x` explicitly, read with `cat \"${CREDENTIALS_DIRECTORY}/telegram-bot-token\"` into a variable, then `export` without echoing. Add `umask 077` at top. (2) Prefer reading credentials directly from `$CREDENTIALS_DIRECTORY/<name>` inside Python — drop the ExecStartPre entirely:\n\n  cred_dir = Path(os.environ.get('CREDENTIALS_DIRECTORY', '/'))\n  token = (cred_dir / 'telegram-bot-token').read_text().strip()\n\n(3) Add `KeyringMode=private` and `PrivateUsers=true` to the unit. (4) Add `MemoryDenyWriteExecute=true`, `RestrictNamespaces=true`, `LockPersonality=true` (already there), `SystemCallArchitectures=native` (already there). (5) Add `LogLevelMax=info` to prevent debug logging from making it into the journal. (6) Audit `load-credentials.sh` for any `echo $TOKEN`, `printf %s\\n $TOKEN`, or unconditional `set -x`.",
+      "cwe": "CWE-522"
+    },
+    {
+      "severity": "major",
+      "category": "A10: SSRF",
+      "title": "Solana RPC, Irys node, and Mnemonic MCP URLs are taken from config without scheme/host validation — config-file SSRF",
+      "description": "fabric/watchdog/checks/solana_rpc.py:41, irys_balance.py:45-54, failed_attestation.py:42 all read URLs from the `config` dict (loaded from `/home/op/.fabric/watchdog/config.json`) and pass them straight to `urllib.request.urlopen`. There is no scheme allowlist (`http`/`https` only), no host validation, and no blocklist of internal/loopback ranges (except by accident — the defaults happen to be safe). An attacker who can write to `config.json` (e.g. via a future config-management bug, a misconfigured workspace-manager that writes alongside, or a successful local privilege escalation to the `op` user) can pivot the watchdog process — which runs with network access and credentials — to scan internal services (port-knock the loopback, reach AWS metadata service `http://169.254.169.254`, attempt RCE against neighbouring containers). The systemd unit grants `AF_INET AF_INET6 AF_UNIX` and connects outbound freely. `urllib.request.urlopen` will also follow `file://` URLs unless the default handler is overridden, allowing arbitrary file reads (e.g. `file:///etc/shadow`) on Linux if a malicious config sets `solana_rpc_url` to a file URL.",
+      "location": "fabric/watchdog/checks/solana_rpc.py:36-77, irys_balance.py:40-82, failed_attestation.py:41-110, stale_prs.py:43-63, kaneo.py:77-99",
+      "impact": "SSRF + arbitrary-file-read if config.json is attacker-controlled. Even without config tampering, the absence of validation means a benign typo (`file:///home/op/.bashrc`) would expose unintended files to the alert body and thence to Telegram and Kaneo (where they would be retained).",
+      "recommendation": "Add a helper `_assert_http_url(url, *, allow_localhost=True)` that:\n  - parses with `urllib.parse.urlsplit`\n  - rejects scheme ∉ {'http','https'}\n  - resolves host via `socket.getaddrinfo`, rejects RFC1918 / loopback / link-local / multicast unless `allow_localhost=True` for known internal endpoints (mnemonic_mcp_url)\n  - rejects empty or all-numeric hostnames that are not in the allowlist.\nCall the helper at the start of each `_check`. Build a `urllib.request.OpenerDirector` with only `HTTPHandler` and `HTTPSHandler` (no `FileHandler`, no `FTPHandler`) and use that opener instead of `urllib.request.urlopen`:\n\n  _OPENER = urllib.request.build_opener(\n      urllib.request.HTTPHandler(),\n      urllib.request.HTTPSHandler()\n  )\n  urllib.request.install_opener(_OPENER)  # or use _OPENER.open(req, timeout=...)",
+      "cwe": "CWE-918"
+    },
+    {
+      "severity": "major",
+      "category": "A03: Injection",
+      "title": "Telegram payload uses parse_mode=HTML with unsanitized alert.evidence — HTML/parse-mode injection",
+      "description": "fabric/watchdog/telegram.py:124 sets `parse_mode: 'HTML'` and embeds the alert evidence directly into the message body (lines 90-94 and 99-101). While `sanitize()` runs on the final text, the sanitizer is documented as a credential/PII scrubber, not an HTML escaper. Telegram's HTML parse_mode accepts a subset of tags (`<b>`, `<i>`, `<a href>`, `<code>`, etc.) and will treat any of those literal characters in evidence text as markup. Evidence strings come from external sources: GitHub PR titles (`stale_prs.py:106` includes `pr.get('title', '')[:40]`), tmux session names (`hung_tmux.py:79`), filesystem path basenames (`orphaned_worktrees.py:65`), Kaneo card titles. An attacker who can create a GitHub PR titled `<a href='https://evil/x'>click me</a>` or a tmux session named `</b><a href='evil'>x` would inject clickable links / formatting into the ops topic message. This is a stored-XSS-equivalent for a Telegram audience.",
+      "location": "fabric/watchdog/telegram.py:87-105, 124; fabric/watchdog/checks/stale_prs.py:104-107",
+      "impact": "Operator phishing — alerts could carry attacker-crafted clickable links that appear to come from the trusted watchdog bot in the ops topic. Could also break message rendering, causing alerts to be hidden or chopped. In the digest path, a single poisoned evidence string can break the digest formatting for every alert.",
+      "recommendation": "Either (a) switch to `parse_mode: 'MarkdownV2'` with proper escaping, or preferably (b) drop parse_mode entirely (plain text). If HTML must be retained for severity-emphasis, html-escape the dynamic parts:\n\n  import html\n  text = (\n      f'{label} {html.escape(alert.alert_class)}\\n'\n      f'{html.escape(alert.evidence)}\\n'\n      f'alert_id: {html.escape(alert.alert_id)}'\n  )\n  return sanitize(text)\n\nAdditionally, in the check modules, strip control characters and angle brackets from any externally-sourced strings before they enter the Alert.evidence field (`pr.get('title', '')`, `parts[0]` from tmux, `item.name` for worktree dirs). Document that `evidence` must be plaintext and add a unit test that submits HTML-bearing evidence and asserts it is rendered as text.",
+      "cwe": "CWE-79"
+    },
+    {
+      "severity": "major",
+      "category": "A04: Insecure Design",
+      "title": "Disabled-checks list uses a misnamed variable and would mis-disable if a config key is mistyped — also exposes an allowlist-bypass surface",
+      "description": "fabric/watchdog/scheduler.py:68 reads `config.get('disabled_checks', [])` into a variable named `alert_class` and then checks `if check_name in alert_class`. The variable is grossly misnamed (it is a list of disabled checks, not an alert class), but more importantly: if the config file is partially attacker-controlled (see SSRF finding above), an attacker can disable the most security-critical checks (`failed_attestation`, `solana_rpc`) and the alert pipeline silently fails closed — operators would not see CRITICALs until they notice the lack of alerts (and the watchdog itself doesn't alert about its own state). There is also no validation that `disabled_checks` is a list (a string would also work because `in` accepts a string), no logging of which checks are disabled at startup, and no audit trail. The mis-named variable is a code-clarity bug that makes review harder, but the deeper issue is the design.",
+      "location": "fabric/watchdog/scheduler.py:66-78",
+      "impact": "An attacker (or a fat-fingered operator) can silently disable critical alerts. Failed_attestation and solana_rpc are both Severity.CRITICAL; disabling them means the watchdog cannot detect Mnemonic queue failures or chain-RPC outages.",
+      "recommendation": "(1) Rename the variable: `disabled = config.get('disabled_checks', [])`. (2) Validate type: `if not isinstance(disabled, list): logger.warning(...); disabled = []`. (3) At Scheduler init, log the full list of disabled checks at WARNING level with the config-file path so operators see it on every tick. (4) Add a 'sensitive_checks' allowlist that cannot be disabled (e.g. `failed_attestation`, `solana_rpc`); attempting to disable them logs a CRITICAL but still runs them. (5) Add a smoke test asserting that disabling a sensitive check from config is rejected.",
+      "cwe": "CWE-1188"
+    },
+    {
+      "severity": "major",
+      "category": "A06: Vulnerable and Outdated Components",
+      "title": "Runtime dependencies are unpinned — pyproject.toml has empty dependencies; dev deps use lower bounds only",
+      "description": "fabric/watchdog/pyproject.toml:13-17 declares `dependencies = []` (the runtime tree is pure stdlib, which is fine), but the `[project.optional-dependencies] dev` block (lines 19-24) uses only lower-bound constraints (`pytest>=8.2.0`, `pytest-asyncio>=0.23.0`, `pytest-cov>=5.0.0`). These will resolve to the latest matching version every time, which means: (a) reproducible builds are impossible — a future supply-chain compromise of pytest-asyncio would flow into the build environment; (b) developer machines and CI may install different versions, causing flaky test results that mask security regressions. Furthermore, the README installs the sanitizer as a separate package (`pip install -e fabric/logs/sanitizer/`) but there is no version pin or hash check on that critical dependency. The hard-import check at startup ensures the package is *importable* but not that it is the trusted version.",
+      "location": "fabric/watchdog/pyproject.toml:19-24",
+      "impact": "Supply-chain risk on dev/CI; possible bypass of the sanitizer if a malicious version is installed (the watchdog will happily use whatever `fabric.logs.sanitizer.filter.sanitize` resolves to).",
+      "recommendation": "(1) Pin dev deps to exact versions or `~=` ranges and ship a `requirements-dev.txt` produced by `pip-compile`. (2) Ship a `constraints.txt` with hashes for production install. (3) Add a runtime self-check on first import: `assert fabric.logs.sanitizer.__version__ == '<expected>'` to catch a swapped-out sanitizer. (4) Document the sanitizer install as a step in CI with hash verification (`pip install --require-hashes -r constraints.txt`).",
+      "cwe": "CWE-1104"
+    },
+    {
+      "severity": "minor",
+      "category": "A02: Cryptographic Failures",
+      "title": "alert_id collisions undetected; UUID4 used but no entropy check or namespacing per alert_class",
+      "description": "fabric/watchdog/models.py:36 generates `alert_id` with `uuid.uuid4()` (good entropy, 122 bits). However, the state cache (`alert_state.py`) maps alert_id -> recorded_at without recording alert_class. The handler in turn_into_task.py:75 only validates `is_seen(alert_id)` — it does not verify the alert_class. Combined with finding #1 (no caller authorization) and finding #2 (token exposure risk), a leaked alert_id allows triggering Kaneo for any alert_class via the placeholder branch (turn_into_task.py:92-103). Collision probability is negligible, but the design is brittle: it relies entirely on the secrecy of the alert_id printed in the ops topic.",
+      "location": "fabric/watchdog/models.py:36; fabric/watchdog/turn_into_task.py:75-103",
+      "impact": "Defense-in-depth gap. Reduces resilience if alert_ids are accidentally exposed (e.g. via a screen-share, a forwarded message, an unsanitized log line).",
+      "recommendation": "Store the full alert dict (alert_class, severity, evidence, recorded_at) in the state cache, not just the id. Reject /turn-into-task if the registry+state both lack a matching alert_class — eliminate the synthesised-placeholder branch. Also consider prefixing alert_id with alert_class (`disk_pressure:<uuid4>`) so a leaked id from one class cannot trigger another class.",
+      "cwe": "CWE-330"
+    },
+    {
+      "severity": "minor",
+      "category": "best-practice",
+      "title": "GitHub stale_prs pagination follows server-controlled Next URL without host validation",
+      "description": "fabric/watchdog/checks/stale_prs.py:43-63 follows the `Link: rel=\"next\"` URL as returned by GitHub. While in practice GitHub returns api.github.com URLs, a man-in-the-middle (defeating TLS pinning) or a future configuration that proxies the call through a custom host could redirect pagination to an attacker-controlled server, where the token in the `Authorization: Bearer` header (added at line 50) would be replayed. The token is a GitHub PAT — high-value credential.",
+      "location": "fabric/watchdog/checks/stale_prs.py:43-76",
+      "impact": "GitHub PAT replay if pagination URL host changes. Low likelihood because of TLS, but defense-in-depth missing.",
+      "recommendation": "After extracting `next_url`, verify `urllib.parse.urlsplit(next_url).hostname == 'api.github.com'`. Drop the Authorization header on any host that is not the canonical GitHub API host.",
+      "cwe": "CWE-601"
+    },
+    {
+      "severity": "minor",
+      "category": "best-practice",
+      "title": "Several check modules read state files without size limit — JSON-bomb / large-file DoS",
+      "description": "fabric/watchdog/checks/orphaned_worktrees.py:52, stale_swarms.py:51, alert_state.py:_read_raw all call `Path.read_text()` or `json.load` without an upper bound. A maliciously large or deeply nested workspace-manager state.json, ruflo swarm registry, or alert state file would consume unbounded memory and CPU, potentially OOM-killing the watchdog process and depriving operators of alerts during an attack. The systemd unit has `PrivateTmp=true` but no `MemoryMax=` or `TasksMax=`.",
+      "location": "fabric/watchdog/checks/orphaned_worktrees.py:52; fabric/watchdog/checks/stale_swarms.py:51; fabric/watchdog/alert_state.py:107",
+      "impact": "Denial-of-service of the alerting subsystem when an upstream file (state.json, swarms.json) becomes malicious or corrupted.",
+      "recommendation": "Cap file reads to a sane size (e.g. 5 MiB) before json.load: check `path.stat().st_size <= 5_000_000`. Add `MemoryMax=256M` and `TasksMax=50` to the systemd unit.",
+      "cwe": "CWE-400"
+    },
+    {
+      "severity": "minor",
+      "category": "best-practice",
+      "title": "Subprocess calls trust PATH and do not pin git/tmux to absolute paths",
+      "description": "fabric/watchdog/checks/master_drift.py and stale_lkg.py call `subprocess.run(['git', ...])`; hung_tmux.py calls `subprocess.run(['tmux', ...])`. These rely on `$PATH` resolution. The systemd unit does not set `Environment=PATH=/usr/bin:/bin` explicitly, so PATH inherits from the systemd default (usually safe, but not guaranteed). If an attacker can drop a `git` binary into `/home/op/.local/bin` or earlier in PATH, the watchdog will execute it with `op`'s privileges. Args are passed as a list (not a shell string), so shell-injection is not present, but the binary lookup is unprotected.",
+      "location": "fabric/watchdog/checks/master_drift.py:51, 67; fabric/watchdog/checks/stale_lkg.py:58; fabric/watchdog/checks/hung_tmux.py:51",
+      "impact": "Local privilege chaining if PATH-poisoning succeeds. Low likelihood (requires existing local code execution as `op`), but trivial to fix.",
+      "recommendation": "Hard-code or environment-controlled absolute paths: `['/usr/bin/git', ...]`, `['/usr/bin/tmux', ...]`. Or shutil.which() once at module import with a constrained PATH and assert the resolved path is under `/usr/`. Add `Environment=PATH=/usr/bin:/bin` to the systemd unit.",
+      "cwe": "CWE-426"
+    }
+  ]
+}

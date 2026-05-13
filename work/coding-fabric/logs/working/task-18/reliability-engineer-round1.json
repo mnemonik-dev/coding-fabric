@@ -1,0 +1,131 @@
+{
+  "task": "T18",
+  "commit": "8f227d8",
+  "reviewer": "reliability-engineer",
+  "round": 1,
+  "verdict": "pass_with_findings",
+  "checks": [
+    {
+      "id": "RE-01",
+      "area": "scheduler_check_count",
+      "status": "fail",
+      "severity": "minor",
+      "description": "_CHECK_MODULES list contains 10 entries (stale_lkg added), but spec and task say 9 alert classes. The task description lists 10 items (1-10 including stale_lkg) while also saying '9 alert classes'. Discrepancy needs reconciliation — either stale_lkg is intentionally the 10th class or the constant _CHECK_MODULES needs trimming.",
+      "file": "fabric/watchdog/scheduler.py",
+      "line": 49
+    },
+    {
+      "id": "RE-02",
+      "area": "per_check_timeout",
+      "status": "pass",
+      "severity": null,
+      "description": "ThreadPoolExecutor with max_workers=len(_CHECK_MODULES), executor.shutdown(wait=False), then future.result(timeout=30) per-future. TimeoutError is caught and logged; remaining futures continue draining. Stuck check does not block siblings. Correct pattern.",
+      "file": "fabric/watchdog/scheduler.py",
+      "line": 123
+    },
+    {
+      "id": "RE-03",
+      "area": "batch_digest_threshold",
+      "status": "fail",
+      "severity": "minor",
+      "description": "_BATCH_THRESHOLD=3 and the condition is len(alerts) > 3, meaning exactly 4 triggers digest and exactly 3 sends individually. Spec says '>3 alerts -> digest', which matches. BUT the task edge-cases doc says 'Many alerts firing simultaneously — batch into one digest message' while line 63 comment says '>3 alerts -> digest'. Both consistent with implementation. However test_individual_send_when_3_or_fewer sends exactly 3 individually — boundary is correct. Passes spec. No defect.",
+      "file": "fabric/watchdog/scheduler.py",
+      "line": 63
+    },
+    {
+      "id": "RE-04",
+      "area": "telegram_rate_limit",
+      "status": "pass",
+      "severity": null,
+      "description": "_MIN_INTERVAL=0.05s (1/20). _throttle() checks monotonic elapsed and sleeps the deficit. _last_send updated only on confirmed success (inside urlopen context). Rate-limit enforced correctly at <=20 msg/s. Test_rate_limit_enforced validates gaps. One concern: _last_send is set inside the try block after urlopen succeeds, not in the throttle path, so burst after a failed send is possible — but failed sends are non-raising returns, not retried, making this a non-issue in practice.",
+      "file": "fabric/watchdog/telegram.py",
+      "line": 107
+    },
+    {
+      "id": "RE-05",
+      "area": "kaneo_idempotency",
+      "status": "pass",
+      "severity": null,
+      "description": "KaneoClient._existing_card performs GET with q=alert_id%3A{alert_id} and scans results for 'alert_id: {alert_id}' in description. If found, returns existing card without POSTing. Description embeds alert_id at creation time. Idempotent by alert_id UUID. Caveat: the search depends on Kaneo's text search returning the existing card — if the Kaneo search API returns no results due to indexing lag or API change, a duplicate card would be created. This is an external dependency risk, not a code defect.",
+      "file": "fabric/watchdog/kaneo.py",
+      "line": 101
+    },
+    {
+      "id": "RE-06",
+      "area": "alert_state_ttl",
+      "status": "pass",
+      "severity": null,
+      "description": "_TTL_SECONDS=86400 (24h). is_seen checks (time.time() - recorded_at) < TTL. mark_seen evicts expired entries on write. Atomic write via tempfile+os.replace+fsync. flock on a separate .lock file for process-safety. Tests validate expiry and cross-instance persistence.",
+      "file": "fabric/watchdog/alert_state.py",
+      "line": 27
+    },
+    {
+      "id": "RE-07",
+      "area": "alert_state_race_is_seen",
+      "status": "fail",
+      "severity": "minor",
+      "description": "is_seen() reads without acquiring the flock lock — it opens the file directly via _read_raw(). Concurrent processes can read stale data. mark_seen() acquires flock then re-reads inside the lock, but is_seen() does not. In a scenario where two watchdog processes start simultaneously (e.g. systemd timer overlap + manual run), both could see is_seen()=False for the same alert_id and both persist+dispatch. The flock on mark_seen prevents double-write corruption but does not prevent double-dispatch. Low probability given Persistent=true timer semantics, but not zero.",
+      "file": "fabric/watchdog/alert_state.py",
+      "line": 40
+    },
+    {
+      "id": "RE-08",
+      "area": "systemd_timer_oncalendar",
+      "status": "pass",
+      "severity": null,
+      "description": "OnCalendar=*:0/5 fires every 5 minutes. RandomizedDelaySec=30s adds jitter. OnBootSec=5min delays first run post-boot to let services settle. Persistent=true catches up missed runs after suspension. All three fields present and correct per AC29 and spec.",
+      "file": "fabric/watchdog/systemd/fabric-watchdog.timer",
+      "line": 1
+    },
+    {
+      "id": "RE-09",
+      "area": "check_failure_modes",
+      "status": "pass",
+      "severity": null,
+      "description": "All 10 check modules follow the same two-level pattern: public check() wraps _check() in try/except Exception, logging the error and returning None. None means no alert, scheduler continues. No check can propagate an uncaught exception to the scheduler's thread pool future. Verified across: disk_pressure, orphaned_worktrees, solana_rpc, irys_balance, stale_swarms, hung_tmux, master_drift, stale_prs, failed_attestation, stale_lkg.",
+      "file": "fabric/watchdog/checks/*.py",
+      "line": null
+    },
+    {
+      "id": "RE-10",
+      "area": "turn_into_task_alert_id_resolution",
+      "status": "pass",
+      "severity": null,
+      "description": "handle_command validates alert_id presence, then calls alert_store.is_seen(alert_id). If unseen/expired, returns user-friendly error. If seen, looks up in alert_registry (in-memory dict passed by caller). If not in registry (process restart case), creates placeholder Alert with class='unknown' and posts to Kaneo. Idempotency is preserved end-to-end because Kaneo create_card uses the same alert_id in the description. Tests cover known, unknown, missing-arg, Kaneo-failure, and placeholder paths.",
+      "file": "fabric/watchdog/turn_into_task.py",
+      "line": 43
+    },
+    {
+      "id": "RE-11",
+      "area": "failed_attestation_mcp_unreachable",
+      "status": "pass_with_note",
+      "severity": "minor",
+      "description": "When MCP server is unreachable (URLError, HTTPError, OSError, ValueError), _check() returns Alert(severity=WARNING, alert_class='failed_attestation', evidence='Mnemonic MCP server unreachable: ...'). This is correct: MCP unreachable is treated as a WARNING (infrastructure problem) rather than CRITICAL (confirmed attestation failure). The design choice is defensible — the operator is notified but the alert is downgraded since failures cannot be confirmed. One note: if MCP is persistently unreachable across many ticks, the alert_id is regenerated each tick (uuid4 default factory), so a new WARNING is deduplicated for 24h per alert_id, but a fresh uuid4 each tick means a new alert fires each tick after TTL expiry — no suppression of repeated MCP-down alerts beyond 24h. This could cause alert spam on a persistent MCP outage. A stable deterministic alert_id (e.g. hash of alert_class+error-type) for infra-level alerts would prevent recurrence noise.",
+      "file": "fabric/watchdog/checks/failed_attestation.py",
+      "line": 65
+    },
+    {
+      "id": "RE-12",
+      "area": "task_edge_case_telegram_rate_limit_spec",
+      "status": "fail",
+      "severity": "minor",
+      "description": "Task edge-cases doc states 'Telegram rate limit (30 msg/s)' but the implementation uses 20 msg/s (_RATE_LIMIT_MSGS_PER_SEC=20, _MIN_INTERVAL=0.05s). The actual Telegram Bot API per-chat limit is 20 msg/s for group chats, so the code is correct. The task spec doc has a stale/incorrect value (30 instead of 20). Not a code defect but documentation inconsistency.",
+      "file": "fabric/watchdog/tasks/18.md",
+      "line": 74
+    }
+  ],
+  "summary": {
+    "pass": 6,
+    "pass_with_note": 1,
+    "fail_minor": 4,
+    "fail_major": 0,
+    "fail_critical": 0
+  },
+  "blocking": false,
+  "recommendations": [
+    "RE-01: Reconcile spec '9 alert classes' vs 10 implemented modules — document stale_lkg as the intentional 10th or remove it.",
+    "RE-07: Lock is_seen() reads with flock to prevent double-dispatch on timer overlap (low probability, high blast radius for duplicate Telegram alerts).",
+    "RE-11: Use deterministic alert_id for MCP-unreachable case to prevent 24h-cycle alert spam on persistent infrastructure outage.",
+    "RE-12: Correct task 18.md edge-cases doc: Telegram rate limit is 20 msg/s, not 30."
+  ]
+}

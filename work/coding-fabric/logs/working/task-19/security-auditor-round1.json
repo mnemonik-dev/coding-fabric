@@ -1,0 +1,171 @@
+{
+  "status": "changes_required",
+  "summary": {
+    "totalFindings": 16,
+    "critical": 3,
+    "major": 7,
+    "minor": 6
+  },
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "A08: Software and Data Integrity Failures",
+      "title": "last-known-good tag is unsigned and force-pushed; rollback target trivially poisonable",
+      "description": "fabric/safe-mode/last-known-good.sh creates the tag with 'git tag -a' (annotated, NOT signed) and pushes with 'git push --force origin last-known-good'. The spec/README claims the tag is 'signed by Mnemonic MCP if available' but the script never attempts signing (no -s, no GPG/SSH-signing call, no Mnemonic MCP invocation). Combined with --force, any commit that triggers do-task (which then runs this hook) can advance the rollback anchor to an attacker-chosen commit. The Ansible rollback playbook then checks out this tag without verification and re-runs deploy. This collapses the 'operator-SSH only path' security guarantee: a malicious PR merged to any non-mnemonic-loop branch can repoint last-known-good, and the next operator-initiated rollback will deploy attacker code.",
+      "location": "work/coding-fabric/fabric/safe-mode/last-known-good.sh:93,96; work/coding-fabric/infrastructure/ansible/playbooks/safe-mode-rollback.yml:89-93",
+      "impact": "Persistent supply-chain compromise: attacker controls rollback target, so the recovery mechanism itself becomes the attack vector. RCE on every fabric host on next incident.",
+      "recommendation": "1) Use 'git tag -s' (or '-u <key>') and require GPG/SSH signing key configured on the build host. 2) In safe-mode-rollback.yml, add a 'git verify-tag {{ tag_name }}' step gated by an allow-listed signer key fingerprint before checkout. 3) Replace --force with --force-with-lease and configure GitHub protected-tag rules so only the signing identity can move it. 4) Reconcile README claim with implementation (or call into the Mnemonic MCP sign endpoint as documented).",
+      "cwe": "CWE-345"
+    },
+    {
+      "severity": "critical",
+      "category": "Hardcoded Secrets / A02: Cryptographic Failures",
+      "title": "telegram_bot_token referenced as plaintext Ansible var with no sops/ansible-vault integration",
+      "description": "safe-mode-rollback.yml references {{ telegram_bot_token }} and {{ telegram_ops_topic }} as plain Jinja variables with no vars_files pointing to ansible-vault or sops-encrypted source, no @vault tag, no lookup('community.sops.sops', ...) call. There is no group_vars/host_vars/secrets.sops.yml anywhere under infrastructure/. Operators will inevitably supply the token via --extra-vars on the CLI (visible in shell history and process list) or via an unencrypted vars file committed alongside the playbook.",
+      "location": "work/coding-fabric/infrastructure/ansible/playbooks/safe-mode-rollback.yml:101-102,136-137,187-189",
+      "impact": "Telegram bot token compromise leads to ops-channel hijacking, false 'rollback complete' banners masking active intrusion, and ability to read sensitive incident chatter.",
+      "recommendation": "Add at top of playbook: 'vars_files: - ../inventory/group_vars/all/secrets.sops.yml' (encrypted with sops + age) OR use 'community.sops.load_vars'. Mark the token tasks with 'no_log: true'. Document the required sops key in README. Add a pre_tasks assertion that telegram_bot_token is non-empty AND was not provided via --extra-vars (compare against a vault-only fact).",
+      "cwe": "CWE-798"
+    },
+    {
+      "severity": "critical",
+      "category": "A03: Injection",
+      "title": "Telegram banner shell-curl embeds Jinja-rendered, partially-escaped strings into JSON body and bot URL",
+      "description": "Lines 184-189 build the curl command via Ansible's 'shell:' module with the bot token interpolated directly into the URL and 'escaped_msg' interpolated inside a single-quoted JSON literal. Two layered problems: (a) The escape on line 182 only handles double-quote and backslash via Jinja replace, but 'success_msg' contains 'ansible_date_time.iso8601' and 'safe_hostname' — and on the error rescue paths (lines 99-106, 134-141) the message uses raw {{ ansible_failed_result.msg }} with NO sanitization at all and is sent through the same shell+JSON path. (b) ansible_failed_result.msg can contain newlines, single quotes, $-signs, and backticks — when rendered into a single-quoted shell argument these break out, and when rendered into JSON they break the parser or inject fields. A failed git checkout returning a stderr line containing '\\\"chat_id\\\":\\\"attacker_chat\\\"' would be sent verbatim.",
+      "location": "work/coding-fabric/infrastructure/ansible/playbooks/safe-mode-rollback.yml:99-106,134-141,180-189",
+      "impact": "Command injection on the Ansible control host (worst case: RCE with become:yes); JSON injection redirecting banner to attacker-controlled chat_id; log-forging of false success/failure banners.",
+      "recommendation": "Replace the 'shell: curl ...' pattern with 'community.general.telegram' module (already used elsewhere in the same file at lines 100, 135) which handles escaping correctly. Mark all telegram tasks 'no_log: true'. For the rescue paths, run ansible_failed_result.msg through 'regex_replace' to strip control characters AND truncate to 200 chars before sending. Never interpolate untrusted strings into a shell command — use uri module with body_format: json and a structured body dict.",
+      "cwe": "CWE-78"
+    },
+    {
+      "severity": "major",
+      "category": "A09: Security Logging and Monitoring / Hardcoded Secrets",
+      "title": "Telegram bot token leaks into Ansible logs and process list via shell module",
+      "description": "Line 187 uses 'shell:' with the token embedded in the URL: 'https://api.telegram.org/bot{{ telegram_bot_token }}/sendMessage'. Ansible logs the full rendered command at -v verbosity, and on a busy control host the command is visible to local users via 'ps auxf' for the duration of the curl. The task is not marked 'no_log: true'.",
+      "location": "work/coding-fabric/infrastructure/ansible/playbooks/safe-mode-rollback.yml:184-191",
+      "impact": "Token disclosure via shell history, Ansible callback logs (CI artifacts), and /proc for local users on the control host.",
+      "recommendation": "Add 'no_log: true' to every task that references telegram_bot_token. Prefer the 'community.general.telegram' or 'ansible.builtin.uri' module which handles credentials without putting them on the command line. Mask the token in any external log shipping.",
+      "cwe": "CWE-532"
+    },
+    {
+      "severity": "major",
+      "category": "A05: Security Misconfiguration",
+      "title": "smoke-gate workflow missing top-level 'permissions:' block (defaults to write)",
+      "description": ".github/workflows/smoke-gate.yml does not declare a 'permissions:' key, so the GITHUB_TOKEN inherits the repository default — frequently 'contents: write' and sometimes broader (pull-requests, issues, packages). The job only needs read access to checkout the head ref and write access to upload-artifact (which uses a separate scope). A malicious dependency executed inside the candidate fabric (e.g. via the smoke task) could exfiltrate or use the token to push to the repo.",
+      "location": "work/coding-fabric/.github/workflows/smoke-gate.yml:1-22",
+      "impact": "Token compromise inside the ephemeral container could be escalated to push commits, create releases, or modify CI configuration on the repo.",
+      "recommendation": "Add at top-level (before 'on:'): 'permissions:\\n  contents: read\\n  pull-requests: read\\n  actions: read'. If artifact upload needs more, scope it at the job level only. Consider 'id-token: none' explicitly.",
+      "cwe": "CWE-732"
+    },
+    {
+      "severity": "major",
+      "category": "A08: Software and Data Integrity Failures",
+      "title": "appleboy/telegram-action pinned to mutable 'master' ref",
+      "description": "smoke-gate.yml line 111 uses 'uses: appleboy/telegram-action@master'. The 'master' ref is mutable; if the upstream is compromised or simply force-pushed, the next workflow run will execute attacker code with access to TELEGRAM_BOT_TOKEN, TELEGRAM_OPS_TOPIC, and the GITHUB_TOKEN.",
+      "location": "work/coding-fabric/.github/workflows/smoke-gate.yml:111",
+      "impact": "Supply-chain RCE in CI; secret exfiltration to attacker; impersonation of ops banner.",
+      "recommendation": "Pin to a full 40-character commit SHA: 'uses: appleboy/telegram-action@<sha>'. Audit the pinned version. Add Dependabot config with 'package-ecosystem: github-actions' to receive pinned-SHA bumps.",
+      "cwe": "CWE-1357"
+    },
+    {
+      "severity": "major",
+      "category": "A08: Software and Data Integrity Failures",
+      "title": "Other third-party GitHub Actions pinned to mutable tags, not commit SHAs",
+      "description": "actions/checkout@v4 (line 30), docker/setup-buildx-action@v3 (line 35), docker/build-push-action@v5 (line 38), actions/upload-artifact@v4 (line 97) are all pinned to mutable major-version tags. While GitHub-published actions move v-tags carefully, the OpenSSF and the GitHub security hardening guide both require commit-SHA pinning for actions handling secrets.",
+      "location": "work/coding-fabric/.github/workflows/smoke-gate.yml:30,35,38,97",
+      "impact": "If any of these tags are repointed (supply-chain attack or maintainer compromise), the smoke-gate workflow executes attacker code with access to GITHUB_TOKEN and Telegram secrets.",
+      "recommendation": "Replace each '@v<N>' with the full commit SHA of the audited release; add a comment with the version tag for readability. Configure Dependabot to bump SHAs automatically.",
+      "cwe": "CWE-1357"
+    },
+    {
+      "severity": "major",
+      "category": "A04: Insecure Design",
+      "title": "Lock file race condition and unprivileged-user DoS in last-known-good.sh",
+      "description": "acquire_lock() at lines 23-35 uses '[[ -f $LOCK_FILE ]]' + 'touch' which is non-atomic (TOCTOU). Worse, the default LOCK_FILE is '/var/lock/fabric-lkg.lock' — a predictable path. On any host where /var/lock is world-writable (default on many distros) OR where the script is invoked from a less-privileged service account, a local attacker can pre-create that file and permanently block last-known-good advancement (silent DoS of the safety net) by re-creating it on each release.",
+      "location": "work/coding-fabric/fabric/safe-mode/last-known-good.sh:17,23-35",
+      "impact": "Silent persistent disablement of the recovery mechanism; rollbacks fall back to an outdated tag, expanding the window in which a known-good rollback is unsafe.",
+      "recommendation": "Use 'flock' for atomic exclusive locking: 'exec 9>$LOCK_FILE; flock -n 9 || { log ERROR; exit 1; }'. Use mktemp/O_EXCL or place the lock under a directory owned 0700 by the service user. Add monitoring that alerts if last-known-good has not advanced in N hours.",
+      "cwe": "CWE-367"
+    },
+    {
+      "severity": "major",
+      "category": "A04: Insecure Design",
+      "title": "Rollback playbook trusts last-known-good tag without signature verification",
+      "description": "Lines 82-93 verify the tag exists ('git rev-parse') and check it out, but never run 'git verify-tag' nor compare the signer fingerprint against an allow-list. Combined with the unsigned tag in finding #1, this means whoever can push to origin (or whoever can compromise the build host that runs last-known-good.sh) controls the production rollback target. The 'operator-SSH only path' requirement is not enforced anywhere — anyone who can move the tag in the upstream repo effectively triggers a controlled deploy of their commit at the next rollback.",
+      "location": "work/coding-fabric/infrastructure/ansible/playbooks/safe-mode-rollback.yml:74-97",
+      "impact": "Malicious commit merged anywhere in the repo (or pushed by a stolen CI token) can become the production state on the next rollback, bypassing all branch protections.",
+      "recommendation": "Add a task after 'Fetch latest tags' that runs 'git verify-tag {{ tag_name }}' with GNUPGHOME pointing at an allow-listed-signer keyring. Fail closed. Optionally: also verify that the underlying commit is signed and present on a protected branch ('git branch --contains' against main).",
+      "cwe": "CWE-345"
+    },
+    {
+      "severity": "major",
+      "category": "A05: Security Misconfiguration",
+      "title": "smoke-gate ephemeral docker-compose binds workspace-manager to all interfaces of the runner",
+      "description": "fabric/safe-mode/smoke-gate/docker-compose.yml line 12: 'ports: - \"8080:8080\"' binds the Python mock HTTP server on 0.0.0.0:8080 of the GitHub runner. While runners are ephemeral and isolated per-job, the mock accepts arbitrary POST bodies and parses JSON without size limits or validation — and the smoke-gate workflow is triggered by pull_request, including from forks (per current 'on:' block which lacks a fork filter). A fork PR's checkout can replace run.sh and entrypoint.sh with anything.",
+      "location": "work/coding-fabric/fabric/safe-mode/smoke-gate/docker-compose.yml:11-12; work/coding-fabric/fabric/safe-mode/smoke-gate/entrypoint.sh:85; work/coding-fabric/.github/workflows/smoke-gate.yml:4-12",
+      "impact": "Fork PRs can execute arbitrary code in the runner; with the missing permissions block (finding #5), that code holds a token with default write scope. Note: secrets are NOT passed to pull_request from forks, so Telegram step fails silently — but the runner itself is still a target.",
+      "recommendation": "Bind to 127.0.0.1: 'ports: - \"127.0.0.1:8080:8080\"'. Restrict the trigger: use 'pull_request_target' only with explicit allow-listed safe steps, OR keep 'pull_request' but require a label that maintainers must add ('pull_request: types: [labeled]' + a guard step that fails unless 'mnemonic-loop' label is present AND PR is from same-repo). Add 'if: github.event.pull_request.head.repo.full_name == github.repository' to gate execution.",
+      "cwe": "CWE-732"
+    },
+    {
+      "severity": "minor",
+      "category": "A09: Security Logging and Monitoring",
+      "title": "README claims tag is signed by Mnemonic MCP but code does not implement signing",
+      "description": "fabric/safe-mode/README.md line 11 states the tag is 'signed by Mnemonic MCP if available'. last-known-good.sh never calls into Mnemonic MCP or any signing facility; the tag is annotated-only. Documentation drift from a security control is itself a finding: operators may believe a control is in place when it is not.",
+      "location": "work/coding-fabric/fabric/safe-mode/README.md:11; work/coding-fabric/fabric/safe-mode/last-known-good.sh:93",
+      "impact": "False sense of integrity; operators may skip the signature verification step assuming it 'just works'.",
+      "recommendation": "Either (preferred) implement the Mnemonic MCP signing call before 'git tag -a' and fall back to 'git tag -s' if MCP unavailable; or correct the README to state that signing is a future enhancement and document the residual risk.",
+      "cwe": "CWE-1059"
+    },
+    {
+      "severity": "minor",
+      "category": "A05: Security Misconfiguration",
+      "title": "smoke-gate.yml lacks egress restrictions and SARIF/log retention review",
+      "description": "Log artifact 'smoke-gate-logs' is uploaded with retention-days: 7. docker-compose logs may capture POST bodies (the trivial docs-task prompt only, but easy to evolve). No outbound network restrictions on the runner; no audit of what entrypoint.sh sends to the network.",
+      "location": "work/coding-fabric/.github/workflows/smoke-gate.yml:88-101",
+      "impact": "Future evolution of the smoke task could include sensitive payloads in logs that are world-readable to anyone with repo read access during the retention window.",
+      "recommendation": "Document an explicit allow-list of what may appear in smoke-test bodies. Consider 'step-security/harden-runner@<sha>' with 'egress-policy: block' and an allow list for required hosts. Keep retention-days but redact dynamic content.",
+      "cwe": "CWE-209"
+    },
+    {
+      "severity": "minor",
+      "category": "A04: Insecure Design",
+      "title": "Force-push of tag bypasses GitHub tag protection",
+      "description": "last-known-good.sh uses 'git push --force origin last-known-good'. Even with future tag signing in place, a force-push bypasses GitHub's tag protection rules (which only protect against ref-deletion / non-fast-forward by default for some configurations). The build host that runs this hook becomes a single point of compromise.",
+      "location": "work/coding-fabric/fabric/safe-mode/last-known-good.sh:96",
+      "impact": "If the build host or its deploy key is compromised, the attacker can rewrite history of the rollback anchor at will.",
+      "recommendation": "Use 'git push --force-with-lease origin last-known-good'. Enable GitHub 'Tag protection rules' for 'last-known-good*' restricted to the deploy key fingerprint and the signing-key identity. Rotate the deploy key regularly and store it in a hardware token / sops-encrypted secret.",
+      "cwe": "CWE-269"
+    },
+    {
+      "severity": "minor",
+      "category": "A05: Security Misconfiguration",
+      "title": "Ansible playbook does not enforce no_log on token-bearing tasks",
+      "description": "Tasks at lines 100-106, 135-141, 184-189 all reference {{ telegram_bot_token }} and have no 'no_log: true'. Failures in these tasks print the rendered command including the token to the Ansible callback (stdout, and to any CI log collector running the playbook).",
+      "location": "work/coding-fabric/infrastructure/ansible/playbooks/safe-mode-rollback.yml:99-106,134-141,184-191",
+      "impact": "Token leaked into CI logs / operator terminals / journald, depending on how ansible-playbook is invoked.",
+      "recommendation": "Add 'no_log: true' to every task that references the token. Add a one-line note in README about why and a CI lint (ansible-lint with 'no-log-password' rule) to enforce it.",
+      "cwe": "CWE-532"
+    },
+    {
+      "severity": "minor",
+      "category": "A03: Injection",
+      "title": "Smoke-gate run.sh logs raw HTTP response which may contain ANSI control sequences",
+      "description": "fabric/safe-mode/smoke-gate/run.sh line 55 'log \"Response: $response\"' echoes server response verbatim. If the mock or any future real backend returns a body containing terminal escape sequences (\\x1b, \\r), it can corrupt operator terminals and log files. Low impact in CI but worth filtering.",
+      "location": "work/coding-fabric/fabric/safe-mode/smoke-gate/run.sh:55,95",
+      "impact": "Terminal injection / log spoofing.",
+      "recommendation": "Pipe through 'tr -d \\\"\\\\000-\\\\010\\\\013-\\\\037\\\\177\\\"' or 'cat -v' before logging.",
+      "cwe": "CWE-117"
+    },
+    {
+      "severity": "minor",
+      "category": "best-practice",
+      "title": "Smoke-gate uses docker-compose v1 syntax in 2026 (v2 is 'docker compose')",
+      "description": "smoke-gate.yml lines 54, 62, 70, 92, 107 invoke 'docker-compose' (with hyphen) which is the Python v1 client, EOL since June 2023. The docker-compose.yml itself uses 'version: 3.8' which is obsolete in Compose v2. Not a direct security issue, but unmaintained tooling implies missed CVE fixes and is an A06 indicator.",
+      "location": "work/coding-fabric/.github/workflows/smoke-gate.yml:54,62,70,92,107; work/coding-fabric/fabric/safe-mode/smoke-gate/docker-compose.yml:1",
+      "impact": "Future loss of upstream security maintenance; subtle behavior differences vs v2 may mask bugs.",
+      "recommendation": "Migrate to 'docker compose' (no hyphen) which is the v2 plugin. Remove the 'version:' key from docker-compose.yml.",
+      "cwe": "CWE-1104"
+    }
+  ]
+}

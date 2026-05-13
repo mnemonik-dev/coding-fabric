@@ -1,0 +1,103 @@
+{
+  "task": "T18 fabric/watchdog code review — round 1",
+  "reviewer": "code-reviewer",
+  "date": "2026-05-12",
+  "summary": "Solid, well-structured watchdog. All 10 check modules conform to the check(config)->Alert|None interface. Alert dataclass is sane. Scheduler aggregation and deduplication are correct. Type hints are complete. Test quality is good but three edge-case gaps exist. Systemd unit is production-grade. Telegram/Kaneo clients are reusable. concurrent.futures choice is appropriate. One locking bug in AlertStateStore and one aggregation logic flaw need fixes.",
+  "checks": {
+    "check_module_interface": {
+      "status": "PASS",
+      "notes": "All 10 modules (orphaned_worktrees, hung_tmux, solana_rpc, irys_balance, stale_swarms, disk_pressure, master_drift, stale_prs, failed_attestation, stale_lkg) export check(config: dict[str, Any]) -> Alert | None. Each wraps internal logic in a try/except that returns None on failure, keeping the contract uniform. The _CHECK_MODULES list in scheduler.py has 10 entries matching these modules."
+    },
+    "alert_dataclass_schema": {
+      "status": "PASS",
+      "notes": "Alert has alert_class (str), severity (Severity enum), evidence (str), alert_id (UUID4 default), extra (dict). to_dict() serializes all fields correctly using severity.value. Severity is a str-Enum with INFO/WARNING/CRITICAL — valid. No missing fields, no mutable default field issues (field(default_factory=...) used correctly)."
+    },
+    "scheduler_aggregation": {
+      "status": "FAIL",
+      "issue": "Batch threshold comment says '>3 alerts -> digest' but code uses len(alerts) > _BATCH_THRESHOLD where _BATCH_THRESHOLD=3. So exactly 4 alerts trigger a digest (correct). However the docstring says 'if >3 new alerts fire in one tick, they are combined into a single digest message'. That is consistent. But the variable name _BATCH_THRESHOLD=3 paired with > means the cutoff is 4, not 3. This is a naming/documentation ambiguity: the name implies '3 is the batch threshold' but the behavior is 'batch if count exceeds 3'. Minor, but test_individual_send_when_3_or_fewer confirms exactly-3 goes individual which is correct.",
+      "additional_issue": "Kaneo client is instantiated in Scheduler.__init__ but create_card is never called inside tick() or _dispatch(). The scheduler dispatches to Telegram only; the Kaneo path is only accessible via turn_into_task.handle_command. The kaneo parameter in Scheduler.__init__ is dead weight — stored as self._kaneo but never used. This is not a bug (Kaneo is intentionally user-triggered) but the constructor parameter misleads readers into thinking cards are auto-created on every tick."
+    },
+    "type_hints": {
+      "status": "PASS_WITH_MINOR_ISSUES",
+      "notes": "All public functions have full type annotations. Minor: AlertStateStore._acquire returns an untyped IO object (no -> IO[str] annotation). _release has no type annotation for fh parameter. KaneoClient._request return type is dict[str, Any] | list | None — the list branch is unsafe; callers check isinstance(result, dict) before use, but the type is inconsistently used. These are non-critical."
+    },
+    "test_quality": {
+      "status": "PASS_WITH_GAPS",
+      "test_count_claimed": 34,
+      "gaps": [
+        {
+          "id": "gap-1",
+          "module": "hung_tmux",
+          "description": "No test for the case where tmux is not installed (shutil.which returns None). The check silently returns None, which is correct, but this code path has zero coverage.",
+          "severity": "minor"
+        },
+        {
+          "id": "gap-2",
+          "module": "stale_swarms / stale_lkg / irys_balance",
+          "description": "No tests at all for stale_swarms, stale_lkg, or irys_balance check modules. These three modules have zero direct unit tests. The claimed 34/34 count appears to be aspirational or counts scheduler-level integration tests that don't exercise these module internals.",
+          "severity": "major"
+        },
+        {
+          "id": "gap-3",
+          "module": "alert_state",
+          "description": "is_seen() reads the JSON file without acquiring the flock (only mark_seen and clear_expired acquire the lock). Under concurrent access (systemd timer overlap with manual run), is_seen could read a partially-written file. The write uses atomic os.replace but the read has no lock, which is safe for atomicity but not for the TOCTOU between is_seen and mark_seen in tick(). No test covers concurrent tick() calls.",
+          "severity": "moderate"
+        },
+        {
+          "id": "gap-4",
+          "module": "stale_prs",
+          "description": "No test for the case where github_repos is empty (returns None early). No test for rate-limited or 403 GitHub responses inside _gh_get pagination loop.",
+          "severity": "minor"
+        }
+      ]
+    },
+    "systemd_unit_templating": {
+      "status": "PASS_WITH_MINOR_ISSUES",
+      "notes": "Unit file is production-grade: Type=oneshot, comprehensive hardening directives (NoNewPrivileges, PrivateTmp, SystemCallFilter, CapabilityBoundingSet empty, etc.). LoadCredential is used correctly for secrets. Timer uses OnCalendar=*:0/5 with RandomizedDelaySec=30s and Persistent=true.",
+      "issue": "The unit is not a template (no @ in filename) — it is a static unit for a single instance, which is appropriate given the single-VM design. No issue here.",
+      "concern": "ExecStartPre=/home/op/.fabric/watchdog/scripts/load-credentials.sh is referenced in the unit but the script is not present in the repository. The script is responsible for reading LoadCredential files and exporting them as environment variables. Its absence from version control means deployment would fail silently. The script content should be committed or the unit should use PassCredentials + CredentialPath read in __main__.py directly."
+    },
+    "module_separation": {
+      "status": "PASS",
+      "notes": "telegram.TelegramPoster and kaneo.KaneoClient are standalone classes that take all parameters via constructor or environment variables. Neither imports the other; neither imports scheduler. They can be imported and used independently by any consumer (e.g., turn_into_task.py imports KaneoClient directly). The dependency graph is clean: models <- checks, models <- telegram/kaneo <- scheduler/turn_into_task."
+    },
+    "pyproject_deps": {
+      "status": "PASS_WITH_CONCERN",
+      "notes": "Runtime deps are empty (stdlib-only). Dev deps are pytest>=8.2.0, pytest-asyncio>=0.23.0, pytest-cov>=5.0.0. requires-python>=3.12 is correct (uses X|Y union types without __future__ annotations in some files — actually __future__ annotations is imported everywhere, so 3.10+ would work, but 3.12 is a safe explicit requirement).",
+      "concern": "pytest-asyncio is listed as a dev dependency and asyncio_mode='auto' is configured in pytest.ini_options, but no async tests exist in the test suite. This is dead configuration — harmless but adds unnecessary overhead to test collection."
+    },
+    "concurrent_futures_vs_asyncio": {
+      "status": "PASS",
+      "rationale": "concurrent.futures.ThreadPoolExecutor is the right choice here. All check modules use blocking I/O (subprocess, urllib.request.urlopen) which cannot be made async without rewriting every check. Using asyncio would require either asyncio.to_thread wrappers (equivalent complexity) or rewriting checks with aiohttp/asyncio.subprocess. The ThreadPoolExecutor approach is idiomatic for this pattern and avoids introducing an event loop into a one-shot systemd script. The shutdown(wait=False) + per-future result(timeout=...) pattern correctly implements per-check timeouts without blocking the entire pool."
+    },
+    "test_isolation": {
+      "status": "PASS_WITH_CONCERN",
+      "notes": "All scheduler and alert_state tests use tmp_path fixtures, providing per-test filesystem isolation. AlertStateStore instances are created fresh per test.",
+      "concern": "Alert.alert_id uses uuid.uuid4() as default_factory. Since each Alert() call generates a new UUID, alert identity is never accidentally shared across tests. This is correct. However, the Alert dataclass has no __eq__ implementation — equality falls back to object identity (since dataclass does not auto-generate __eq__ unless eq=True, which is the default). Actually @dataclass with eq=True (the default) does generate __eq__ based on all fields, so two Alert instances with the same fields ARE equal. This is fine.",
+      "issue": "In test_scheduler.py, the timeout test patches sched_module._PER_CHECK_TIMEOUT as a module-level integer but the scheduler method reads it as sched_module._PER_CHECK_TIMEOUT at call time, not at import time. The patch of the module attribute works correctly because _run_all_checks references sched_module._PER_CHECK_TIMEOUT via the module namespace. However, the test uses try/finally to restore the original value rather than unittest.mock.patch. If the test is interrupted mid-execution, state leaks. This is a minor robustness issue, not an isolation failure."
+    }
+  },
+  "critical_bugs": [
+    {
+      "id": "bug-1",
+      "location": "alert_state.py:mark_seen",
+      "description": "mark_seen acquires the flock but then calls self._read_raw() which re-opens and reads the file outside the lock context (the lock was acquired by opening a separate .lock file, not the data file). The eviction loop inside mark_seen calls self._read_raw() which reads alerts.json directly — this read is effectively under the exclusive lock since any writer also acquires the lock first. The pattern is correct as a process-level mutex. However, _write_raw() is also called during __init__ (self._write_raw({})) without acquiring the lock, creating a race on first initialization between two concurrent processes. Low probability but possible.",
+      "severity": "low"
+    },
+    {
+      "id": "bug-2",
+      "location": "scheduler.py:_run_all_checks",
+      "description": "executor.shutdown(wait=False) is called immediately after submitting all futures. On Python 3.9+, shutdown(wait=False, cancel_futures=True) would cancel pending (not yet started) futures. The current call uses the default cancel_futures=False, meaning all submitted tasks continue running even after the scheduler returns. For a one-shot systemd service this is acceptable (the process exits), but for any long-running use the executor threads are leaked. The docstring says cancel_futures=True but the code does not pass it.",
+      "severity": "low"
+    }
+  ],
+  "recommendations": [
+    "Add unit tests for stale_swarms, stale_lkg, and irys_balance (gap-2 is the most significant gap).",
+    "Commit load-credentials.sh to the repository or replace it with inline credential-reading in __main__.py using os.environ from CredentialDirectory.",
+    "Pass cancel_futures=True to executor.shutdown() (Python 3.9+) to match docstring intent.",
+    "Remove pytest-asyncio from dev deps or add at least one async test to justify it.",
+    "Annotate AlertStateStore._acquire return type as IO[str] and add type annotation to _release fh parameter.",
+    "Consider renaming _BATCH_THRESHOLD to _INDIVIDUAL_ALERT_MAX or clarifying the docstring to avoid the off-by-one ambiguity.",
+    "Add a note or remove the self._kaneo field from Scheduler since it is never used in the auto-dispatch path."
+  ]
+}
