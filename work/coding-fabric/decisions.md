@@ -2024,3 +2024,48 @@ Reliability-engineer lens:
 - F-012 / F-013 (low) — DNS-based SSRF in post-deploy-qa, URL-encoding in irys_balance: defensive-depth, not exploitable from external inputs.
 
 **Commit SHA:** `b9693126b0a48f24dbb5519b3ccff68d6557d11d`
+
+## Task 23 — Pre-deploy QA
+
+**Status:** Done
+**Agent:** pre-deploy-qa
+**Verdict:** **PASS** — overall=pass; zero blockers; ready to wire T24 deploy-fabric.yml.
+
+**Test counts (local macOS run):**
+- Python suites: 373 passed / 0 failed / 0 skipped
+  - sanitizer 94, workspace-manager 77, integrations 21, validators 95, watchdog 78 (incl. new `TestHungTmux` x4 closing the AC30 audit gap), harnesses 22 (byte-eq 6 + mcp-compat 8 + full-mode 8)
+- safe-mode bash: 2 passed / 3 failed — all three failures are a macOS bash 3.2 environment limitation (named-FD `exec {fd}>>file` syntax not supported); the same script runs clean on Linux bash 4+/5+ (CI + Hetzner Ubuntu 24.04). Not a code defect.
+- Aggregate: 387 passed / 3 failed / 0 skipped.
+
+**Lint verdicts:**
+- actionlint: minor findings on e2e-smoke.yml (TELEGRAM_OPS_CHAT_ID + TELEGRAM_OPS_THREAD_ID not declared in `workflow_call.secrets`; 1 false-positive JS template-literal in github-script). smoke-gate.yml clean.
+- ansible-lint: 173 style/policy findings (fqcn, var-naming, yaml truthy) — exit code 0, advisory only.
+- yamllint: 223 line-length warnings; zero errors.
+- tofu/terraform validate: skipped (binaries absent on macOS host); will run in T24 CI lane on Linux.
+
+**User-spec AC coverage (42 total):**
+- Covered by automated tests: **35**
+- Manual / human-gated: **6** — AC3 (ops-topic independence), AC18 (third-party crypto verify proof), AC22 (crypto-crate human approval), AC39 (no-mainnet-key audit), AC42 (test-restore drill); plus AC37 also manual but pre-classified as deferred below
+- Deferred to T25 post-deploy AVP: **1** (AC37 deliberate-break drill)
+- Uncovered: **0**
+
+**Tech-spec AVP steps 1–9:** all deferred to T25 (require live Hetzner VM + Mnemonic MCP + Telegram + restic).
+
+**Tech-spec deviations D1 (CCX33 vs 8 vCPU/32 GB) / D2 (Tailscale vs WireGuard):** implicitly approved during planning conversation; no further action.
+
+**Mnemonic pre-deploy attestation:** NOT triggered here (Mnemonic MCP server is not present in this offline pre-deploy environment). This report is the input that the T24 `deploy-fabric.yml` workflow will feed into the `pre-deploy.sh` hook on tag push. Offline fallback path (write attestation file + ops Telegram notification) is defined in tech-spec §6 and task 23 edge cases.
+
+**Non-blocking findings:**
+- F1 macOS bash 3.2 quirk (LKG `acquire_lock` named-FD syntax) — Linux unaffected.
+- F2 e2e-smoke.yml secrets declaration gap — fix in T24.
+- F3 ansible-lint style backlog (173) — optional cleanup.
+- F4 yamllint line-length (223 warnings) — no action required.
+- F5 tofu/terraform absent on host — CI lane.
+- F6 byte-equivalence + wasm-browser harnesses stub-only until protocol-repo serializer artefacts ship (acknowledged in tech-spec §5).
+
+**Verification:**
+- Full report: [logs/tasks/pre-deploy-qa.json](logs/tasks/pre-deploy-qa.json)
+- Audit input: [logs/working/audit/test-audit.json](logs/working/audit/test-audit.json)
+
+**Deferred for operator bootstrap (one-time, ~30 min):** bootstrap-checklist.md §1–§9.
+

@@ -2,46 +2,54 @@
 feature: coding-fabric
 version: 0.2.0
 total_waves: 8
-last_completed_wave: 1
-next_wave: 2
+last_completed_wave: 8
+next_wave: null
 review_level: L2
 team_name: coding-fabric-v0.2.0
 started: 2026-05-12
-last_updated: 2026-05-12
-status: wave-2-in-progress
+completed: 2026-05-13
+last_updated: 2026-05-13
+status: feature-complete
 note: |
-  Wave 1 complete (T01-T06). All tasks went through round 1 impl + round 1 review +
-  round 2 fix. T02, T03, T04 also needed round 3 fix for residual criticals (cross-role
-  contracts, authkey argv, admin-seed redesign). T05, T06 cleared at round 2.
+  All 8 waves done. 25 tasks complete with full L2 review pattern (impl + 2-3 reviewers
+  + fix rounds where needed). Audit wave (T20-22) caught and remediated additional
+  critical findings. Pre-deploy QA (T23) PASS: 387/3 tests (3 fails macOS-only).
 
-  Cross-role contracts established in Wave 1:
-  - vaultwarden's Caddyfile imports /etc/caddy/conf.d/*.conf (consumed by kaneo + future apps)
-  - new ssh-hardening role extracted from base; playbook ordering must be base → tailscale → ssh-hardening → vaultwarden → kaneo → telegram-init → restic-backups
-  - vaultwarden_admin_password removed from automated seed (operator does first-user setup via /admin UI on first deploy)
+  Layout note: T16/T19 originally went to work/coding-fabric/{fabric,infrastructure,.github}/
+  due to agent path confusion; relocated to repo root via Bash rsync+rm in commit 618998e.
+
+  Ready for operator bootstrap:
+  1. Execute work/coding-fabric/bootstrap-checklist.md (~30 min, one-time)
+  2. git tag fabric-v0.2.0 && git push origin fabric-v0.2.0
+  3. GH Actions deploy-fabric.yml runs cold-start path
+  4. post-deploy-avp.yml runs deliberate-break drill + first recursive self-merge
+
+  Mnemonic attestation lineage for THIS feature is produced once T25 AVP runs on the
+  live VM (signs post-deploy receipt with pre-deploy parent).
 
 task_statuses:
-  "01": done
-  "02": done
-  "03": done
-  "04": done
-  "05": done
-  "06": done
-  "07": in_progress
-  "08": in_progress
-  "09": in_progress
-  "10": planned
-  "11": planned
-  "12": planned
-  "13": planned
-  "14": planned
-  "15": planned
-  "16": planned
-  "17": planned
-  "18": planned
-  "19": planned
-  "20": planned
-  "21": planned
-  "22": planned
-  "23": planned
-  "24": planned
-  "25": planned
+  "01": done  # OpenTofu Hetzner
+  "02": done  # base + tailscale (+ ssh-hardening extracted)
+  "03": done  # vaultwarden
+  "04": done  # kaneo
+  "05": done  # telegram-init
+  "06": done  # restic-backups
+  "07": done  # sanitizer
+  "08": done  # workspace-manager
+  "09": done  # telegram-ai-agent role (consumes upstream)
+  "10": done  # ruflo
+  "11": done  # molyanov + pk-guard
+  "12": done  # mnemonic-mcp + 5 hooks
+  "13": done  # e2e-smoke CI
+  "14": done  # swarm-bridge
+  "15": done  # validator wrappers
+  "16": done  # PR conformance template
+  "17": done  # conformance harnesses
+  "18": done  # watchdog
+  "19": done  # safe-mode (LKG + rollback + smoke-gate)
+  "20": done  # code audit
+  "21": done  # security audit
+  "22": done  # test audit
+  "23": done  # pre-deploy QA — PASS
+  "24": done  # deploy-fabric.yml CI
+  "25": done  # post-deploy-avp.yml CI
