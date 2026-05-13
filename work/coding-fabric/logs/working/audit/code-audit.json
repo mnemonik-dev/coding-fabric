@@ -1,0 +1,408 @@
+{
+  "audit": "code",
+  "task": "20",
+  "scope": "T01-T19 integrated",
+  "overall_verdict": "needs-remediation",
+  "files_read": [
+    "fabric/logs/sanitizer/filter.py",
+    "fabric/logs/sanitizer/handler.py",
+    "fabric/logs/sanitizer/tg_middleware.py",
+    "fabric/logs/sanitizer/__init__.py",
+    "fabric/logs/sanitizer/README.md",
+    "fabric/logs/sanitizer/tests/test_filter.py",
+    "fabric/workspace-manager/main.py",
+    "fabric/workspace-manager/config.py",
+    "fabric/workspace-manager/state.py",
+    "fabric/workspace-manager/worktree.py",
+    "fabric/workspace-manager/vault.py",
+    "fabric/workspace-manager/models.py",
+    "fabric/workspace-manager/logging_setup.py",
+    "fabric/workspace-manager/pyproject.toml",
+    "fabric/workspace-manager/systemd/workspace-manager.service",
+    "fabric/workspace-manager/tests/test_api.py",
+    "fabric/workspace-manager/README.md",
+    "fabric/integrations/swarm_bridge.py",
+    "fabric/integrations/workspace_client.py",
+    "fabric/integrations/ruflo_client.py",
+    "fabric/integrations/tests/test_swarm_bridge.py",
+    "fabric/molyanov/validators/_common.py",
+    "fabric/molyanov/validators/post_deploy_qa_wrapper.py",
+    "fabric/molyanov/validators/security_auditor_wrapper.py",
+    "fabric/molyanov/validators/skeptic_wrapper.py",
+    "fabric/molyanov/validators/tests/test_common.py",
+    "fabric/watchdog/__main__.py",
+    "fabric/watchdog/__init__.py",
+    "fabric/watchdog/scheduler.py",
+    "fabric/watchdog/models.py",
+    "fabric/watchdog/alert_state.py",
+    "fabric/watchdog/telegram.py",
+    "fabric/watchdog/kaneo.py",
+    "fabric/watchdog/turn_into_task.py",
+    "fabric/watchdog/url_validator.py",
+    "fabric/watchdog/checks/orphaned_worktrees.py",
+    "fabric/watchdog/checks/solana_rpc.py",
+    "fabric/watchdog/checks/failed_attestation.py",
+    "fabric/watchdog/checks/disk_pressure.py",
+    "fabric/watchdog/checks/master_drift.py",
+    "fabric/watchdog/checks/stale_swarms.py",
+    "fabric/watchdog/checks/hung_tmux.py",
+    "fabric/watchdog/checks/stale_prs.py",
+    "fabric/watchdog/checks/stale_lkg.py",
+    "fabric/watchdog/checks/irys_balance.py",
+    "fabric/watchdog/systemd/fabric-watchdog.service",
+    "fabric/harnesses/byte-equivalence/tests/test_byte_equivalence.py",
+    "fabric/harnesses/mcp-compat/client.py",
+    "fabric/harnesses/full-mode/independent_verifier.py",
+    "fabric/harnesses/full-mode/devnet_roundtrip.py",
+    "infrastructure/tofu/hetzner/main.tf",
+    "infrastructure/tofu/hetzner/variables.tf",
+    "infrastructure/tofu/hetzner/outputs.tf",
+    "infrastructure/tofu/hetzner/versions.tf",
+    "infrastructure/tofu/hetzner/.gitignore",
+    "infrastructure/tofu/hetzner/tests/test_tofu_plan.sh",
+    "infrastructure/ansible/roles/base/tasks/main.yml",
+    "infrastructure/ansible/roles/base/defaults/main.yml",
+    "infrastructure/ansible/roles/ssh-hardening/tasks/main.yml",
+    "infrastructure/ansible/roles/tailscale/tasks/main.yml",
+    "infrastructure/ansible/roles/vaultwarden/tasks/main.yml",
+    "infrastructure/ansible/roles/vaultwarden/defaults/main.yml",
+    "infrastructure/ansible/roles/vaultwarden/templates/Caddyfile.j2",
+    "infrastructure/ansible/roles/vaultwarden/templates/docker-compose.yml.j2",
+    "infrastructure/ansible/roles/vaultwarden/templates/vaultwarden.env.j2",
+    "infrastructure/ansible/roles/kaneo/tasks/main.yml",
+    "infrastructure/ansible/roles/telegram-init/tasks/main.yml",
+    "infrastructure/ansible/roles/restic-backups/tasks/main.yml",
+    "infrastructure/ansible/roles/restic-backups/templates/fabric-backup.sh.j2",
+    "infrastructure/ansible/roles/mnemonic-mcp/tasks/main.yml",
+    "infrastructure/ansible/roles/telegram-ai-agent/tasks/main.yml",
+    "infrastructure/ansible/roles/ruflo/tasks/main.yml",
+    "infrastructure/ansible/roles/ruflo/files/validate_matrix.py",
+    "infrastructure/ansible/roles/molyanov/tasks/main.yml",
+    "infrastructure/ansible/roles/molyanov/files/pk-guard.sh",
+    "infrastructure/ansible/roles/molyanov/files/ops-notify.sh",
+    "work/coding-fabric/fabric/safe-mode/last-known-good.sh",
+    "work/coding-fabric/fabric/safe-mode/smoke-gate/run.sh",
+    "work/coding-fabric/fabric/safe-mode/smoke-gate/entrypoint.sh",
+    "work/coding-fabric/fabric/safe-mode/smoke-gate/Dockerfile",
+    "work/coding-fabric/fabric/safe-mode/smoke-gate/docker-compose.yml",
+    "work/coding-fabric/fabric/safe-mode/tests/test_lkg.sh",
+    "work/coding-fabric/fabric/safe-mode/README.md",
+    "work/coding-fabric/fabric/github-templates/composite-action/action.yml",
+    "work/coding-fabric/fabric/github-templates/workflows/pr-conformance.yml",
+    "work/coding-fabric/fabric/github-templates/pull_request_template.md",
+    "work/coding-fabric/fabric/github-templates/config.example.yml",
+    "work/coding-fabric/fabric/github-templates/README.md",
+    "work/coding-fabric/.github/workflows/smoke-gate.yml",
+    "work/coding-fabric/infrastructure/ansible/playbooks/safe-mode-rollback.yml",
+    "work/coding-fabric/infrastructure/scripts/configure-branch-protection.sh",
+    "work/coding-fabric/infrastructure/ansible/inventory/group_vars/all/secrets.sops.yml",
+    ".github/workflows/e2e-smoke.yml"
+  ],
+  "findings": [
+    {
+      "severity": "critical",
+      "area": "ci",
+      "file": "work/coding-fabric/fabric/github-templates/composite-action/action.yml",
+      "line": 43,
+      "issue": "PR-body shell injection. `pr_body=\"${{ inputs.pr_body }}\"` interpolates an untrusted PR description directly into bash. A malicious PR author can inject arbitrary shell commands via the body (e.g. a backtick or `$(...)` substitution executes on the runner). Same pattern recurs at lines 71 and 107.",
+      "recommendation": "Pass `pr_body` via the env-block of the run step (`env: { PR_BODY: ${{ inputs.pr_body }} }`) and reference it as `\"$PR_BODY\"` inside the script. This is the documented GH Actions safe pattern."
+    },
+    {
+      "severity": "critical",
+      "area": "ci",
+      "file": ".github/workflows/e2e-smoke.yml",
+      "line": 234,
+      "issue": "GitHub Actions code injection via `feature_name`. `'${{ inputs.feature_name }}'` is interpolated into a JS template literal in `github-script`; a feature_name containing a single quote escapes the string and executes arbitrary JS in the workflow context (which has `contents: write` and `pull-requests: write`). Same risk in bash interpolations at lines 99, 119, 218 where `feature_name` is embedded directly into `tailscale ssh ... 'CMD'`.",
+      "recommendation": "Read input via `env: FEATURE_NAME: ${{ inputs.feature_name }}` and reference `process.env.FEATURE_NAME` in github-script; in bash use `\"$FEATURE_NAME\"`. Also add an early-step regex validation that feature_name matches `^[a-z0-9-]{1,64}$`."
+    },
+    {
+      "severity": "critical",
+      "area": "workspace-manager",
+      "file": "fabric/workspace-manager/logging_setup.py",
+      "line": 85,
+      "issue": "Sanitizer bypass at DEBUG level. When LOG_LEVEL=DEBUG the code installs a plain `logging.StreamHandler()` rather than `SanitizedStreamHandler`. Any secret reaching stderr in debug mode is written to systemd journal unsanitised, violating T07's single-point-of-trust contract.",
+      "recommendation": "Replace `logging.StreamHandler()` with `from fabric.logs.sanitizer import SanitizedStreamHandler; SanitizedStreamHandler()` so DEBUG retains the sanitisation guarantee. Add a unit test that asserts the only handlers attached are sanitised."
+    },
+    {
+      "severity": "high",
+      "area": "ansible",
+      "file": "infrastructure/ansible/roles/vaultwarden/templates/docker-compose.yml.j2",
+      "line": 28,
+      "issue": "Circular service dependency. `vaultwarden.depends_on: [caddy]` (line 29) AND `caddy.depends_on: [vaultwarden]` (line 49-50). docker compose refuses to start a stack with a cycle (`circular reference: vaultwarden -> caddy -> vaultwarden`). The whole vaultwarden role will fail at `docker compose up` time.",
+      "recommendation": "Only one direction is needed. Caddy is the reverse-proxy fronting vaultwarden, so `caddy.depends_on: [vaultwarden]` is correct and the line-28-29 dependency on vaultwarden's side must be removed."
+    },
+    {
+      "severity": "high",
+      "area": "ansible",
+      "file": "infrastructure/ansible/roles/ruflo/tasks/main.yml",
+      "line": 48,
+      "issue": "Malformed `always:` block. The `always:` keyword on line 48 is indented as a task attribute under the `Install ruflo` shell task, but Ansible's `always:` is only valid inside a `block/rescue/always` construct. As written it is silently ignored, so the installer artifact in `{{ ruflo_temp_dir.path }}` is never cleaned up.",
+      "recommendation": "Wrap the install + cleanup in a `block:` and put the cleanup in a sibling `always:`, or use a separate `Clean up installer artifact` task after the shell task with no condition."
+    },
+    {
+      "severity": "high",
+      "area": "ansible",
+      "file": "work/coding-fabric/infrastructure/ansible/playbooks/safe-mode-rollback.yml",
+      "line": 232,
+      "issue": "Banner message never expands. The Telegram banner shell uses `jq -n --arg msg '$SUCCESS_MSG' ...` — single quotes prevent shell variable expansion AND jq does not expand env vars, so the literal string `$SUCCESS_MSG` is sent rather than the actual message. The same playbook also passes `telegram_bot_token` directly inside the URL of three different curl invocations (lines 137, 181, 230); `no_log: yes` blocks Ansible echoing but bash process listing can still expose the token.",
+      "recommendation": "Use double quotes for shell expansion: `--arg msg \"$SUCCESS_MSG\"`. Move the token to the `Authorization: Bearer` header where Telegram supports it, or pass it via `--data-urlencode` on stdin to avoid command-line exposure. Pre-validate `success_msg` length and content."
+    },
+    {
+      "severity": "high",
+      "area": "ci",
+      "file": "work/coding-fabric/.github/workflows/smoke-gate.yml",
+      "line": 133,
+      "issue": "Secret leak risk in curl URL. `\"https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage\"` is interpolated by the workflow expression engine; if any later step echoes the rendered script the bot token surfaces in CI logs. Also lines 114-115 perform partial secret sanitisation via sed — patterns don't cover base58 keys, ANTHROPIC_, JWK, or Telegram file URLs that T07 sanitizer handles.",
+      "recommendation": "Pass the token via `env: TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}` and reference `\"$TG_TOKEN\"` in curl. Replace ad-hoc sed redaction with a small Python step that imports `fabric.logs.sanitizer.sanitize` (or reproduce the same five patterns)."
+    },
+    {
+      "severity": "high",
+      "area": "cross-cutting",
+      "file": "infrastructure/ansible/roles/molyanov/files/pk-guard.sh",
+      "line": 25,
+      "issue": "Bot token in URL + HTML parse_mode injection. `pk-guard.sh` and `ops-notify.sh` (same role) build `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage` exposing the token in `ps -ef` output, and send messages with `parse_mode=HTML` while interpolating untrusted `$TARGET_PATH` (pk-guard) and `$MESSAGE` (ops-notify) — HTML/markdown injection inside Telegram messages.",
+      "recommendation": "Drop `parse_mode=HTML` (default plain-text). Source the bot token from a credential file via systemd LoadCredential, post the URL without inline token where possible, and run all message content through `fabric.logs.sanitizer.sanitize` before posting."
+    },
+    {
+      "severity": "high",
+      "area": "harnesses",
+      "file": "fabric/harnesses/full-mode/devnet_roundtrip.py",
+      "line": 81,
+      "issue": "`sign_attestation` does not sign. In full mode the function reads the Solana keypair private file and then returns `str(keypair.public_key)` — i.e. the public key, not a signature of the attestation. The downstream `submit_to_devnet` carries the same value as `signature`. T17 byte-equivalence and full-mode AC require independent verification.",
+      "recommendation": "Use `keypair.sign_message(canonical_serialize(attestation))` (solana-py 0.30+ API) or the appropriate solders signing primitive, and return the signature bytes. Add a regression test asserting `verify(signature, public_key, attestation) == True` in stub mode using a deterministic test keypair."
+    },
+    {
+      "severity": "high",
+      "area": "ansible",
+      "file": "infrastructure/ansible/roles/kaneo/tasks/main.yml",
+      "line": 144,
+      "issue": "`until` on a `block`. The 'Paginate through all forum topics' block uses `until/retries/delay` at the block level; Ansible does not honour `until` on `block` — these keywords are only valid on tasks. The pagination loop therefore runs exactly once instead of looping until `forum_topics_response.json.result` is empty. Same pattern in telegram-init at line 144.",
+      "recommendation": "Convert the pagination loop into a `ansible.builtin.include_tasks` with `loop` + a `when:` guard, or use `ansible.builtin.uri` inside a single task with `until` on that task. Verify with `ansible-lint`."
+    },
+    {
+      "severity": "high",
+      "area": "workspace-manager",
+      "file": "fabric/workspace-manager/pyproject.toml",
+      "line": 3,
+      "issue": "Invalid build-backend. `build-backend = \"setuptools.backends.legacy:build\"` is not a real backend module. The correct names are `setuptools.build_meta` or (rare) `setuptools.build_meta:__legacy__`. As written `pip install -e .` and `pip wheel` both fail at backend resolution.",
+      "recommendation": "Set `build-backend = \"setuptools.build_meta\"`. Verify with `python -m build` and add a CI lane that builds the wheel."
+    },
+    {
+      "severity": "medium",
+      "area": "ci",
+      "file": "work/coding-fabric/fabric/safe-mode/smoke-gate/run.sh",
+      "line": 53,
+      "issue": "Smoke-gate POSTs to `/api/v1/task` which does not exist on the real workspace-manager (T08 only exposes /worktree, /worktrees, /health). The smoke-gate Dockerfile starts a parallel Python mock server (`entrypoint.sh` line 22-91) that re-implements `/api/v1/task` — so the smoke is not actually exercising the production code path. Smoke-gate would pass even if the real workspace-manager API broke.",
+      "recommendation": "Replace the Python mock in `entrypoint.sh` with the real workspace-manager service (install via the fabric image) and update `run.sh` to call `POST /worktree` with valid request bodies. This makes smoke-gate a true candidate-fabric validator."
+    },
+    {
+      "severity": "medium",
+      "area": "ansible",
+      "file": "infrastructure/ansible/roles/mnemonic-mcp/tasks/main.yml",
+      "line": 3,
+      "issue": "User-create conflict. The role creates user `{{ mnemonic_mcp_service_user }}` (likely `op`) with `home=/var/lib/mnemonic-mcp` and `shell=/usr/sbin/nologin`. The `base` role already creates `op` with `home=/home/op` and `shell=/bin/bash`. Apply order determines which definition wins; if mnemonic-mcp runs second it changes the operator user's home/shell, breaking SSH login.",
+      "recommendation": "Either create a distinct `mnemonic-mcp` service user (e.g. `mcp`) or guard the `user:` task with `state: present` only (no home/shell rewrite). The DynamicUser= systemd directive is also worth considering."
+    },
+    {
+      "severity": "medium",
+      "area": "cross-cutting",
+      "file": "infrastructure/ansible/roles/mnemonic-mcp/tasks/main.yml",
+      "line": 3,
+      "issue": "FQCN inconsistency. Most tasks in mnemonic-mcp and several other roles (molyanov, ruflo cleanup) use short names `user:`, `file:`, `template:` etc. instead of fully-qualified `ansible.builtin.user:`. Ansible >=2.10 emits a deprecation warning and ansible-lint flags this as `fqcn[action-core]`.",
+      "recommendation": "Run `ansible-lint --fix` over the roles or do a search-and-replace for `^- name:.*\\n  user:` → `ansible.builtin.user:` and the same for `file:`, `template:`, `service:`, `systemd:`, `command:`, `shell:`, `stat:`, `assert:`, `set_fact:`, `debug:`."
+    },
+    {
+      "severity": "medium",
+      "area": "ci",
+      "file": "work/coding-fabric/fabric/github-templates/composite-action/action.yml",
+      "line": 70,
+      "issue": "`base_ref` and `head_ref` interpolated into `git fetch origin \"${{ inputs.base_ref }}\"`. Although these come from the GitHub event and are normally safe branch names, the action is documented as reusable across repos. If a fork sets a crafted base_ref, the fetch URL substitution can be abused. Also `config_path` input is declared but never read.",
+      "recommendation": "Pass refs via env vars and validate with a regex (`^[A-Za-z0-9_./-]+$`). Either implement vendored-path exclusion using `config_path` or remove the unused input from the action contract."
+    },
+    {
+      "severity": "medium",
+      "area": "ansible",
+      "file": "infrastructure/ansible/roles/base/tasks/main.yml",
+      "line": 50,
+      "issue": "Broad NOPASSWD sudoers. `op ALL=(ALL) NOPASSWD: ALL` grants full root authority without a password. The role defaults file flags this as 'acceptable for initial bootstrap' but no follow-up scoping exists for the production milestone.",
+      "recommendation": "Replace with a curated allowlist of commands the fabric actually invokes via sudo (systemctl, journalctl, apt-get, ufw, docker, restic, tailscale). Reference T07 FUTURE-WORK note already in defaults/main.yml."
+    },
+    {
+      "severity": "medium",
+      "area": "watchdog",
+      "file": "fabric/watchdog/scheduler.py",
+      "line": 180,
+      "issue": "ThreadPoolExecutor.shutdown(wait=False, cancel_futures=True) is called before any future.result() — but threads already started cannot be cancelled. The combination is technically fine but reads as 'shutdown immediately, then read results from threads that are no longer in a managed pool'. A genuinely hung check leaks a thread permanently (Python cannot kill threads).",
+      "recommendation": "Convert each check to a subprocess (subprocess.run with timeout) so a hang truly terminates. Alternatively run the watchdog as `Type=oneshot` (already done) so the systemd job exits and the next tick starts fresh — document this limitation in the README."
+    },
+    {
+      "severity": "medium",
+      "area": "watchdog",
+      "file": "fabric/watchdog/checks/stale_prs.py",
+      "line": 50,
+      "issue": "GitHub PAT used in plain `Authorization: Bearer` header; no token redaction is applied to the `next_url` value before logging (line 61). If GitHub returns an error referencing the full request URL, the token won't be in it (it's a header), but exception traces from urllib can include the request object in some edge cases.",
+      "recommendation": "Wrap the urlopen call in try/except and explicitly scrub `Authorization` headers from any logged exception. Also consider GitHub fine-grained tokens scoped to `pull-requests:read` per repo rather than a classic PAT with full repo access."
+    },
+    {
+      "severity": "medium",
+      "area": "sanitizer",
+      "file": "fabric/logs/sanitizer/README.md",
+      "line": 8,
+      "issue": "README documentation lag. README states the base58 pattern is `{32,44}` but the implementation in filter.py line 56 uses `{32,256}` (extended to cover full 87/88-char Ed25519 keypairs). The example regex on README line 17 references the old length bound, misleading future operators who read the doc as the source of truth.",
+      "recommendation": "Update README to reflect the {32,256} bound, document the rationale (full keypair coverage), and note the look-around boundaries that catch padded keys."
+    },
+    {
+      "severity": "medium",
+      "area": "ci",
+      "file": "work/coding-fabric/fabric/github-templates/composite-action/action.yml",
+      "line": 123,
+      "issue": "Emoji usage. Lines 123, 137, 148 use `❌` and `✅` emojis in echo output. User instructions (CLAUDE.md) forbid emojis in code. Same for the pr-conformance.yml workflow.",
+      "recommendation": "Replace emojis with ASCII tokens (e.g. `[FAIL]`, `[PASS]`) — keep the meaning, comply with project style rules."
+    },
+    {
+      "severity": "medium",
+      "area": "cross-cutting",
+      "file": "fabric/integrations/workspace_client.py",
+      "line": 252,
+      "issue": "Retry sleep without jitter. `_with_retry` doubles `_RETRY_BASE_DELAY` per attempt but never adds jitter. When N agents call workspace-manager simultaneously and the service returns 5xx, all clients retry in lockstep, producing thundering-herd retries. SwarmBridge adds jitter for the 409 path but the 5xx path does not.",
+      "recommendation": "Apply a `random.uniform(0, delay * 0.5)` jitter additive in `_with_retry`, matching the swarm_bridge capacity-retry pattern."
+    },
+    {
+      "severity": "medium",
+      "area": "ansible",
+      "file": "infrastructure/ansible/roles/ruflo/tasks/main.yml",
+      "line": 33,
+      "issue": "Invalid task keyword. `failed_when` + `fail_msg` on the get_url task — `fail_msg` is only valid inside `assert:` blocks (Ansible silently ignores it on other modules). The failure message in the comment will never be shown.",
+      "recommendation": "Convert to an explicit `assert:` task after the get_url, or drop the `fail_msg` and rely on the get_url's own error message."
+    },
+    {
+      "severity": "medium",
+      "area": "tofu",
+      "file": "infrastructure/tofu/hetzner/main.tf",
+      "line": 130,
+      "issue": "Cloud-init user_data is heredoc-interpolated with `${var.operator_ssh_pubkey}`. variables.tf provides a regex validator (good), but the substitution still relies on the validator catching all attack paths. If the validator regex misses a corner case (e.g. an embedded null byte), a malformed key could inject extra YAML keys.",
+      "recommendation": "Validator looks solid for OpenSSH keys but consider also calling `templatefile()` and using `jsonencode(var.operator_ssh_pubkey)` so YAML semantics are enforced at render time."
+    },
+    {
+      "severity": "medium",
+      "area": "watchdog",
+      "file": "fabric/watchdog/checks/master_drift.py",
+      "line": 80,
+      "issue": "Config-controlled paths to git. `master_repos` from config are passed to `git -C <path> fetch/rev-parse` with no path-normalisation. Operator-controlled config so trust boundary is acceptable, but a typo or symlink trick could fetch outside the intended directory. The `chdir=str(repo)` does not block traversal.",
+      "recommendation": "Resolve each repo path and assert it is contained within a known root (e.g. `/home/op/code/mnemonic-masters`), similar to the worktree_path containment check in workspace-manager/worktree.py."
+    },
+    {
+      "severity": "low",
+      "area": "ci",
+      "file": ".github/workflows/e2e-smoke.yml",
+      "line": 260,
+      "issue": "Sanitiser duplication. The failure-path sed pipeline reproduces a subset of T07 patterns (sk-, api_, ANTHROPIC_, JWK fragments) but misses base58 Solana keys and Telegram file URLs. Drift between this CI sanitiser and the Python module is inevitable.",
+      "recommendation": "Add a small CI step `python -c 'from fabric.logs.sanitizer import sanitize; print(sanitize(sys.stdin.read()))'` and pipe the diagnostic through it. Single source of truth."
+    },
+    {
+      "severity": "low",
+      "area": "workspace-manager",
+      "file": "fabric/workspace-manager/main.py",
+      "line": 50,
+      "issue": "Module-level mutable cache `_vault_cache` not protected against concurrent access. Two simultaneous /health requests may both miss the cache and call `bw status` twice. Not a security issue but defeats the cache.",
+      "recommendation": "Wrap with `asyncio.Lock()` or use `functools.lru_cache` with a TTL wrapper. Or accept the duplication and note in a comment."
+    },
+    {
+      "severity": "low",
+      "area": "watchdog",
+      "file": "fabric/watchdog/telegram.py",
+      "line": 151,
+      "issue": "Telegram URL constructed with bot token inline. Telegram requires the token in the URL path — unavoidable per upstream API. Code mitigates with `_scrub_token()` for exceptions; however the URL itself is built outside the try/except so a synchronous urllib error before urlopen (rare) could log the full URL.",
+      "recommendation": "Move the URL composition inside the try block, or use `Authorization` header form (`https://api.telegram.org/bot${token}/...` cannot be replaced, but token can be added as a session header for some endpoints). Acceptable as-is."
+    },
+    {
+      "severity": "low",
+      "area": "ansible",
+      "file": "work/coding-fabric/infrastructure/scripts/configure-branch-protection.sh",
+      "line": 56,
+      "issue": "Unquoted variable expansions: `gh api repos/$REPO/branches/$BRANCH/protection`. Trusted environment but bad hygiene; shellcheck would flag. Same lines 95, 99.",
+      "recommendation": "Quote: `gh api \"repos/$REPO/branches/$BRANCH/protection\"`. Add `shellcheck` to CI."
+    },
+    {
+      "severity": "low",
+      "area": "ansible",
+      "file": "infrastructure/ansible/roles/ssh-hardening/tasks/main.yml",
+      "line": 1,
+      "issue": "No defaults/main.yml, no meta/main.yml. Other roles include both; consistency lapse. Role assumes Tailscale is up but doesn't declare the dependency explicitly.",
+      "recommendation": "Add `meta/main.yml` with `dependencies: [tailscale]`. Add an empty `defaults/main.yml` (or with the harden flags as configurable defaults)."
+    },
+    {
+      "severity": "low",
+      "area": "watchdog",
+      "file": "fabric/watchdog/checks/hung_tmux.py",
+      "line": 51,
+      "issue": "`tmux list-sessions` parsed by whitespace `split()` without bounding. A session name with a space would break parsing. Low risk because tmux session names rarely contain spaces, but a malicious local user could create a session that fools the parser.",
+      "recommendation": "Use a unique delimiter: `-F '#{session_name}\\t#{session_activity}'` and split on `\\t`, capping at maxsplit=1."
+    },
+    {
+      "severity": "info",
+      "area": "cross-cutting",
+      "file": "work/coding-fabric/fabric/safe-mode",
+      "line": 0,
+      "issue": "Layout drift: T16 (github-templates) and T19 (safe-mode, smoke-gate.yml, branch-protection script, safe-mode-rollback playbook) artefacts live under `work/coding-fabric/fabric/` and `work/coding-fabric/.github/` rather than the repo-root `fabric/` and `.github/`. This nested duplicate means the GitHub workflow loader won't see `smoke-gate.yml` (only `.github/workflows/e2e-smoke.yml` exists at repo root). All references in code use the work-tree paths.",
+      "recommendation": "Decide on canonical location: either move artefacts up to the repo root before merge, or update the deploy playbook to copy from work/coding-fabric/ at apply time. Without resolution the smoke-gate workflow will not run on PRs."
+    },
+    {
+      "severity": "info",
+      "area": "watchdog",
+      "file": "fabric/watchdog/url_validator.py",
+      "line": 88,
+      "issue": "Subtle exception confusion in URL validator. `ipaddress.ip_address(hostname)` raises ValueError on invalid input, and the except block then re-raises if the original ValueError contained 'not allowed' or 'permitted'. The string-matching reraise heuristic is fragile.",
+      "recommendation": "Restructure to first call `_looks_like_ipaddress(hostname)` returning bool, then branch — avoids re-using ValueError for control flow."
+    },
+    {
+      "severity": "info",
+      "area": "harnesses",
+      "file": "fabric/harnesses/full-mode/devnet_roundtrip.py",
+      "line": 78,
+      "issue": "File handle not closed: `open(Path(keypair_path).expanduser(), 'rb').read()`. Best practice is `with open(...) as f: data = f.read()`. Minor — process is short-lived so leak is bounded.",
+      "recommendation": "Use a context manager."
+    }
+  ],
+  "positive_notes": [
+    "Sanitizer (T07) is well-engineered: idempotent, per-line, exhaustively tested (40+ cases including adversarial padding, corpus replay, drop-in handler compatibility). Module is correctly imported as a HARD dependency at top of swarm_bridge, workspace_client, ruflo_client, watchdog scheduler, molyanov validators — production refuses to start without it.",
+    "workspace-manager (T08) has solid TOCTOU handling: capacity check is inside flock in state.add(); env file is written atomically with tempfile+rename+fsync; bw session token is loaded from systemd LoadCredential, never stored as env var on disk; task_id regex blocks path traversal at the pydantic model layer AND re-validated at path-param layer.",
+    "Argument-injection defense in fabric/workspace-manager/worktree.py:86 uses `--` separator before user-supplied base_ref. Same pattern repeated in fabric/molyanov/validators/_common.py:282 with the explicit ValueError on option-style extra_args.",
+    "OpenTofu module (T01) is exemplary: firewall attached atomically at server creation (no race window), `ignore_changes=[user_data, labels]` documented with clear rationale, `prevent_destroy` flag with explicit dev/steady-state guidance, `create_before_destroy` for server-type resize, .gitignore explicitly keeps `.terraform.lock.hcl` tracked with rationale.",
+    "watchdog (T18) round-2 fixes are thorough: 24h dedup cache with flock-protected check-and-set, deterministic alert IDs prevent re-alerting on persistent outages, URL allowlist blocks mainnet/private-network SSRF, alert_class binding prevents card-recycling attacks, caller authorization via WATCHDOG_OPERATOR_USER_IDS for /turn-into-task.",
+    "Molyanov validators isolate ruflo plugin invocation through a single _common.invoke_ruflo() with built-in option-injection rejection, sanitized stdout/stderr (ANSI + control-char strip, 4096-char cap), uniform finding-schema canonicalisation, and consistent fallback to error_result on plugin missing/timeout/crash.",
+    "Vaultwarden and restic-backups roles correctly use no_log:true on credential-handling tasks, assert preconditions on token length, render .env files with mode 0600, and load all sensitive vars from sops rather than embedding in defaults.",
+    "swarm_bridge orchestrates worktree leases with separate lifecycle from spawn (cleanup_worktrees is caller's responsibility unless auto_cleanup=True), uses asyncio.Semaphore to throttle create_worktree calls, and applies jittered retry on 409 capacity errors.",
+    "restic-backups script (fabric-backup.sh.j2) validates retention parameters before --prune, aborts the prune if >50 snapshots would be deleted (data-loss guard), and uses jq -n for proper JSON escaping when posting Telegram failure alerts.",
+    "Tofu test (test_tofu_plan.sh) is well-scoped: handles dummy-token plan failures gracefully, separates init/validate/fmt/plan into discrete steps with clear exit-code semantics, and trap-removes the plan artifact to keep sensitive data out of the workspace."
+  ],
+  "coverage_summary": {
+    "files_reviewed": 92,
+    "critical_count": 3,
+    "high_count": 8,
+    "medium_count": 13,
+    "low_count": 6,
+    "info_count": 3,
+    "total_findings": 33,
+    "areas": {
+      "sanitizer": 1,
+      "workspace-manager": 3,
+      "watchdog": 5,
+      "ansible": 8,
+      "tofu": 1,
+      "ci": 6,
+      "harnesses": 2,
+      "cross-cutting": 6
+    },
+    "tasks_with_findings": ["T01","T02","T07","T08","T09","T10","T11","T12","T14","T16","T17","T18","T19"],
+    "tasks_clean": ["T03 (caddy via vaultwarden role - tangled), T13 (e2e-smoke high finding), T15 (molyanov validators - only positive notes)"]
+  },
+  "remediation_priority": [
+    "1. Fix PR-body shell injection in github-templates/composite-action/action.yml (T16) — interpolate inputs via env block, validate against regex.",
+    "2. Fix GitHub Actions code injection in e2e-smoke.yml (T13) for feature_name in JS template literal and bash interpolation.",
+    "3. Patch logging_setup.py DEBUG path to use SanitizedStreamHandler (T08) — secrets sneak through in debug mode.",
+    "4. Resolve vaultwarden circular dependency in docker-compose.yml.j2 (T03) — service will not start as-is.",
+    "5. Move T16/T19 artefacts from work/coding-fabric/ to repo root (.github/, fabric/, infrastructure/) so the workflows are actually picked up by GitHub Actions."
+  ],
+  "merge_recommendation": "Block merge until critical-3 and high-1 (vaultwarden cycle) are fixed; the remaining high findings should be remediated in a follow-up wave before T20-T24 final integration. Many positive systemic patterns (sanitizer ubiquity, atomic state, OpenTofu correctness) demonstrate the codebase is fundamentally sound; the failures cluster in CI/IaC glue layers added under time pressure in waves 5-6."
+}

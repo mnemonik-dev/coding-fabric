@@ -1837,3 +1837,76 @@ Reliability-engineer lens:
 - fabric/watchdog/tests/test_checks.py (+40 tests)
 - fabric/watchdog/tests/test_turn_into_task.py (+3 tests, updated 5)
 
+---
+
+## Task 21 — Security audit (OWASP + IaC + secret-handling deep dive across T01-T19)
+
+**Status:** complete | **Agent:** audit-security (security-auditor skill) | **Verdict:** needs-remediation
+
+**Summary:** Read-only audit of every implementation produced by Tasks 01-19. Coverage: full OWASP Top 10 (2021), eight tech-spec deep-dive areas, and a service-binding scan against the cloud-firewall + ufw + Tailscale topology. Report written to `work/coding-fabric/logs/working/audit/security-audit.json` with 17 findings (1 critical, 5 high, 7 medium, 4 informational/low) and 12 positive notes.
+
+**OWASP bucket verdicts:** A01 ok, A02 mostly ok (one high-severity LoadCredential URI issue), A03 mostly ok (one critical GH-Actions script-injection + several high-severity feature_name injection), A04 mostly ok, A05 ok, A06 mostly ok (uv installer un-checksummed), A07 ok, A08 mostly ok (smoke-gate is a mock — risk to recursive self-hosting promise), A09 ok (sanitizer ubiquity strong for Python; shell paths bypass — medium), A10 mostly ok (DNS-based SSRF gap in post-deploy-qa documented as low).
+
+**Deep-dive verdicts:**
+- Vaultwarden interaction: PASS with concern (bw session token on subprocess argv — F-014 medium).
+- .env materialisation: PASS (tempfile + fchmod 0600 PRE-rename + atomic replace + dir fsync; removed on cleanup; never read by agents directly).
+- Sanitizer ubiquity: PASS for Python (hard-fail at import on every producer); gap on shell paths (F-011 medium).
+- Agent trust boundary: PARTIAL — pk-guard.sh fires only when RUFLO_SESSION is set, so agents that drop the env var bypass it (F-005 high).
+
+**Service-binding scan:** PASS. Hetzner firewall denies all inbound except UDP/41641 (Tailscale). All HTTP services bind to 127.0.0.1 or tailnet IP. workspace-manager rejects 0.0.0.0/:: at the pydantic layer. One container-internal exception: smoke-gate mock binds 0.0.0.0:8080 (F-008 medium — bounded by docker-compose `127.0.0.1:8080:8080` mapping but worth tightening).
+
+**Top 5 remediation priorities (no critical/high finding lacks a fix):**
+1. F-002 (critical) — pr-conformance composite action: `pr_body=\"${{ inputs.pr_body }}\"` is GH-Actions script injection. Fix: pass PR body via env var, not template expansion.
+2. F-001 (high) — mnemonic-mcp systemd unit: `LoadCredential=...:vault://mnemonic/mcp-signing-key` is not a real systemd path. Fix: materialise the signing key to /etc/fabric/credentials/ at deploy time via sops.
+3. F-003 (high) — e2e-smoke.yml feature_name single-quote injection across 4 sites. Fix: env-var pattern + regex validate step.
+4. F-005 (high) — pk-guard.sh trust-boundary inversion. Fix: enforce by default; allow-list operator UID; back with setfacl.
+5. F-004 / F-017 (high+medium) — Telegram bot token leaks to /proc/<pid>/cmdline via curl URL across 7 scripts. Fix: single `tg-send` wrapper that reads the token from a 0600/op file or systemd LoadCredential.
+
+**Self-review verdict:** complete. Every critical/high finding has a concrete fix (acceptance criterion `jq '[.findings[] | select(.severity==\"critical\" or .severity==\"high\") | .fix] | all(. != null)'` returns true). Two informational findings (op NOPASSWD sudo per spec; vendored node_modules in test scope) are explicitly accepted-risk.
+
+**Files produced:**
+- work/coding-fabric/logs/working/audit/security-audit.json (17 findings, 12 positive notes, 5 prioritised fixes)
+
+
+
+## Task 20 — Code audit (Wave 7)
+
+**Status:** complete | **Agent:** audit-code | **Verdict:** needs-remediation
+
+**Summary:** Holistic 11-dimension review of T01-T19 integrated artefacts (92 files: fabric/, infrastructure/, .github/). Produced 33 findings: 3 critical, 8 high, 13 medium, 6 low, 3 info. Critical issues all sit in the CI/glue layer added in waves 5-6: PR-body shell injection in github-templates composite action, GitHub Actions code injection via `feature_name` in e2e-smoke, and a `logging.StreamHandler` (non-sanitised) installed at DEBUG level in workspace-manager. High-severity items include a circular docker-compose dependency in vaultwarden that prevents stack startup, a malformed `always:` block in ruflo that skips installer cleanup, an Ansible `block`-level `until/retries` mis-use in kaneo/telegram-init that disables pagination, an invalid pyproject build-backend in workspace-manager, and a `sign_attestation` function that returns the public key rather than a signature in T17 full-mode. The core systemic patterns (sanitizer ubiquity, atomic state, OpenTofu correctness, watchdog round-2 fixes) are strong; failures cluster at IaC + GH Actions integration seams. Also flagged: T16/T19 artefacts live under `work/coding-fabric/` instead of repo root, so the workflows are not picked up by GitHub Actions.
+
+**Recommendation:** Block merge of the wave until the 3 criticals and the vaultwarden circular-dep high are fixed. Remaining high/medium findings can be addressed in a follow-up remediation wave before T20-T24 final integration.
+
+**Report:** [logs/working/audit/code-audit.json](logs/working/audit/code-audit.json)
+
+
+## Task 22 — Test audit (Wave 7)
+
+**Status:** complete | **Agent:** audit-tests (test-master skill) | **Verdict:** needs-remediation (minor)
+
+**Summary:** Holistic test-quality and AC-traceability audit across all suites produced by T01–T19. Inventory: 297 Python tests in 17 files + 5 bash tests (safe-mode last-known-good) + 11 Ansible Molecule scenarios + 2 GitHub workflows (`e2e-smoke.yml`, `smoke-gate.yml`). All 42 user-spec ACs traced.
+
+**AC coverage:**
+- 35 covered by automated tests (with explicit test-name/path evidence)
+- 7 manual / deferred-by-design — AC3 ops-topic independence (recommend T25 AVP drill), AC18 third-party crypto proof (PR template gate), AC22 crypto-crate human approval (PR template gate), AC37 deliberate-break (T25 AVP step 5), AC39 no-mainnet-key (policy enforced via bootstrap-checklist), AC42 backup test-restore (correctly classified per task-22 edge case)
+- 0 ACs entirely uncovered without a documented path
+
+**Per-suite verdicts:** sanitizer 39/approved, workspace-manager 45/approved, swarm-bridge 21/approved, molyanov-validators 95/approved, watchdog 74/needs-remediation (hung_tmux gap), harnesses 21+5/needs-remediation (skip-on-unbuilt-serializer), ansible-molecule 11/approved, safe-mode-bash 5/approved, ci-workflows approved.
+
+**Top issues / uncovered ACs (with recommendations):**
+1. AC30 — `hung_tmux` check has no direct detection unit test (only referenced in scheduler disable test). Recommend adding TestHungTmux class with 3 tests; ~15 min.
+2. AC17/AC20 — byte-equivalence + wasm-browser harness tests skip when serializer binaries are missing, so CI passes vacuously. Recommend `REQUIRE_SERIALIZERS=true` switch + classify as 'scaffolding + PR-template gate' until upstream protocol-repo fixtures land.
+3. AC11–AC16 — Mnemonic attestation lineage is covered end-to-end (e2e-smoke DAG-poll jq parent-chain + type assertion) but not at unit level. Recommend behavioural Molecule test of the 5 hook scripts or explicit sign-off that e2e is blocking in T23.
+4. AC3 — ops-topic independence under failure injection has no automated test. Track in T25 AVP.
+5. AC37 — deliberate-break drill deferred to T25 AVP step 5 by design.
+
+**Pyramid balance:** well-balanced — ~300 unit / 12 integration (Molecule + TestClient) / 3 e2e (Playwright WASM + e2e-smoke + smoke-gate).
+
+**Brittleness:** low. No raw sleep-then-assert; time-dependent tests use tolerance windows (scheduler 3x, rate-limit ±5ms); no real-network calls (loopback ports used for unreachable cases); multi-process concurrency test has 10s buffer. One minor flake risk: Playwright WASM perf threshold 5ms/iter could be tight on contended runners.
+
+**Production-like behavior:** mocks match real contracts — git fake_run mirrors `git worktree add --detach --` argv with directory side-effect; `MagicMock(spec=Client)` catches signature drift; bw-cli mock returns realistic notes JSON; ruflo subprocess mocked at `subprocess.run` boundary. Only deviation: swarm-bridge doesn't exercise the real WorkspaceClient HTTP retry chain — acceptable because the bridge consumes typed exceptions.
+
+**Recommendation:** non-blocking. The two suite-level remediations (TestHungTmux + REQUIRE_SERIALIZERS switch) close every concrete gap and are <1 hour combined. Manual / AVP-deferred items are correctly classified and tracked.
+
+**Report:** [logs/working/audit/test-audit.json](logs/working/audit/test-audit.json)
+
