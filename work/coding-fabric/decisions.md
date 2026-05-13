@@ -1910,3 +1910,52 @@ Reliability-engineer lens:
 
 **Report:** [logs/working/audit/test-audit.json](logs/working/audit/test-audit.json)
 
+
+## Audit Remediation — Reliability/Code
+
+**Date:** 2026-05-12
+**Agent:** audit-fixer-reliability
+**Scope:** HIGH reliability + code-correctness findings from T20 code-audit + T22 test-audit. Security findings handled in parallel by audit-fixer-security; this agent did not touch their scope (PR/feature_name shell injection, sanitizer DEBUG bypass, LoadCredential migration, pk-guard fail-closed inversion, vaultwarden circular depends_on).
+
+**Fixes applied:**
+
+1. **`infrastructure/ansible/roles/ruflo/tasks/main.yml`** — Misplaced `always:` (T20 high). The cleanup task was indented as a task attribute under `Install ruflo`, which Ansible silently ignored, leaking the installer artefact. Wrapped the install + cleanup in a proper `block:`/`always:` so the temp dir is removed even when the installer fails.
+
+2. **`fabric/workspace-manager/pyproject.toml`** and **`fabric/integrations/pyproject.toml`** — Invalid build-backend (T20 high). `setuptools.backends.legacy:build` is not a real module path; replaced with `setuptools.build_meta` (modern). Other fabric subpackages (watchdog, sanitizer, molyanov/validators) were already correct. Verified backend loads + exposes `build_wheel` against installed setuptools 65.5.
+
+3. **`fabric/harnesses/full-mode/devnet_roundtrip.py`** — `sign_attestation` returned the public key (T20 high). Replaced with real Ed25519 signing using `solders.keypair.Keypair` (with legacy `solana.keypair.Keypair` fallback), `sign_message(canonical_serialize(...))`, returning the base58 signature string. Stub mode uses SHA-256 of the canonical-serialized payload so the downstream verifier API is exercised in tests. Also moved the keypair file open into a `with` block (closes T20 info finding). Verified existing 8 full-mode stub tests still pass.
+
+4. **`infrastructure/ansible/roles/telegram-init/tasks/main.yml`** + new **`_paginate_topics.yml`** — `until/retries` on `block:` (T20 high). Ansible silently ignores those keywords at block level, so the pagination loop ran exactly once. Refactored into a single-page include-tasks file invoked via `loop: range(0, telegram_max_pagination_pages)` with a `pagination_complete` short-circuit. Per-page retries remain on the inner `uri` task where Ansible honours them. (kaneo reviewed — its `until` is already correctly on the individual `uri` task, no change needed.)
+
+5. **`infrastructure/ansible/playbooks/safe-mode-rollback.yml`** — Telegram banner SUCCESS_MSG never expanded (T20 high). `jq -n --arg msg '$SUCCESS_MSG'` used single quotes, so bash sent the literal string `$SUCCESS_MSG` instead of the rendered banner. Changed to double quotes (`"$SUCCESS_MSG"`). (Token-argv hardening + sanitizer-via-Python were left to the security-fixer agent.)
+
+6. **`infrastructure/ansible/roles/molyanov/files/pk-guard.sh`** and **`ops-notify.sh`** — `parse_mode=HTML` on user-controlled content (T20 high). Worktree names / target paths / arbitrary `$MESSAGE` flow unescaped through HTML. Dropped `parse_mode=HTML` (default plain text) and switched curl to `--data-urlencode` so special characters in the message body do not break POST encoding. The security-fixer then layered the LoadCredential / token-in-env hardening on top of these changes; both edits compose cleanly.
+
+7. **`fabric/watchdog/tests/test_checks.py`** — Added `TestHungTmux` class (T22 minor). Four tests: tmux binary missing → None; fresh sessions → None; stale session over threshold → `Alert(severity=WARNING)` with session name + idle hours in evidence; no-sessions-running (returncode != 0) → None. Closes the last AC30 gap. All 4 pass; full watchdog suite stays green (57 tests).
+
+8. **`fabric/harnesses/byte-equivalence/tests/test_byte_equivalence.py`** + **`fabric/harnesses/wasm-browser/tests/wasm-equivalence.spec.ts`** — `REQUIRE_SERIALIZERS=true` env switch (T22 minor). When set, the previous `pytest.skip()` / Playwright `test.skip` paths convert to hard failures, so CI fails fast when serializer binaries / WASM pkg are missing instead of passing vacuously. Default off for local dev (skip OK). Tracked AC17/AC20 enforcement explicitly.
+
+9. **`infrastructure/ansible/roles/mnemonic-mcp/molecule/default/verify.yml`** — Behavioural hook exercise (T22 minor). Previously only asserted hook scripts exist + are executable. Added: install stub `mnemonic_sign_memory` on PATH (returns deterministic attestation_id), create stub artefact, ensure state + log dirs exist, then invoke each of the 5 hooks (user-spec, tech-spec, task-complete, pre-deploy, post-deploy) with `--feature` / `--artefact` and assert each either exits 0 or has emitted `attestation_id=...` (proves it reached the signing step). Hardens AC11–AC16 beyond e2e-only coverage.
+
+**Verification:**
+- `python3 -m pytest fabric/watchdog/tests/test_checks.py` — 57/57 passing.
+- `python3 -m pytest fabric/harnesses/byte-equivalence/tests/` — 6/6 passing.
+- `python3 -m pytest fabric/harnesses/full-mode/tests/` — 8/8 passing.
+- `yaml.safe_load_all` parses all five modified Ansible YAML files.
+- `bash -n` clean on pk-guard.sh + ops-notify.sh after both reliability + security edits.
+- All five fabric subpackage `pyproject.toml` files now declare `build-backend = "setuptools.build_meta"`; `setuptools.build_meta.build_wheel` is importable.
+
+**Items intentionally out of scope (security-fixer agent):**
+- PR-body / feature_name GitHub Actions code injection.
+- workspace-manager logging_setup.py DEBUG-level sanitizer bypass.
+- LoadCredential migration for Telegram token in pk-guard / ops-notify.
+- Vaultwarden docker-compose circular `depends_on`.
+
+**Items deferred (T25 AVP):**
+- AC3 ops-topic independence drill.
+- AC37 deliberate-break drill.
+- AC42 backup test-restore.
+
+**Report files:**
+- [logs/working/audit/code-audit.json](logs/working/audit/code-audit.json)
+- [logs/working/audit/test-audit.json](logs/working/audit/test-audit.json)

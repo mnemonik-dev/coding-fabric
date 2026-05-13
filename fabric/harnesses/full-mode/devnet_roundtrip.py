@@ -64,28 +64,62 @@ def load_stub_tx() -> Dict[str, Any]:
     }
 
 
+def _canonical_serialize(attestation: Dict[str, Any]) -> bytes:
+    """Deterministic serialization for signing (sorted keys, no whitespace)."""
+    return json.dumps(attestation, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
 def sign_attestation(attestation: Dict[str, Any]) -> str:
     """
-    Sign attestation with Solana keypair.
-    In stub mode, returns mock signature.
+    Sign attestation with Solana Ed25519 keypair.
+
+    In full mode: returns the base58-encoded Ed25519 signature of the
+    canonical attestation bytes (signature, NOT public key).
+
+    In stub mode: returns a deterministic mock signature derived from
+    SHA-256 of the canonical payload.
     """
     if MNEMONIC_MODE == "full":
         try:
-            import solana
-            from solana.keypair import Keypair
+            # solders (preferred, solana-py >=0.30) — Keypair.sign_message returns Signature
+            try:
+                from solders.keypair import Keypair  # type: ignore[import-not-found]
+            except ImportError:
+                # Fallback to legacy solana.keypair
+                from solana.keypair import Keypair  # type: ignore[import-not-found]
 
-            keypair_path = os.getenv("SOLANA_KEYPAIR_PATH", "~/.config/solana/id.json")
-            keypair = Keypair.from_secret_key(
-                open(Path(keypair_path).expanduser(), "rb").read()
+            keypair_path = os.getenv(
+                "SOLANA_KEYPAIR_PATH", "~/.config/solana/id.json"
             )
-            return str(keypair.public_key)
+            with open(Path(keypair_path).expanduser(), "rb") as fh:
+                key_bytes = fh.read()
+
+            # solana CLI keypair file is a JSON array of 64 ints
+            try:
+                key_array = json.loads(key_bytes)
+                if isinstance(key_array, list):
+                    key_bytes = bytes(key_array)
+            except (json.JSONDecodeError, ValueError):
+                pass  # already raw bytes
+
+            # solders Keypair: from_bytes; legacy: from_secret_key
+            if hasattr(Keypair, "from_bytes"):
+                keypair = Keypair.from_bytes(key_bytes)
+            else:
+                keypair = Keypair.from_secret_key(key_bytes)
+
+            payload = _canonical_serialize(attestation)
+            signature = keypair.sign_message(payload)
+            # solders Signature stringifies to base58; solana legacy returns
+            # SimpleSignature/bytes — coerce to str for callers.
+            return str(signature)
         except Exception as e:
-            raise RuntimeError(f"Failed to load keypair: {e}")
+            raise RuntimeError(f"Failed to sign attestation: {e}")
     else:
         import hashlib
 
-        payload = json.dumps(attestation, sort_keys=True)
-        digest = hashlib.sha256(payload.encode()).hexdigest()
+        payload = _canonical_serialize(attestation)
+        digest = hashlib.sha256(payload).hexdigest()
         return digest[:80]
 
 

@@ -758,6 +758,93 @@ class TestSSRFUrlAllowlist:
 
 
 # ---------------------------------------------------------------------------
+# hung_tmux — direct detection tests
+# ---------------------------------------------------------------------------
+
+
+class TestHungTmux:
+    """Direct unit tests for the hung_tmux check (AC30 last gap).
+
+    Covers: tmux binary missing → None; fresh session → None; stale session
+    over threshold → WARNING alert with session name and idle hours.
+    """
+
+    def test_hung_tmux_missing_binary_returns_none(self):
+        """When tmux is not installed, check returns None gracefully."""
+        from fabric.watchdog.checks.hung_tmux import check
+
+        with patch("fabric.watchdog.checks.hung_tmux.shutil.which", return_value=None):
+            alert = check({})
+        assert alert is None
+
+    def test_hung_tmux_fresh_session_no_alert(self):
+        """Session whose last activity is well under threshold → no alert."""
+        from fabric.watchdog.checks.hung_tmux import check
+
+        now = int(time.time())
+        recent_activity = now - 60  # 1 minute ago
+        fake_stdout = f"work {recent_activity}\nbuild {recent_activity - 10}\n"
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = fake_stdout
+
+        with patch(
+            "fabric.watchdog.checks.hung_tmux.shutil.which", return_value="/usr/bin/tmux"
+        ), patch(
+            "fabric.watchdog.checks.hung_tmux.subprocess.run", return_value=mock_result
+        ):
+            alert = check({"tmux_idle_hours": 12})
+
+        assert alert is None
+
+    def test_hung_tmux_stale_session_emits_warning(self):
+        """Session idle > threshold yields a WARNING alert listing the session."""
+        from fabric.watchdog.checks.hung_tmux import check
+        from fabric.watchdog.models import Severity
+
+        now = int(time.time())
+        # 20 hours idle, threshold 12h
+        stale_activity = now - (20 * 3600)
+        fake_stdout = f"stale-task {stale_activity}\n"
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = fake_stdout
+
+        with patch(
+            "fabric.watchdog.checks.hung_tmux.shutil.which", return_value="/usr/bin/tmux"
+        ), patch(
+            "fabric.watchdog.checks.hung_tmux.subprocess.run", return_value=mock_result
+        ):
+            alert = check({"tmux_idle_hours": 12})
+
+        assert alert is not None
+        assert alert.alert_class == "hung_tmux"
+        assert alert.severity == Severity.WARNING
+        assert "stale-task" in alert.evidence
+        # Idle hours ~20.0; allow any format including the substring "20"
+        assert "20" in alert.evidence or "19.9" in alert.evidence
+
+    def test_hung_tmux_no_sessions_running(self):
+        """tmux returncode != 0 (no sessions running) → returns None, no error."""
+        from fabric.watchdog.checks.hung_tmux import check
+
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stdout = ""
+
+        with patch(
+            "fabric.watchdog.checks.hung_tmux.shutil.which", return_value="/usr/bin/tmux"
+        ), patch(
+            "fabric.watchdog.checks.hung_tmux.subprocess.run", return_value=mock_result
+        ):
+            alert = check({})
+
+        assert alert is None
+
+
+# ---------------------------------------------------------------------------
 # Security: disabled_checks guard
 # ---------------------------------------------------------------------------
 

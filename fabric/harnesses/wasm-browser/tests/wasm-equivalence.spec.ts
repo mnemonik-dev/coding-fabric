@@ -1,7 +1,33 @@
 import { test, expect } from "@playwright/test";
 import * as crypto from "crypto";
-import { readFileSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { join } from "path";
+
+// REQUIRE_SERIALIZERS=true converts skip-on-missing-WASM into a hard failure.
+// CI sets this so harnesses fail-fast when the wasm-bindgen pkg/ artefact
+// hasn't been built. Local dev defaults to skip so the stub flow still runs.
+const REQUIRE_SERIALIZERS = ["1", "true", "yes"].includes(
+  (process.env.REQUIRE_SERIALIZERS ?? "false").toLowerCase(),
+);
+
+const WASM_PKG_PATH = join(
+  __dirname,
+  "..",
+  "wasm",
+  "pkg",
+  "mnemonic_serializer_wasm.js",
+);
+const WASM_BUILT = existsSync(WASM_PKG_PATH);
+
+function reportMissingWasm(t: { skip: (reason: string) => void }): void {
+  const msg = "WASM serializer pkg/ not built";
+  if (REQUIRE_SERIALIZERS) {
+    throw new Error(
+      `${msg} (REQUIRE_SERIALIZERS=true). Build wasm-pkg before running this gate.`,
+    );
+  }
+  t.skip(msg);
+}
 
 test.describe("WASM Byte Equivalence", () => {
   test("WASM module loads", async ({ page }) => {
@@ -13,6 +39,7 @@ test.describe("WASM Byte Equivalence", () => {
   });
 
   test("WASM serializer produces valid output", async ({ page }) => {
+    if (!WASM_BUILT) reportMissingWasm(test);
     await page.goto("/");
 
     // Load a stub WASM module (real fixture injected from protocol repo)

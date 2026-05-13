@@ -34,24 +34,25 @@
     - ruflo_installer_download is failed
   fail_msg: "Installer download failed or checksum mismatch. Set ruflo_installer_sha256 after verifying upstream."
 
-- name: "Install ruflo at pinned version {{ ruflo_version }}"
-  ansible.builtin.shell:
-    cmd: |
-      set -e
-      export RUFLO_VERSION="{{ ruflo_version }}"
-      bash "{{ ruflo_temp_dir.path }}/ruflo-installer.sh"
-  no_log: true
-  register: ruflo_install_result
-  changed_when: "'successfully' in ruflo_install_result.stdout | lower"
+- name: "Install ruflo at pinned version {{ ruflo_version }} (with cleanup)"
   tags:
     - ruflo-install
+  block:
+    - name: "Install ruflo at pinned version {{ ruflo_version }}"
+      ansible.builtin.shell:
+        cmd: |
+          set -e
+          export RUFLO_VERSION="{{ ruflo_version }}"
+          bash "{{ ruflo_temp_dir.path }}/ruflo-installer.sh"
+      no_log: true
+      register: ruflo_install_result
+      changed_when: "'successfully' in ruflo_install_result.stdout | lower"
   always:
     - name: "Clean up installer artifact"
       ansible.builtin.file:
         path: "{{ ruflo_temp_dir.path }}"
         state: absent
-      tags:
-        - ruflo-install
+      when: ruflo_temp_dir.path is defined
 
 - name: "Verify ruflo installation"
   ansible.builtin.command:

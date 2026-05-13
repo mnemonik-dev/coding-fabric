@@ -10,6 +10,27 @@ HARNESS_DIR = Path(__file__).parent.parent
 FIXTURES_DIR = HARNESS_DIR / "fixtures"
 STUB_FIXTURE = FIXTURES_DIR / "stub.json"
 
+# REQUIRE_SERIALIZERS=true converts pytest.skip into pytest.fail when the
+# Rust/TS/WASM serializer binaries are not built. Set in CI so harnesses
+# fail-fast when their fixtures haven't landed; default off for local dev
+# where the fixtures are typically not yet compiled.
+REQUIRE_SERIALIZERS = os.getenv("REQUIRE_SERIALIZERS", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+
+
+def _missing_serializer(name: str) -> None:
+    """Either skip (dev) or fail (CI) when a serializer binary is unbuilt."""
+    msg = f"{name} serializer not built"
+    if REQUIRE_SERIALIZERS:
+        pytest.fail(
+            f"{msg} (REQUIRE_SERIALIZERS=true). "
+            f"Build the {name} serializer fixture before running this gate."
+        )
+    pytest.skip(msg)
+
 
 def load_fixture(path):
     with open(path) as f:
@@ -74,7 +95,7 @@ def test_rust_serializer_basic():
     data = load_fixture(STUB_FIXTURE)
     result = serialize_with_rust(data)
     if result is None:
-        pytest.skip("rust serializer not built")
+        _missing_serializer("rust")
     assert isinstance(result, str)
     assert len(result) > 0
     assert all(c in "0123456789abcdef" for c in result.lower())
@@ -84,7 +105,7 @@ def test_ts_serializer_basic():
     data = load_fixture(STUB_FIXTURE)
     result = serialize_with_ts(data)
     if result is None:
-        pytest.skip("typescript serializer not built")
+        _missing_serializer("typescript")
     assert isinstance(result, str)
     assert len(result) > 0
 
@@ -95,9 +116,9 @@ def test_byte_equivalence_rust_ts():
     ts_output = serialize_with_ts(data)
 
     if rust_output is None:
-        pytest.skip("rust serializer not built")
+        _missing_serializer("rust")
     if ts_output is None:
-        pytest.skip("typescript serializer not built")
+        _missing_serializer("typescript")
 
     assert (
         rust_output == ts_output

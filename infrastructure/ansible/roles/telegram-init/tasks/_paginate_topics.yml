@@ -1,0 +1,71 @@
+---
+# _paginate_topics.yml — single pagination step for forum topics.
+#
+# Ansible does not honour `until/retries` at block: level, so this file is
+# included from main.yml in a loop pattern. Each include performs one page
+# request and either marks `pagination_complete=true` (terminating the outer
+# loop) or advances `pagination_offset` and `pagination_iteration`.
+#
+# Loop-termination contract (read by caller via include_tasks/loop):
+#   pagination_complete == true  → caller stops including
+#   pagination_iteration > max   → caller fails
+#
+# This pattern replaces an invalid `until:` on a `block:` that Ansible
+# silently ignored, causing the pagination loop to run exactly once.
+
+- name: Skip pagination step if already complete
+  ansible.builtin.meta: end_play
+  when: false  # purely defensive; controlled by include caller
+
+- name: Fetch forum topics page (with retries on uri task)
+  ansible.builtin.uri:
+    url: "https://api.telegram.org/bot{{ telegram_bot_token }}/getForumTopics"
+    method: POST
+    body_format: json
+    body:
+      chat_id: "{{ telegram_forum_chat_id }}"
+      offset: "{{ pagination_offset }}"
+      limit: 100
+    status_code: [200, 400, 403, 429, 500, 502, 503, 504]
+    timeout: "{{ telegram_api_timeout }}"
+  register: forum_topics_response
+  retries: "{{ telegram_api_retries }}"
+  delay: "{{ telegram_api_delay }}"
+  until: forum_topics_response.status == 200
+  failed_when: forum_topics_response.status not in [200]
+  no_log: true
+  when: not (pagination_complete | default(false))
+
+- name: Pause for rate limiting
+  ansible.builtin.pause:
+    seconds: "{{ telegram_api_rate_limit }}"
+  when: not (pagination_complete | default(false))
+
+- name: Merge topics from current page
+  ansible.builtin.set_fact:
+    existing_topics: "{{ existing_topics | combine({item.name: item.message_thread_id}) }}"
+  loop: "{{ forum_topics_response.json.result | default([]) }}"
+  no_log: true
+  when: not (pagination_complete | default(false))
+
+- name: Mark pagination complete when last page returned empty
+  ansible.builtin.set_fact:
+    pagination_complete: true
+  when:
+    - not (pagination_complete | default(false))
+    - (forum_topics_response.json.result | default([])) | length == 0
+
+- name: Advance pagination offset
+  ansible.builtin.set_fact:
+    pagination_iteration: "{{ pagination_iteration | int + 1 }}"
+    pagination_offset: "{{ forum_topics_response.json.result[-1].message_thread_id }}"
+  when:
+    - not (pagination_complete | default(false))
+    - (forum_topics_response.json.result | default([])) | length > 0
+
+- name: Guard against runaway pagination
+  ansible.builtin.fail:
+    msg: "Pagination loop exceeded {{ telegram_max_pagination_pages }} iterations; aborting"
+  when:
+    - not (pagination_complete | default(false))
+    - pagination_iteration | int > telegram_max_pagination_pages | int
