@@ -2023,4 +2023,4 @@ Reliability-engineer lens:
 - F-014 (medium) — bw session token via `--session` argv → env var: orthogonal to this wave's scope and would touch the workspace-manager vault flow; tracked for follow-up.
 - F-012 / F-013 (low) — DNS-based SSRF in post-deploy-qa, URL-encoding in irys_balance: defensive-depth, not exploitable from external inputs.
 
-**Commit SHA:** _(filled in below after commit lands)_
+**Commit SHA:** `b9693126b0a48f24dbb5519b3ccff68d6557d11d`
