@@ -1,10 +1,10 @@
 # Ansible Role: ruflo
 
-Install ruflo full CLI and render per-topic configuration matrix implementing the cohabitation toggles (autopilot, aidefence, rag-memory) and Mnemonic namespace bindings from tech-spec §2.4.
+Install ruflo full CLI (TypeScript/Node, MIT) and render per-topic configuration matrix implementing the cohabitation toggles (autopilot, aidefence, rag-memory) and Mnemonic namespace bindings from tech-spec §2.4.
 
 ## Purpose
 
-- Install ruflo at a pinned upstream version via the official installer
+- Clone ruflo from `https://github.com/ruvnet/ruflo` at a pinned git tag and build locally (`npm ci && npm run build`)
 - Render global config to `~/.fabric/ruflo/global.yml`
 - Generate 8 per-topic configs in `~/.fabric/ruflo/topics/{topic}.yml` from the canonical matrix variable
 - Install and invoke `validate_matrix.py` to assert on-disk state matches expected configuration
@@ -16,7 +16,9 @@ Install ruflo full CLI and render per-topic configuration matrix implementing th
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `ruflo_version` | string | `0.20.0` | Pinned upstream version of ruflo CLI |
+| `ruflo_repo` | string | `https://github.com/ruvnet/ruflo` | Upstream git repository (HTTPS) |
+| `ruflo_version` | string | `v3.6.30` | Pinned upstream git tag |
+| `ruflo_install_dir` | string | `/opt/ruflo` | Clone destination on the VM |
 | `ruflo_topic_matrix` | list | See defaults/main.yml | Canonical per-topic configuration matrix (8 topics × 7 fields) |
 | `ruflo_global_defaults` | dict | See defaults/main.yml | Global defaults applied to all topics |
 | `ansible_user` | string | Required | OS user for installation (typically 'mnemonic') |
@@ -46,10 +48,16 @@ Each entry in `ruflo_topic_matrix` is a dict with these fields:
 
 ### Installation
 
-1. Downloads the official ruflo installer script
-2. Sets `RUFLO_VERSION` environment variable to the pinned version
-3. Executes installer (no logging of installer output if it contains secrets)
-4. Verifies installation via `ruflo --version` (must match pinned version)
+1. Ensures `git` and Node.js (≥ 20.x; installs NodeSource `setup_20.x` if absent) are present.
+2. `ansible.builtin.git` clones `ruflo_repo` to `ruflo_install_dir` at `ruflo_version` (depth 1).
+3. Runs `npm ci` from `ruflo_install_dir` (canonical lockfile is `package-lock.json` upstream).
+4. Runs `npm run build` to produce build artefacts (the upstream `bin/cli.js` entry point is
+   present in the repo and remains the canonical CLI shim regardless of the TypeScript build).
+5. Verifies installation via `node {{ ruflo_install_dir }}/bin/cli.js --version`.
+
+The previous `installer.sh`-via-curl + SHA256 flow has been removed in the 2026-05 scope
+change. Supply-chain integrity is now anchored to the pinned git tag plus `npm ci`'s
+package-lock.json enforcement.
 
 ### Validation
 
@@ -113,8 +121,8 @@ done
 # Run validator
 python ~/.fabric/ruflo/validate_matrix.py
 
-# Check installed ruflo version
-ruflo --version
+# Check installed ruflo version (CLI entry is the in-tree bin/cli.js shim)
+node /opt/ruflo/bin/cli.js --version
 ```
 
 ## References

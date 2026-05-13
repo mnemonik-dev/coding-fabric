@@ -140,13 +140,13 @@ Mnemonic Protocol, где единственный интерфейс польз
   skeptic → jujutsu, security-auditor → security-audit, post-deploy-qa → browser.
 
 ### 5.4 Mnemonic attestation
-- AC11. Каждое утверждённое `user-spec` создаёт memory-аттестацию.
-- AC12. Каждое утверждённое `tech-spec` создаёт memory-аттестацию с `parent = user-spec`.
-- AC13. Каждая завершённая задача создаёт receipt-аттестацию с `parent = tech-spec`.
-- AC14. Каждый pre-deploy-qa pass создаёт receipt-аттестацию с `parent = task receipts`.
+- AC11. Каждое утверждённое `user-spec` создаёт memory-аттестацию. [DEFERRED to backlog: mnemonic-attestation-integration]
+- AC12. Каждое утверждённое `tech-spec` создаёт memory-аттестацию с `parent = user-spec`. [DEFERRED to backlog: mnemonic-attestation-integration]
+- AC13. Каждая завершённая задача создаёт receipt-аттестацию с `parent = tech-spec`. [DEFERRED to backlog: mnemonic-attestation-integration]
+- AC14. Каждый pre-deploy-qa pass создаёт receipt-аттестацию с `parent = task receipts`. [DEFERRED to backlog: mnemonic-attestation-integration]
 - AC15. Каждый deploy + post-deploy verification создаёт agent.state-аттестацию
-  с `parent = pre-deploy`.
-- AC16. По любой фиче можно построить tamper-evident DAG из пяти узлов.
+  с `parent = pre-deploy`. [DEFERRED to backlog: mnemonic-attestation-integration]
+- AC16. По любой фиче можно построить tamper-evident DAG из пяти узлов. [DEFERRED to backlog: mnemonic-attestation-integration]
 
 ### 5.5 QA-гейты по task_type
 - AC17. Schema/CBOR-изменения требуют cross-platform byte-equivalence proof и human approval.
@@ -291,3 +291,10 @@ Recurring (по факту работы):
 - Когда переход на ruflo-mnemonic плагин (отдельный backlog).
 - Когда введение второго оператора (требует пересмотра MEMORY_NAMESPACE и Vaultwarden ACL).
 - Когда добавление mainnet и каких политик утверждения.
+- **(2026-05 scope change)** Mnemonic MCP attestation integration (AC11–AC16,
+  tech-spec D14, §2.6) is descoped from coding-fabric v0.2.x and moved to the
+  backlog feature `mnemonic-attestation-integration` (see
+  `work/mnemonic-attestation-integration/`). Rationale: the local Mnemonic MCP
+  server is not yet production-ready. coding-fabric deploys cleanly without
+  it; the role `mnemonic-mcp` is gated by `mnemonic_mcp_enabled` (default
+  `false`) and installs only no-op stub hooks until re-enabled.

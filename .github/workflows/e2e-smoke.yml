@@ -1,5 +1,14 @@
 name: e2e-smoke
 
+# 2026-05 scope change: the 5-node Mnemonic attestation DAG verification has
+# been DESCOPED — the local Mnemonic MCP server is not yet production-ready
+# (backlog feature: mnemonic-attestation-integration). Success criterion is now:
+#   1. smoke.sh end-to-end run on VM
+#   2. PR merge SHA captured + verified
+#   3. workspace-manager reports zero active worktrees (clean cleanup)
+# DAG poll + Mnemonic sign-memory step are guarded behind the `mnemonic_mcp_enabled`
+# input (default false). Flip to true once the MCP server reaches v1.0+.
+
 on:
   workflow_call:
     inputs:
@@ -11,12 +20,24 @@ on:
         description: 'Feature name for AVP tracking (e.g., docs-typo-fix)'
         type: string
         required: true
+      mnemonic_mcp_enabled:
+        description: 'Run Mnemonic MCP DAG verification + attestation signing (default: false; descoped 2026-05)'
+        type: boolean
+        default: false
+      merge_sha:
+        description: 'Optional: PR merge SHA expected from smoke run (verified if provided)'
+        type: string
+        default: ''
     secrets:
       TAILSCALE_OAUTH_CLIENT_ID:
         required: true
       TAILSCALE_OAUTH_SECRET:
         required: true
       TELEGRAM_OPS_BOT_TOKEN:
+        required: false
+      TELEGRAM_OPS_CHAT_ID:
+        required: false
+      TELEGRAM_OPS_THREAD_ID:
         required: false
 
   workflow_dispatch:
@@ -29,6 +50,14 @@ on:
         description: 'Feature name for AVP tracking (e.g., docs-typo-fix)'
         type: string
         required: true
+      mnemonic_mcp_enabled:
+        description: 'Run Mnemonic MCP DAG verification + attestation signing (default: false; descoped 2026-05)'
+        type: boolean
+        default: false
+      merge_sha:
+        description: 'Optional: PR merge SHA expected from smoke run (verified if provided)'
+        type: string
+        default: ''
 
 permissions:
   # contents: write required for github.rest.repos.createCommitComment (success-path reporting)
@@ -48,13 +77,15 @@ env:
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    # Total timeout: 5 (tailscale) + 5 (ping) + 5 (scp) + 10 (smoke) + 20 (DAG poll) + 5 (verify) = 50 min adjusted to 35 (with cleanup slack)
+    # Total timeout: 5 (tailscale) + 5 (ping) + 5 (scp) + 10 (smoke) + 5 (PR+worktree verify)
+    # = 30 min. Optional DAG poll adds up to 20 min when MCP gating flips on (35 total).
     timeout-minutes: 35
     steps:
       - name: Validate feature_name input (script-injection guard)
         env:
           FEATURE_NAME: ${{ inputs.feature_name }}
           VM_HOSTNAME: ${{ inputs.vm_hostname }}
+          MERGE_SHA_INPUT: ${{ inputs.merge_sha }}
         run: |
           # Strict allow-list: lowercase letters, digits, hyphen; 1-64 chars.
           # Mitigates GH Actions script-injection of feature_name into shell/SSH/JS contexts.
@@ -67,7 +98,12 @@ jobs:
             echo "ERROR: vm_hostname must be DNS-safe"
             exit 1
           fi
-          echo "feature_name validated"
+          # merge_sha (optional) must be a hex string if provided.
+          if [[ -n "$MERGE_SHA_INPUT" ]] && ! [[ "$MERGE_SHA_INPUT" =~ ^[A-Fa-f0-9]{7,40}$ ]]; then
+            echo "ERROR: merge_sha must be a hex git SHA (7-40 chars)"
+            exit 1
+          fi
+          echo "inputs validated"
 
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -129,8 +165,66 @@ jobs:
           fi
           echo "Smoke test completed"
 
-      - name: Poll Mnemonic MCP for 5-node DAG
+      - name: Verify docs PR merge SHA (if provided)
+        id: pr-merge
+        if: inputs.merge_sha != ''
+        timeout-minutes: 5
+        env:
+          MERGE_SHA: ${{ inputs.merge_sha }}
+        run: |
+          echo "Verifying docs PR merge SHA: $MERGE_SHA"
+
+          # Confirm the merge SHA exists in the repository's history. Using the
+          # GitHub API avoids a full fetch on CI and keeps the check cheap.
+          if ! gh api "repos/${GITHUB_REPOSITORY}/commits/${MERGE_SHA}" \
+              --jq '.sha' > /tmp/sha-check.out 2>/tmp/sha-check.err; then
+            echo "ERROR: merge SHA not found in remote repository"
+            cat /tmp/sha-check.err
+            exit 1
+          fi
+
+          RESOLVED=$(cat /tmp/sha-check.out)
+          echo "Merge SHA resolved: $RESOLVED"
+          echo "resolved_sha=$RESOLVED" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Verify worktree cleanup via workspace-manager API
+        id: worktree-cleanup
+        timeout-minutes: 5
+        env:
+          VM_HOSTNAME: ${{ inputs.vm_hostname }}
+        run: |
+          echo "Verifying worktree cleanup via workspace-manager HTTP API..."
+
+          # workspace-manager binds to 127.0.0.1:8080 on the VM; we tunnel via
+          # tailscale ssh and curl the /worktrees endpoint. Success criterion:
+          # zero active worktrees after smoke run completes.
+          WORKTREES_JSON=$(tailscale ssh "op@${VM_HOSTNAME}" \
+            "curl -fsS http://127.0.0.1:8080/worktrees" 2>&1 || echo "FAILED")
+
+          if [ "$WORKTREES_JSON" = "FAILED" ]; then
+            echo "ERROR: workspace-manager /worktrees endpoint unreachable"
+            exit 1
+          fi
+
+          echo "Response: $WORKTREES_JSON"
+          # `jq 'length == 0'` returns boolean; -e exits non-zero on false/null.
+          if ! echo "$WORKTREES_JSON" | jq -e 'length == 0' > /dev/null; then
+            COUNT=$(echo "$WORKTREES_JSON" | jq 'length' 2>/dev/null || echo "?")
+            echo "ERROR: expected zero active worktrees after smoke; got $COUNT"
+            echo "$WORKTREES_JSON" | jq '.' || true
+            exit 1
+          fi
+
+          echo "Worktree cleanup verified (0 active)"
+
+      - name: '[Optional] Poll Mnemonic MCP for 5-node DAG (mnemonic_mcp_enabled)'
         id: dag-poll
+        # DESCOPED 2026-05: gated behind opt-in input. Default false. Will be
+        # re-enabled by the backlog feature `mnemonic-attestation-integration`
+        # once the Mnemonic MCP server is production-ready.
+        if: inputs.mnemonic_mcp_enabled
         timeout-minutes: 20
         env:
           FEATURE_NAME: ${{ inputs.feature_name }}
@@ -181,7 +275,8 @@ jobs:
             exit 1
           fi
 
-      - name: Verify DAG structure
+      - name: '[Optional] Verify DAG structure (mnemonic_mcp_enabled)'
+        if: inputs.mnemonic_mcp_enabled
         env:
           FEATURE_NAME: ${{ inputs.feature_name }}
           DAG_JSON: ${{ steps.dag-poll.outputs.dag_json }}
@@ -227,25 +322,9 @@ jobs:
           echo "DAG structure valid with intact parent chain"
           jq '.' /tmp/dag.json
 
-      - name: Verify worktree cleanup
-        env:
-          VM_HOSTNAME: ${{ inputs.vm_hostname }}
-        run: |
-          echo "Verifying worktree cleanup on VM..."
-
-          WORKTREE_COUNT=$(tailscale ssh "op@${VM_HOSTNAME}" \
-            "ls -1 ~/code/mnemonic-workspaces 2>/dev/null | wc -l" || echo "0")
-
-          echo "Active worktrees: $WORKTREE_COUNT"
-
-          if [ "$WORKTREE_COUNT" -gt 10 ]; then
-            echo "WARNING: Worktree count exceeds capacity (10)"
-            exit 1
-          fi
-
-      - name: Sign smoke run via Mnemonic MCP
+      - name: '[Optional] Sign smoke run via Mnemonic MCP (mnemonic_mcp_enabled)'
         id: sign-smoke
-        if: success()
+        if: success() && inputs.mnemonic_mcp_enabled
         env:
           FEATURE_NAME: ${{ inputs.feature_name }}
           VM_HOSTNAME: ${{ inputs.vm_hostname }}
@@ -270,13 +349,23 @@ jobs:
         env:
           FEATURE_NAME: ${{ inputs.feature_name }}
           ATTESTATION_ID: ${{ steps.sign-smoke.outputs.attestation_id }}
+          MCP_ENABLED: ${{ inputs.mnemonic_mcp_enabled }}
+          MERGE_SHA: ${{ inputs.merge_sha }}
         with:
           script: |
             // Read inputs from process.env (safe) rather than ${{ }} template literals
             // to avoid GH Actions JS injection if feature_name contained quotes.
             const feature = process.env.FEATURE_NAME;
             const attestationId = process.env.ATTESTATION_ID || 'unavailable';
-            const comment = `e2e-smoke PASSED\n\nFeature: ${feature}\n5-node DAG verified, worktree cleanup confirmed.\nAttestation: ${attestationId}`;
+            const mcpEnabled = process.env.MCP_ENABLED === 'true';
+            const mergeSha = process.env.MERGE_SHA || 'n/a';
+            const attLine = mcpEnabled
+              ? `Attestation: ${attestationId}`
+              : 'Attestation: skipped (mnemonic-mcp descoped — see backlog feature mnemonic-attestation-integration)';
+            const dagLine = mcpEnabled
+              ? '5-node DAG verified, worktree cleanup confirmed.'
+              : 'Worktree cleanup confirmed (DAG verification descoped).';
+            const comment = `e2e-smoke PASSED\n\nFeature: ${feature}\nMerge SHA: ${mergeSha}\n${dagLine}\n${attLine}`;
 
             github.rest.repos.createCommitComment({
               owner: context.repo.owner,

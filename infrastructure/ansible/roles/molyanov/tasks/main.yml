@@ -1,4 +1,19 @@
 ---
+# molyanov-ai-dev install — clone the upstream skills bundle and expose its
+# .claude/skills tree to the operator's Claude Code harness.
+#
+# Round 2 scope change (2026-05): upstream source consolidated to the canonical
+# repository `https://github.com/pavel-molyanov/molyanov-ai-dev` (shell-based
+# skills + bash hooks, MIT). We clone the pinned tag to /opt/molyanov-ai-dev
+# and symlink its top-level `skills/` directory into the operator's
+# `~/.claude/skills/` so the bundle is discoverable by Claude Code.
+
+- name: Ensure git is installed
+  ansible.builtin.package:
+    name: git
+    state: present
+  become: true
+
 - name: Ensure molyanov directories exist
   ansible.builtin.file:
     path: "{{ item }}"
@@ -11,16 +26,40 @@
     - "{{ molyanov_operator_home }}/.fabric/molyanov/hooks"
     - "{{ molyanov_operator_home }}/.fabric/ruflo/hooks.d"
 
-- name: Clone molyanov-ai-dev skills bundle
+- name: Ensure molyanov install dir exists
+  ansible.builtin.file:
+    path: "{{ molyanov_install_dir }}"
+    state: directory
+    owner: "{{ molyanov_operator_user }}"
+    group: "{{ molyanov_operator_user }}"
+    mode: '0755'
+  become: true
+
+- name: Clone molyanov-ai-dev skills bundle at pinned tag
   ansible.builtin.git:
-    repo: "{{ molyanov_skills_repo }}"
-    dest: "{{ molyanov_operator_home }}/.claude/skills/molyanov-ai-dev"
-    version: "{{ molyanov_skills_version }}"
+    repo: "{{ molyanov_repo }}"
+    dest: "{{ molyanov_install_dir }}"
+    version: "{{ molyanov_version }}"
     update: true
     force: true
+    depth: 1
   become: true
   become_user: "{{ molyanov_operator_user }}"
   register: molyanov_skills_clone
+
+- name: Symlink molyanov skills tree into operator's Claude Code skills dir
+  # Upstream layout (v0.3.0+): top-level skills/ directory contains the bundle.
+  # Symlinking (rather than copying) preserves a single source of truth and
+  # lets `git pull` reflect immediately under ~/.claude/skills/.
+  ansible.builtin.file:
+    src: "{{ molyanov_install_dir }}/skills"
+    dest: "{{ molyanov_operator_home }}/.claude/skills/molyanov-ai-dev"
+    state: link
+    force: true
+    owner: "{{ molyanov_operator_user }}"
+    group: "{{ molyanov_operator_user }}"
+  become: true
+  become_user: "{{ molyanov_operator_user }}"
 
 - name: Render molyanov global config
   ansible.builtin.template:
@@ -58,17 +97,19 @@
     mode: '0644'
   notify: Ruflo pk-guard hook configured
 
-- name: Verify molyanov skills installation
+- name: Verify molyanov skills symlink exists and points into install dir
   ansible.builtin.stat:
     path: "{{ molyanov_operator_home }}/.claude/skills/molyanov-ai-dev"
+    follow: false
   register: molyanov_skills_stat
 
-- name: Assert molyanov skills installed
+- name: Assert molyanov skills installed (symlink → install dir)
   ansible.builtin.assert:
     that:
       - molyanov_skills_stat.stat.exists
-      - molyanov_skills_stat.stat.isdir
-    fail_msg: "molyanov-ai-dev skills bundle installation failed"
+      - molyanov_skills_stat.stat.islnk
+      - molyanov_skills_stat.stat.lnk_source == molyanov_install_dir + "/skills"
+    fail_msg: "molyanov-ai-dev skills bundle installation failed (expected symlink → {{ molyanov_install_dir }}/skills)"
 
 - name: Verify pk-guard hook installed
   ansible.builtin.stat:

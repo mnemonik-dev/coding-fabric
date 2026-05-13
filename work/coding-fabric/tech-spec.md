@@ -123,7 +123,7 @@ peer model from v0.1.1.
 | 6 | `restic-backups` | Restic + nightly cron + off-site repo + `backup-verify.sh` |
 | 7 | `ruflo` | Install ruflo full CLI, write per-topic config matrix (§2.4) |
 | 8 | `molyanov` | Install molyanov-ai-dev, install PK guard pre-write hook |
-| 9 | `mnemonic-mcp` | Install local Mnemonic MCP server, systemd unit, 5 trigger-point hook scripts |
+| 9 | `mnemonic-mcp` | **OPTIONAL, disabled by default (descoped 2026-05).** When `mnemonic_mcp_enabled=true`: install local Mnemonic MCP server, systemd unit, 5 trigger-point hook scripts. When disabled (default): install only 5 no-op stub hooks. Re-enablement tracked in backlog `mnemonic-attestation-integration`. |
 | 10 | `fabric-services` | Deploy compiled artefacts from `fabric/`: workspace-manager, sanitizer, watchdog, safe-mode, swarm-bridge, validator wrappers; install systemd units and timers |
 | 11 | `telegram-ai-agent` | `git clone` + `uv sync` upstream pavel-molyanov/telegram-ai-agent at a pinned commit (the one that contains the `cwd:"DYNAMIC"` PR — or `mnemonic-org/telegram-ai-agent` fork as fallback). Install systemd unit, render per-topic configs with `cwd: "DYNAMIC"`, set env var `TELEGRAM_AI_AGENT_CWD_RESOLVER_URL=http://{{ tailscale_ip }}:8080` (workspace-manager). |
 
@@ -164,8 +164,15 @@ output). `telegram-ai-agent` (with the `cwd:"DYNAMIC"` patch from feature `mnemo
 
 ### 2.6 Mnemonic attestation DAG
 
-Unchanged from v0.1.1. Per feature: 5 nodes (user-spec → tech-spec → tasks → pre-deploy
-→ deploy/post-deploy). Hooks invoked at success of each molyanov phase.
+**DEFERRED (2026-05 scope change):** moved to backlog feature
+`mnemonic-attestation-integration` (see `work/mnemonic-attestation-integration/`).
+The local Mnemonic MCP server is not yet production-ready, so the attestation
+DAG cannot be produced on a real deploy. coding-fabric still installs 5 no-op
+stub hooks under `/etc/mnemonic-mcp/hooks/` so callers do not break.
+
+(Original intent, preserved for the backlog feature.) Per feature: 5 nodes
+(user-spec → tech-spec → tasks → pre-deploy → deploy/post-deploy). Hooks
+invoked at success of each molyanov phase.
 
 ### 2.7 Sanitized logging filter
 
@@ -258,7 +265,7 @@ or added in v0.2.0 marked `[v0.2.0]`.
 | D11 | Engine choice per topic: Claude Code default, Codex for demo-client | spec.md §12 | AC8 |
 | D12 | `/do-feature` via ruflo swarm MCP with per-task cwd injection | spec.md §4 | AC9 |
 | D13 | Validator delegation: skeptic→jujutsu, security-auditor→security-audit, post-deploy-qa→browser | spec.md §4 | AC10 |
-| D14 | Five-point attestation lineage via local Mnemonic MCP | spec.md §5 | AC11–AC16 |
+| D14 | Five-point attestation lineage via local Mnemonic MCP `[DEFERRED to backlog feature mnemonic-attestation-integration — mnemonic-mcp server not yet production-ready as of 2026-05]` | spec.md §5 | AC11–AC16 |
 | D15 | QA gates by task_type (byte-equivalence / third-party-verify / MCP-compat / WASM-browser / full-mode) | spec.md §6 | AC17–AC22 |
 | D16 | PR template enforces 4 sections, 500-line cap | spec.md §6 | AC24 |
 | D17 | Per-topic feature toggles per §2.4 matrix | spec.md §7 | AC25–AC27 |

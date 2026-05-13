@@ -1,256 +1,304 @@
 ---
-- name: Ensure op system user exists
-  user:
-    name: "{{ mnemonic_mcp_service_user }}"
-    group: "{{ mnemonic_mcp_service_group }}"
-    home: /var/lib/mnemonic-mcp
-    shell: /usr/sbin/nologin
-    system: yes
-    createhome: yes
-  register: op_user_created
+# DESCOPED (Round 2, 2026-05): role disabled by default. The local Mnemonic
+# MCP server is not yet production-ready; attestation integration moves to the
+# backlog feature `mnemonic-attestation-integration`. See README and
+# defaults/main.yml `mnemonic_mcp_enabled`.
 
-- name: Ensure mnemonic-mcp installation directory exists
-  file:
-    path: "{{ mnemonic_mcp_install_dir }}"
-    state: directory
-    owner: "{{ mnemonic_mcp_service_user }}"
-    group: "{{ mnemonic_mcp_service_group }}"
-    mode: '0755'
+- name: "mnemonic-mcp disabled — install no-op stub hooks"
+  when: not (mnemonic_mcp_enabled | bool)
+  block:
+    - name: "mnemonic-mcp role is disabled — operator notice"
+      ansible.builtin.debug:
+        msg: |
+          mnemonic-mcp role is DISABLED (mnemonic_mcp_enabled=false).
+          Attestation integration is tracked in backlog feature
+          work/mnemonic-attestation-integration/. Set mnemonic_mcp_enabled=true to
+          re-enable once the local Mnemonic MCP server reaches v1.0+ production-ready.
 
-- name: Ensure mnemonic-mcp bin directory exists
-  file:
-    path: "{{ mnemonic_mcp_install_dir }}/bin"
-    state: directory
-    owner: "{{ mnemonic_mcp_service_user }}"
-    group: "{{ mnemonic_mcp_service_group }}"
-    mode: '0755'
+    - name: "Ensure hooks directory exists (for no-op stubs)"
+      ansible.builtin.file:
+        path: "{{ mnemonic_mcp_hooks_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
 
-- name: Assert mnemonic_mcp_binary_sha256 is not a placeholder
-  assert:
-    that:
-      - mnemonic_mcp_binary_sha256 is match('^[0-9a-f]{64}$')
-    fail_msg: "mnemonic_mcp_binary_sha256 must be a 64-character hex SHA256; found '{{ mnemonic_mcp_binary_sha256 }}'. Override with real checksum before deploy."
+    - name: "Install no-op stub hooks (descope mode)"
+      ansible.builtin.copy:
+        dest: "{{ mnemonic_mcp_hooks_dir }}/{{ item }}.sh"
+        owner: root
+        group: root
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          # No-op stub: mnemonic-mcp is descoped (mnemonic_mcp_enabled=false).
+          # See work/mnemonic-attestation-integration/ for the backlog feature
+          # that re-introduces real attestation signing.
+          logger -t mnemonic-mcp-stub -p user.info \
+            "attestation skipped (mnemonic-mcp disabled — see backlog: mnemonic-attestation-integration) hook={{ item }}" || true
+          exit 0
+      loop:
+        - user-spec
+        - tech-spec
+        - task-complete
+        - pre-deploy
+        - post-deploy
 
-- name: Download mnemonic-mcp binary
-  get_url:
-    url: "{{ mnemonic_mcp_binary_url }}"
-    dest: "{{ mnemonic_mcp_install_dir }}/bin/mnemonic-mcp"
-    owner: "{{ mnemonic_mcp_service_user }}"
-    group: "{{ mnemonic_mcp_service_group }}"
-    mode: '0755'
-    checksum: "sha256:{{ mnemonic_mcp_binary_sha256 }}"
-  register: mnemonic_mcp_binary_download
+- name: "mnemonic-mcp install + configure (gated by mnemonic_mcp_enabled)"
+  when: mnemonic_mcp_enabled | bool
+  block:
+    - name: Ensure op system user exists
+      user:
+        name: "{{ mnemonic_mcp_service_user }}"
+        group: "{{ mnemonic_mcp_service_group }}"
+        home: /var/lib/mnemonic-mcp
+        shell: /usr/sbin/nologin
+        system: yes
+        createhome: yes
+      register: op_user_created
 
-- name: Verify mnemonic-mcp binary is executable
-  stat:
-    path: "{{ mnemonic_mcp_install_dir }}/bin/mnemonic-mcp"
-  register: mnemonic_mcp_binary_stat
+    - name: Ensure mnemonic-mcp installation directory exists
+      file:
+        path: "{{ mnemonic_mcp_install_dir }}"
+        state: directory
+        owner: "{{ mnemonic_mcp_service_user }}"
+        group: "{{ mnemonic_mcp_service_group }}"
+        mode: '0755'
 
-- name: Assert binary downloaded and executable
-  assert:
-    that:
-      - mnemonic_mcp_binary_stat.stat.exists
-      - mnemonic_mcp_binary_stat.stat.executable
-    fail_msg: "mnemonic-mcp binary download or permission setup failed"
+    - name: Ensure mnemonic-mcp bin directory exists
+      file:
+        path: "{{ mnemonic_mcp_install_dir }}/bin"
+        state: directory
+        owner: "{{ mnemonic_mcp_service_user }}"
+        group: "{{ mnemonic_mcp_service_group }}"
+        mode: '0755'
 
-- name: Ensure config directory exists
-  file:
-    path: "{{ mnemonic_mcp_config_dir }}"
-    state: directory
-    owner: "{{ mnemonic_mcp_service_user }}"
-    group: "{{ mnemonic_mcp_service_group }}"
-    mode: '0755'
+    - name: Assert mnemonic_mcp_binary_sha256 is not a placeholder
+      assert:
+        that:
+          - mnemonic_mcp_binary_sha256 is match('^[0-9a-f]{64}$')
+        fail_msg: "mnemonic_mcp_binary_sha256 must be a 64-character hex SHA256; found '{{ mnemonic_mcp_binary_sha256 }}'. Override with real checksum before deploy."
 
-- name: Ensure hooks directory exists
-  file:
-    path: "{{ mnemonic_mcp_hooks_dir }}"
-    state: directory
-    owner: "{{ mnemonic_mcp_service_user }}"
-    group: "{{ mnemonic_mcp_service_group }}"
-    mode: '0755'
+    - name: Download mnemonic-mcp binary
+      get_url:
+        url: "{{ mnemonic_mcp_binary_url }}"
+        dest: "{{ mnemonic_mcp_install_dir }}/bin/mnemonic-mcp"
+        owner: "{{ mnemonic_mcp_service_user }}"
+        group: "{{ mnemonic_mcp_service_group }}"
+        mode: '0755'
+        checksum: "sha256:{{ mnemonic_mcp_binary_sha256 }}"
+      register: mnemonic_mcp_binary_download
 
-- name: Render mnemonic-mcp config.yml
-  template:
-    src: config.yml.j2
-    dest: "{{ mnemonic_mcp_config_dir }}/config.yml"
-    owner: "{{ mnemonic_mcp_service_user }}"
-    group: "{{ mnemonic_mcp_service_group }}"
-    mode: '0640'
-  notify: reload mnemonic-mcp systemd
+    - name: Verify mnemonic-mcp binary is executable
+      stat:
+        path: "{{ mnemonic_mcp_install_dir }}/bin/mnemonic-mcp"
+      register: mnemonic_mcp_binary_stat
 
-- name: Ensure attestations directory exists with strict permissions
-  file:
-    path: /var/lib/mnemonic-mcp/features
-    state: directory
-    owner: "{{ mnemonic_mcp_service_user }}"
-    group: "{{ mnemonic_mcp_service_group }}"
-    mode: '0750'
+    - name: Assert binary downloaded and executable
+      assert:
+        that:
+          - mnemonic_mcp_binary_stat.stat.exists
+          - mnemonic_mcp_binary_stat.stat.executable
+        fail_msg: "mnemonic-mcp binary download or permission setup failed"
 
-- name: Render protocol-qa.env (MNEMONIC_MODE=full secrets)
-  template:
-    src: protocol-qa.env.j2
-    dest: "{{ mnemonic_mcp_config_dir }}/protocol-qa.env"
-    owner: "{{ mnemonic_mcp_service_user }}"
-    group: "{{ mnemonic_mcp_service_group }}"
-    mode: '0600'
-  no_log: true
-  notify: reload mnemonic-mcp systemd
+    - name: Ensure config directory exists
+      file:
+        path: "{{ mnemonic_mcp_config_dir }}"
+        state: directory
+        owner: "{{ mnemonic_mcp_service_user }}"
+        group: "{{ mnemonic_mcp_service_group }}"
+        mode: '0755'
 
-- name: Ensure systemd LoadCredential drop-dir exists (mode 0700 root)
-  ansible.builtin.file:
-    path: "{{ mnemonic_mcp_credential_dir }}"
-    state: directory
-    owner: root
-    group: root
-    mode: '0700'
+    - name: Ensure hooks directory exists
+      file:
+        path: "{{ mnemonic_mcp_hooks_dir }}"
+        state: directory
+        owner: "{{ mnemonic_mcp_service_user }}"
+        group: "{{ mnemonic_mcp_service_group }}"
+        mode: '0755'
 
-- name: Materialise mnemonic-mcp signing key from Vaultwarden into /run/credentials/
-  # systemd LoadCredential= expects a file path; the previous vault:// URI was invalid
-  # (Finding F-001).  We decrypt the key from Vaultwarden at deploy time, write to
-  # the systemd credential directory mode 0600 owner root, then point LoadCredential
-  # at that on-disk path.  The directory lives on tmpfs (/run) so it is wiped at
-  # reboot; the file is also explicitly removed in the `always:` cleanup below.
-  ansible.builtin.shell:
-    cmd: |
-      set -euo pipefail
-      install -m 0700 -o root -g root -d "{{ mnemonic_mcp_credential_dir }}"
-      umask 077
-      bw --session "$BW_SESSION" get password "{{ mnemonic_mcp_vault_item }}" \
-        > "{{ mnemonic_mcp_credential_file }}.tmp"
-      chmod 0600 "{{ mnemonic_mcp_credential_file }}.tmp"
-      chown root:root "{{ mnemonic_mcp_credential_file }}.tmp"
-      mv "{{ mnemonic_mcp_credential_file }}.tmp" "{{ mnemonic_mcp_credential_file }}"
-  args:
-    creates: "{{ mnemonic_mcp_credential_file }}"
-  environment:
-    BW_SESSION: "{{ bw_session_token }}"
-  no_log: true
-  register: signing_key_materialised
+    - name: Render mnemonic-mcp config.yml
+      template:
+        src: config.yml.j2
+        dest: "{{ mnemonic_mcp_config_dir }}/config.yml"
+        owner: "{{ mnemonic_mcp_service_user }}"
+        group: "{{ mnemonic_mcp_service_group }}"
+        mode: '0640'
+      notify: reload mnemonic-mcp systemd
 
-- name: Render systemd service unit with LoadCredential
-  ansible.builtin.template:
-    src: mnemonic-mcp.service.j2
-    dest: /etc/systemd/system/{{ mnemonic_mcp_systemd_unit }}
-    owner: root
-    group: root
-    mode: '0644'
-  notify: reload mnemonic-mcp systemd
-  no_log: true
+    - name: Ensure attestations directory exists with strict permissions
+      file:
+        path: /var/lib/mnemonic-mcp/features
+        state: directory
+        owner: "{{ mnemonic_mcp_service_user }}"
+        group: "{{ mnemonic_mcp_service_group }}"
+        mode: '0750'
 
-- name: Install user-spec.sh hook
-  template:
-    src: hooks/user-spec.sh.j2
-    dest: "{{ mnemonic_mcp_hooks_dir }}/user-spec.sh"
-    owner: "{{ mnemonic_mcp_service_user }}"
-    group: "{{ mnemonic_mcp_service_group }}"
-    mode: '0755'
+    - name: Render protocol-qa.env (MNEMONIC_MODE=full secrets)
+      template:
+        src: protocol-qa.env.j2
+        dest: "{{ mnemonic_mcp_config_dir }}/protocol-qa.env"
+        owner: "{{ mnemonic_mcp_service_user }}"
+        group: "{{ mnemonic_mcp_service_group }}"
+        mode: '0600'
+      no_log: true
+      notify: reload mnemonic-mcp systemd
 
-- name: Install tech-spec.sh hook
-  template:
-    src: hooks/tech-spec.sh.j2
-    dest: "{{ mnemonic_mcp_hooks_dir }}/tech-spec.sh"
-    owner: "{{ mnemonic_mcp_service_user }}"
-    group: "{{ mnemonic_mcp_service_group }}"
-    mode: '0755'
+    - name: Ensure systemd LoadCredential drop-dir exists (mode 0700 root)
+      ansible.builtin.file:
+        path: "{{ mnemonic_mcp_credential_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
 
-- name: Install task-complete.sh hook
-  template:
-    src: hooks/task-complete.sh.j2
-    dest: "{{ mnemonic_mcp_hooks_dir }}/task-complete.sh"
-    owner: "{{ mnemonic_mcp_service_user }}"
-    group: "{{ mnemonic_mcp_service_group }}"
-    mode: '0755'
+    - name: Materialise mnemonic-mcp signing key from Vaultwarden into /run/credentials/
+      # systemd LoadCredential= expects a file path; the previous vault:// URI was invalid
+      # (Finding F-001).  We decrypt the key from Vaultwarden at deploy time, write to
+      # the systemd credential directory mode 0600 owner root, then point LoadCredential
+      # at that on-disk path.  The directory lives on tmpfs (/run) so it is wiped at
+      # reboot; the file is also explicitly removed in the `always:` cleanup below.
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          install -m 0700 -o root -g root -d "{{ mnemonic_mcp_credential_dir }}"
+          umask 077
+          bw --session "$BW_SESSION" get password "{{ mnemonic_mcp_vault_item }}" \
+            > "{{ mnemonic_mcp_credential_file }}.tmp"
+          chmod 0600 "{{ mnemonic_mcp_credential_file }}.tmp"
+          chown root:root "{{ mnemonic_mcp_credential_file }}.tmp"
+          mv "{{ mnemonic_mcp_credential_file }}.tmp" "{{ mnemonic_mcp_credential_file }}"
+      args:
+        creates: "{{ mnemonic_mcp_credential_file }}"
+      environment:
+        BW_SESSION: "{{ bw_session_token }}"
+      no_log: true
+      register: signing_key_materialised
 
-- name: Install pre-deploy.sh hook
-  template:
-    src: hooks/pre-deploy.sh.j2
-    dest: "{{ mnemonic_mcp_hooks_dir }}/pre-deploy.sh"
-    owner: "{{ mnemonic_mcp_service_user }}"
-    group: "{{ mnemonic_mcp_service_group }}"
-    mode: '0755'
+    - name: Render systemd service unit with LoadCredential
+      ansible.builtin.template:
+        src: mnemonic-mcp.service.j2
+        dest: /etc/systemd/system/{{ mnemonic_mcp_systemd_unit }}
+        owner: root
+        group: root
+        mode: '0644'
+      notify: reload mnemonic-mcp systemd
+      no_log: true
 
-- name: Install post-deploy.sh hook
-  template:
-    src: hooks/post-deploy.sh.j2
-    dest: "{{ mnemonic_mcp_hooks_dir }}/post-deploy.sh"
-    owner: "{{ mnemonic_mcp_service_user }}"
-    group: "{{ mnemonic_mcp_service_group }}"
-    mode: '0755'
+    - name: Install user-spec.sh hook
+      template:
+        src: hooks/user-spec.sh.j2
+        dest: "{{ mnemonic_mcp_hooks_dir }}/user-spec.sh"
+        owner: "{{ mnemonic_mcp_service_user }}"
+        group: "{{ mnemonic_mcp_service_group }}"
+        mode: '0755'
 
-- name: Verify all 5 hooks installed and executable
-  stat:
-    path: "{{ mnemonic_mcp_hooks_dir }}/{{ item }}.sh"
-  loop:
-    - user-spec
-    - tech-spec
-    - task-complete
-    - pre-deploy
-    - post-deploy
-  register: hook_stat
+    - name: Install tech-spec.sh hook
+      template:
+        src: hooks/tech-spec.sh.j2
+        dest: "{{ mnemonic_mcp_hooks_dir }}/tech-spec.sh"
+        owner: "{{ mnemonic_mcp_service_user }}"
+        group: "{{ mnemonic_mcp_service_group }}"
+        mode: '0755'
 
-- name: Assert all hooks are executable
-  assert:
-    that:
-      - item.stat.exists
-      - item.stat.executable
-    fail_msg: "Hook installation failed"
-  loop: "{{ hook_stat.results }}"
+    - name: Install task-complete.sh hook
+      template:
+        src: hooks/task-complete.sh.j2
+        dest: "{{ mnemonic_mcp_hooks_dir }}/task-complete.sh"
+        owner: "{{ mnemonic_mcp_service_user }}"
+        group: "{{ mnemonic_mcp_service_group }}"
+        mode: '0755'
 
-- name: Configure molyanov skill success paths to invoke hooks
-  template:
-    src: molyanov-mnemonic-hooks.yml.j2
-    dest: "{{ operator_home }}/.fabric/ruflo/hooks.d/molyanov-mnemonic-hooks.yml"
-    owner: "{{ operator_user }}"
-    group: "{{ operator_group }}"
-    mode: '0644'
-  become: true
-  become_user: "{{ operator_user }}"
+    - name: Install pre-deploy.sh hook
+      template:
+        src: hooks/pre-deploy.sh.j2
+        dest: "{{ mnemonic_mcp_hooks_dir }}/pre-deploy.sh"
+        owner: "{{ mnemonic_mcp_service_user }}"
+        group: "{{ mnemonic_mcp_service_group }}"
+        mode: '0755'
 
-- name: Reload systemd daemon
-  systemd:
-    daemon_reload: yes
-  notify: restart mnemonic-mcp service
+    - name: Install post-deploy.sh hook
+      template:
+        src: hooks/post-deploy.sh.j2
+        dest: "{{ mnemonic_mcp_hooks_dir }}/post-deploy.sh"
+        owner: "{{ mnemonic_mcp_service_user }}"
+        group: "{{ mnemonic_mcp_service_group }}"
+        mode: '0755'
 
-- name: Enable mnemonic-mcp service
-  systemd:
-    name: "{{ mnemonic_mcp_systemd_unit }}"
-    enabled: yes
-    state: started
+    - name: Verify all 5 hooks installed and executable
+      stat:
+        path: "{{ mnemonic_mcp_hooks_dir }}/{{ item }}.sh"
+      loop:
+        - user-spec
+        - tech-spec
+        - task-complete
+        - pre-deploy
+        - post-deploy
+      register: hook_stat
 
-- name: Wait for mnemonic-mcp to become active
-  systemd:
-    name: "{{ mnemonic_mcp_systemd_unit }}"
-  register: mnemonic_mcp_status
-  until: mnemonic_mcp_status.status.ActiveState == 'active'
-  retries: 5
-  delay: 2
+    - name: Assert all hooks are executable
+      assert:
+        that:
+          - item.stat.exists
+          - item.stat.executable
+        fail_msg: "Hook installation failed"
+      loop: "{{ hook_stat.results }}"
 
-- name: Verify mnemonic-mcp service is active
-  command: systemctl is-active {{ mnemonic_mcp_systemd_unit }}
-  changed_when: false
-  register: mnemonic_mcp_active
-  failed_when: mnemonic_mcp_active.rc != 0
+    - name: Configure molyanov skill success paths to invoke hooks
+      template:
+        src: molyanov-mnemonic-hooks.yml.j2
+        dest: "{{ operator_home }}/.fabric/ruflo/hooks.d/molyanov-mnemonic-hooks.yml"
+        owner: "{{ operator_user }}"
+        group: "{{ operator_group }}"
+        mode: '0644'
+      become: true
+      become_user: "{{ operator_user }}"
 
-- name: Healthcheck - verify binary responds to --selftest (no DAG pollution)
-  command: "{{ mnemonic_mcp_install_dir }}/bin/mnemonic-mcp --selftest"
-  changed_when: false
-  register: healthcheck_selftest
-  failed_when: healthcheck_selftest.rc != 0
-  retries: 5
-  delay: 2
+    - name: Reload systemd daemon
+      systemd:
+        daemon_reload: yes
+      notify: restart mnemonic-mcp service
 
-- name: Verify service is active after startup
-  systemd:
-    name: "{{ mnemonic_mcp_systemd_unit }}"
-  register: mnemonic_mcp_final_status
-  failed_when: mnemonic_mcp_final_status.status.ActiveState != 'active'
-  changed_when: false
+    - name: Enable mnemonic-mcp service
+      systemd:
+        name: "{{ mnemonic_mcp_systemd_unit }}"
+        enabled: yes
+        state: started
 
-- name: Wipe on-disk signing key after systemd has copied it into the credential namespace
-  # Once systemd LoadCredential= has read the file at unit start, the on-disk copy is
-  # redundant; systemd serves the key from its in-memory credential store to the unit.
-  # Wiping reduces the post-start exposure window of the plaintext key on /run.
-  ansible.builtin.file:
-    path: "{{ mnemonic_mcp_credential_file }}"
-    state: absent
-  no_log: true
+    - name: Wait for mnemonic-mcp to become active
+      systemd:
+        name: "{{ mnemonic_mcp_systemd_unit }}"
+      register: mnemonic_mcp_status
+      until: mnemonic_mcp_status.status.ActiveState == 'active'
+      retries: 5
+      delay: 2
+
+    - name: Verify mnemonic-mcp service is active
+      command: systemctl is-active {{ mnemonic_mcp_systemd_unit }}
+      changed_when: false
+      register: mnemonic_mcp_active
+      failed_when: mnemonic_mcp_active.rc != 0
+
+    - name: Healthcheck - verify binary responds to --selftest (no DAG pollution)
+      command: "{{ mnemonic_mcp_install_dir }}/bin/mnemonic-mcp --selftest"
+      changed_when: false
+      register: healthcheck_selftest
+      failed_when: healthcheck_selftest.rc != 0
+      retries: 5
+      delay: 2
+
+    - name: Verify service is active after startup
+      systemd:
+        name: "{{ mnemonic_mcp_systemd_unit }}"
+      register: mnemonic_mcp_final_status
+      failed_when: mnemonic_mcp_final_status.status.ActiveState != 'active'
+      changed_when: false
+
+    - name: Wipe on-disk signing key after systemd has copied it into the credential namespace
+      # Once systemd LoadCredential= has read the file at unit start, the on-disk copy is
+      # redundant; systemd serves the key from its in-memory credential store to the unit.
+      # Wiping reduces the post-start exposure window of the plaintext key on /run.
+      ansible.builtin.file:
+        path: "{{ mnemonic_mcp_credential_file }}"
+        state: absent
+      no_log: true

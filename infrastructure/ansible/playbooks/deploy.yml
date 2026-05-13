@@ -18,6 +18,9 @@
 #  8. ruflo             — Mnemonic framework CLI + per-topic config matrix
 #  9. molyanov          — Project knowledge + PK guard hook
 # 10. mnemonic-mcp      — Local Mnemonic MCP server + 5 trigger-point hooks
+#                          (DESCOPED 2026-05: disabled by default; gated by
+#                          mnemonic_mcp_enabled var. Backlog feature:
+#                          work/mnemonic-attestation-integration/)
 # 11. fabric-services   — Deploy compiled fabric artefacts (workspace-manager, watchdog, safe-mode, etc.)
 # 12. telegram-ai-agent — telegram-ai-agent bot + per-topic cwd:DYNAMIC resolver config
 #
@@ -135,10 +138,14 @@
         molyanov_skills_path: "/opt/molyanov/skills"
         molyanov_pk_guard_enabled: true
 
-    # Phase 6: Attestation + MCP
+    # Phase 6: Attestation + MCP (DESCOPED 2026-05 — disabled by default).
+    # The role still runs every deploy but installs only no-op stub hooks when
+    # `mnemonic_mcp_enabled` is false. Flip to true once the local Mnemonic MCP
+    # server is production-ready (backlog: work/mnemonic-attestation-integration/).
     - role: mnemonic-mcp
       tags: [mnemonic-mcp, attestation]
       vars:
+        mnemonic_mcp_enabled: "{{ mnemonic_mcp_enabled | default(false) }}"
         mnemonic_mcp_install_dir: "/opt/mnemonic-mcp"
         mnemonic_mcp_hooks:
           - post-deploy.sh
@@ -179,14 +186,14 @@
     - name: Verify all services are running
       block:
         - name: Check systemd services
+          # mnemonic-mcp only added to the loop when the role is enabled
+          # (descoped 2026-05; backlog: work/mnemonic-attestation-integration/)
           systemd:
             name: "{{ item }}"
             state: started
           register: service_check
-          loop:
-            - workspace-manager
-            - mnemonic-mcp
-            - telegram-ai-agent
+          loop: "{{ ['workspace-manager', 'telegram-ai-agent']
+                    + (['mnemonic-mcp'] if (mnemonic_mcp_enabled | default(false) | bool) else []) }}"
           failed_when: false
 
         - name: Report service status

@@ -3,6 +3,7 @@ feature: mnemonic-tg-bridge
 work_type: feature
 size: S
 status: approved
+approved_by: autonomous-execution-mandate
 created: 2026-05-13
 last_updated: 2026-05-13
 branch: dev

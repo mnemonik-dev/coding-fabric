@@ -2,9 +2,16 @@
 molyanov_operator_user: mnemonic-operator
 molyanov_operator_home: /home/mnemonic-operator
 
-# molyanov-ai-dev skills bundle repo and version
-molyanov_skills_repo: https://github.com/mnemonic-ai/molyanov-ai-dev.git
-molyanov_skills_version: v0.1.0
+# molyanov-ai-dev skills bundle (Round 2 scope change, 2026-05):
+# canonical source is pavel-molyanov/molyanov-ai-dev (MIT). Latest stable tag at
+# the time of pinning was v0.3.0 ("Feature Execution Hardening & Skill Tester
+# Merge", 2026-03-23). Bump when a newer tag is verified.
+molyanov_repo: "https://github.com/pavel-molyanov/molyanov-ai-dev"
+molyanov_version: "v0.3.0"
+molyanov_install_dir: "/opt/molyanov-ai-dev"
+# Back-compat aliases (still consumed by template / molecule scenarios).
+molyanov_skills_repo: "{{ molyanov_repo }}"
+molyanov_skills_version: "{{ molyanov_version }}"
 
 # Project Knowledge guard scope
 molyanov_pk_guard_refs_pattern: ".claude/skills/project-knowledge/references/"

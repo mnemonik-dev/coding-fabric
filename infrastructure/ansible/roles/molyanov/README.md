@@ -4,7 +4,7 @@ Install molyanov-ai-dev slash commands and Project Knowledge guard hook for codi
 
 ## Responsibilities
 
-1. **molyanov-ai-dev skills bundle**: Clone to `~/.claude/skills/` at pinned version (v0.1.0)
+1. **molyanov-ai-dev skills bundle**: Clone `pavel-molyanov/molyanov-ai-dev` (MIT) at pinned tag (v0.3.0) to `/opt/molyanov-ai-dev`, then symlink `skills/` to `~/.claude/skills/molyanov-ai-dev` so Claude Code discovers the bundle.
 2. **Global configuration**: Render `~/.fabric/molyanov/global.yml` with defaults and references
 3. **PK guard pre-write hook**: Install `~/.fabric/molyanov/hooks/pk-guard.sh` (mode 0755)
 4. **Ops-notify wrapper**: Install `~/.fabric/molyanov/hooks/ops-notify.sh` (mode 0755)

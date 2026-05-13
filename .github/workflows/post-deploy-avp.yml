@@ -1,5 +1,13 @@
 name: post-deploy-avp
 
+# 2026-05 scope change: Mnemonic MCP attestation signing is DESCOPED — the
+# local MCP server is not yet production-ready (backlog feature:
+# mnemonic-attestation-integration). The `sign-attestation` job is now gated
+# behind the `mnemonic_mcp_enabled` input (default false) and the AVP step 2
+# success criterion has been simplified from "5-node DAG verify" to
+# "docs PR end-to-end completes". Deliberate-break drill and first
+# recursive-self-merge remain intact.
+
 on:
   workflow_call:
     inputs:
@@ -7,6 +15,10 @@ on:
         description: 'Tailscale VM hostname (default: mnemonic-fabric)'
         type: string
         default: 'mnemonic-fabric'
+      mnemonic_mcp_enabled:
+        description: 'Run Mnemonic MCP attestation signing (default: false; descoped 2026-05)'
+        type: boolean
+        default: false
     secrets:
       TAILSCALE_OAUTH_CLIENT_ID:
         required: true
@@ -27,6 +39,10 @@ on:
         default: 'mnemonic-fabric'
       post_deploy_dry_run:
         description: 'Run AVP in dry-run mode (skip deliberate-break)'
+        type: boolean
+        default: false
+      mnemonic_mcp_enabled:
+        description: 'Run Mnemonic MCP attestation signing (default: false; descoped 2026-05)'
         type: boolean
         default: false
 
@@ -136,7 +152,12 @@ jobs:
         env:
           VM_HOSTNAME: ${{ inputs.vm_hostname }}
         run: |
-          echo "Executing AVP Step 2: docs PR end-to-end + DAG verification"
+          # DESCOPED 2026-05: previous verdict required a 5-node Mnemonic
+          # attestation DAG. Verdict simplified to "PR end-to-end completes" —
+          # step-2.sh on the VM drives a docs PR through the fabric and
+          # asserts the merge SHA exists; DAG verification has moved to the
+          # backlog feature mnemonic-attestation-integration.
+          echo "Executing AVP Step 2: docs PR end-to-end (PR-completion verdict)"
 
           OUTPUT=$(tailscale ssh "op@${VM_HOSTNAME}" \
             "bash /tmp/avp/step-2.sh" 2>&1 || true)
@@ -540,11 +561,20 @@ jobs:
           fi
 
   sign-attestation:
-    name: Sign post-deploy attestation
+    name: Sign post-deploy attestation (DESCOPED — opt-in)
     needs: [avp-steps, deliberate-break, recursive-self-merge]
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    if: success() && (needs.avp-steps.result == 'success' && needs.deliberate-break.result == 'success' && needs.recursive-self-merge.result == 'success')
+    # DESCOPED 2026-05: only runs when `mnemonic_mcp_enabled=true` (default false).
+    # The local Mnemonic MCP server is not yet production-ready (backlog feature:
+    # mnemonic-attestation-integration). When disabled, downstream jobs treat
+    # this job as a successful no-op.
+    if: |
+      success()
+      && inputs.mnemonic_mcp_enabled
+      && (needs.avp-steps.result == 'success'
+          && needs.deliberate-break.result == 'success'
+          && needs.recursive-self-merge.result == 'success')
     outputs:
       attestation_id: ${{ steps.sign.outputs.attestation_id }}
     steps:
@@ -615,7 +645,7 @@ jobs:
               "merge_sha": "${{ needs.recursive-self-merge.outputs.merge_sha || 'unknown' }}"
             },
             "attestation": {
-              "attestation_id": "${{ needs.sign-attestation.outputs.attestation_id || 'unsigned' }}"
+              "attestation_id": "${{ needs.sign-attestation.outputs.attestation_id || 'unsigned-descoped' }}"
             },
             "overall_status": "${{ job.status }}"
           }

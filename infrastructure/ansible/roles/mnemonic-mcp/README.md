@@ -1,5 +1,17 @@
 # Role: mnemonic-mcp
 
+> **STATUS: DISABLED BY DEFAULT (descoped 2026-05).**
+> The local Mnemonic MCP server is not yet production-ready. coding-fabric
+> deploys cleanly without it. To re-enable, set `mnemonic_mcp_enabled: true`
+> in inventory once the MCP server reaches v1.0+ and a signing-key generation
+> procedure is in place. Re-introduction work is tracked in the backlog
+> feature `work/mnemonic-attestation-integration/`.
+>
+> When disabled, the role installs no-op stub hooks (5 scripts under
+> `/etc/mnemonic-mcp/hooks/`) that exit 0 silently and log `attestation
+> skipped (mnemonic-mcp disabled — see backlog)` to journald so downstream
+> code paths invoking the hooks do not fail.
+
 Installs and configures the local Mnemonic MCP server with 5 trigger-point hook scripts that produce the per-feature DAG attestation lineage. Anchors user-spec AC11-AC16 and tech-spec §2.3 role 9, §2.6 D14.
 
 ## Responsibilities
@@ -21,6 +33,7 @@ Installs and configures the local Mnemonic MCP server with 5 trigger-point hook 
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `mnemonic_mcp_enabled` | `false` | Master switch (descoped 2026-05). When false, only no-op stub hooks are installed. |
 | `mnemonic_mcp_version` | `0.1.0` | Binary version tag |
 | `mnemonic_mcp_binary_sha256` | `changeme...` | SHA256 checksum for binary verification |
 | `mnemonic_mcp_install_dir` | `/opt/mnemonic-mcp` | Installation directory |

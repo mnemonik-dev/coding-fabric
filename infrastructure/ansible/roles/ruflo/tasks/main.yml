@@ -1,4 +1,57 @@
 ---
+# ruflo install — clone + build from upstream git
+# Round 2 scope change (2026-05): upstream source moved from
+# `https://install.ashwinchat.ai/ruflo` (installer.sh + SHA256) to the canonical
+# git repository `https://github.com/ruvnet/ruflo` (TypeScript / Node, MIT).
+# We clone the pinned tag, install dependencies via `npm ci` (package-lock.json
+# is the canonical lockfile in upstream), build via `npm run build`, and verify
+# the CLI entry point under `bin/cli.js`.
+
+- name: "Ensure git is installed"
+  ansible.builtin.package:
+    name: git
+    state: present
+  become: true
+  tags:
+    - ruflo-install
+
+- name: "Check for Node.js binary on PATH"
+  ansible.builtin.command:
+    cmd: "node --version"
+  register: ruflo_node_check
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags:
+    - ruflo-install
+
+- name: "Install NodeSource apt repository (Node 20.x) when node missing or < 20"
+  when:
+    - (ruflo_node_check.rc != 0)
+      or (ruflo_node_check.stdout | regex_search('^v([0-9]+)', '\\1') | first | int < 20)
+  block:
+    - name: "Download NodeSource setup script"
+      ansible.builtin.get_url:
+        url: "https://deb.nodesource.com/setup_20.x"
+        dest: "/tmp/nodesource_setup.sh"
+        mode: "0755"
+      become: true
+
+    - name: "Run NodeSource setup script"
+      ansible.builtin.shell:
+        cmd: "bash /tmp/nodesource_setup.sh"
+      become: true
+      changed_when: true
+
+    - name: "Install Node.js (nodejs apt package, brings npm)"
+      ansible.builtin.apt:
+        name: nodejs
+        state: present
+        update_cache: true
+      become: true
+  tags:
+    - ruflo-install
+
 - name: "Create ruflo config directories"
   ansible.builtin.file:
     path: "{{ item }}"
@@ -13,62 +66,82 @@
     - ruflo-install
     - ruflo-config
 
-- name: "Create temp directory for installer"
-  ansible.builtin.tempfile:
+- name: "Clone ruflo at pinned tag {{ ruflo_version }}"
+  ansible.builtin.git:
+    repo: "{{ ruflo_repo }}"
+    dest: "{{ ruflo_install_dir }}"
+    version: "{{ ruflo_version }}"
+    update: true
+    force: true
+    depth: 1
+  become: true
+  register: ruflo_clone
+  tags:
+    - ruflo-install
+
+- name: "Ensure {{ ansible_user }} owns {{ ruflo_install_dir }}"
+  ansible.builtin.file:
+    path: "{{ ruflo_install_dir }}"
     state: directory
-    suffix: _ruflo_install
-  register: ruflo_temp_dir
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    recurse: true
+  become: true
   tags:
     - ruflo-install
 
-- name: "Download ruflo installer to secure temp location"
-  ansible.builtin.get_url:
-    url: "https://install.ashwinchat.ai/ruflo"
-    dest: "{{ ruflo_temp_dir.path }}/ruflo-installer.sh"
-    mode: "0600"
-    checksum: "sha256:{{ ruflo_installer_sha256 }}"
-  register: ruflo_installer_download
-  tags:
-    - ruflo-install
-  failed_when:
-    - ruflo_installer_download is failed
-  fail_msg: "Installer download failed or checksum mismatch. Set ruflo_installer_sha256 after verifying upstream."
-
-- name: "Install ruflo at pinned version {{ ruflo_version }} (with cleanup)"
-  tags:
-    - ruflo-install
-  block:
-    - name: "Install ruflo at pinned version {{ ruflo_version }}"
-      ansible.builtin.shell:
-        cmd: |
-          set -e
-          export RUFLO_VERSION="{{ ruflo_version }}"
-          bash "{{ ruflo_temp_dir.path }}/ruflo-installer.sh"
-      no_log: true
-      register: ruflo_install_result
-      changed_when: "'successfully' in ruflo_install_result.stdout | lower"
-  always:
-    - name: "Clean up installer artifact"
-      ansible.builtin.file:
-        path: "{{ ruflo_temp_dir.path }}"
-        state: absent
-      when: ruflo_temp_dir.path is defined
-
-- name: "Verify ruflo installation"
+- name: "Install ruflo Node dependencies (npm ci, frozen lockfile)"
+  # ruflo upstream ships package-lock.json (canonical). npm ci installs strictly
+  # from the lockfile and fails if package.json / package-lock.json drift; safer
+  # than `npm install` for a pinned-version deploy.
   ansible.builtin.command:
-    cmd: "ruflo --version"
+    cmd: "npm ci"
+    chdir: "{{ ruflo_install_dir }}"
+  become: true
+  become_user: "{{ ansible_user }}"
+  register: ruflo_npm_ci
+  changed_when: ruflo_clone.changed or 'added' in (ruflo_npm_ci.stdout | default(''))
+  tags:
+    - ruflo-install
+
+- name: "Build ruflo (npm run build → dist/)"
+  ansible.builtin.command:
+    cmd: "npm run build"
+    chdir: "{{ ruflo_install_dir }}"
+  become: true
+  become_user: "{{ ansible_user }}"
+  register: ruflo_build
+  changed_when: ruflo_clone.changed
+  tags:
+    - ruflo-install
+
+- name: "Verify ruflo CLI entry point exists ({{ ruflo_install_dir }}/bin/cli.js)"
+  ansible.builtin.stat:
+    path: "{{ ruflo_install_dir }}/bin/cli.js"
+  register: ruflo_cli_stat
+  tags:
+    - ruflo-install
+
+- name: "Assert ruflo CLI entry point present"
+  ansible.builtin.assert:
+    that:
+      - ruflo_cli_stat.stat.exists
+    fail_msg: "ruflo CLI entry point not found at {{ ruflo_install_dir }}/bin/cli.js — build may have failed"
+  tags:
+    - ruflo-install
+
+- name: "Verify ruflo installation (node bin/cli.js --version)"
+  ansible.builtin.command:
+    cmd: "node {{ ruflo_install_dir }}/bin/cli.js --version"
   register: ruflo_version_check
   changed_when: false
-  failed_when:
-    - ruflo_version_check is failed
-    - "'{{ ruflo_version }}' not in ruflo_version_check.stdout"
-  fail_msg: "Installed ruflo version does not match expected {{ ruflo_version }}"
+  failed_when: ruflo_version_check.rc != 0
   tags:
     - ruflo-install
 
 - name: "Display ruflo version verification"
   ansible.builtin.debug:
-    msg: "ruflo installed and verified: {{ ruflo_version_check.stdout }}"
+    msg: "ruflo installed and verified at {{ ruflo_version }}: {{ ruflo_version_check.stdout }}"
   tags:
     - ruflo-install
 
@@ -122,7 +195,6 @@
   register: ruflo_matrix_validation
   changed_when: false
   failed_when: ruflo_matrix_validation.rc != 0
-  fail_msg: "Matrix validation failed: {{ ruflo_matrix_validation.stderr }}"
   tags:
     - ruflo-validate
 

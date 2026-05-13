@@ -1,12 +1,15 @@
 ---
 # Canonical per-topic configuration matrix (§2.4, tech-spec)
 # Used to render all 8 per-topic config files and validate on-disk state
-ruflo_version: "0.20.0"  # Pinned upstream version
 
-# Installer checksum (SHA256) for supply-chain security verification
-# Default FAIL-FAST: operator MUST override after verifying upstream hash
-# To get hash: curl -sL https://install.ashwinchat.ai/ruflo | sha256sum
-ruflo_installer_sha256: "PLACEHOLDER_VERIFY_UPSTREAM_AND_OVERRIDE"
+# Upstream source (Round 2 scope change, 2026-05): cloned from the canonical
+# GitHub repo and built locally. The previous installer.sh + SHA256 flow has
+# been removed; supply-chain integrity now derives from the pinned git tag
+# (signed by upstream maintainers) plus the in-tree package-lock.json that
+# `npm ci` enforces.
+ruflo_repo: "https://github.com/ruvnet/ruflo"
+ruflo_version: "v3.6.30"  # Pinned upstream tag
+ruflo_install_dir: "/opt/ruflo"
 
 ruflo_topic_matrix:
   - topic: core

@@ -1,4 +1,13 @@
 ---
+# DESCOPED (Round 2, 2026-05). The Mnemonic MCP server is not yet
+# production-ready, so this role is disabled by default. coding-fabric deploys
+# cleanly without it; attestation integration moves to backlog feature
+# `mnemonic-attestation-integration` (see work/mnemonic-attestation-integration/).
+# To re-enable, set `mnemonic_mcp_enabled: true` once the MCP server reaches
+# the v1.0+ release milestone and a real signing-key generation procedure is in
+# place.
+mnemonic_mcp_enabled: false
+
 operator_user: mnemonic-operator
 operator_home: /home/mnemonic-operator
 operator_group: "{{ operator_user }}"
