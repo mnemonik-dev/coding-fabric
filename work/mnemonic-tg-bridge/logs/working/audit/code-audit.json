@@ -1,0 +1,247 @@
+{
+  "audit": "bridge-audit-code",
+  "scope": "feat/cwd-dynamic-resolver (commits 5c82583, ccca2f0, 22e91a5, 3b7e970, 6b25a3d — T01..T05)",
+  "workspace": "/Users/syi/src/sessions/coding-fabric/mnemonik-bridge-workspace/telegram-ai-agent",
+  "report_format": "11-dimension code review (correctness, readability, structure, error handling, security, performance, testability, observability, idiomatic style, API design, documentation)",
+  "verdict": "needs-remediation",
+
+  "summary": "Implementation is small, focused, and well-tested at the unit level, but a critical integration bug means the leased cwd is silently dropped before reaching the engine subprocess. The override at __main__.py:152-154 mutates `session_data.cwd`, but `send_streaming_response` → `SessionManager.send_stream` → `_get_session` → `_apply_topic_config` runs AFTER the override and unconditionally rewrites `session.cwd = str(runtime.cwd)` (which falls back to `defaults.cwd` because `topic.cwd is None` for DYNAMIC topics). Net effect: the lease succeeds, the agent runs in the default cwd, the release runs — the per-task isolation guarantee is broken on the happy path. Tests do not catch this because the integration test mocks the resolver but never exercises the full SessionManager/_apply_topic_config chain.",
+
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "critical",
+      "dimension": "correctness",
+      "title": "Leased cwd is overwritten by _apply_topic_config before subprocess spawn",
+      "file": "/Users/syi/src/sessions/coding-fabric/mnemonik-bridge-workspace/telegram-ai-agent/src/telegram_bot/__main__.py",
+      "lines": "139-157 (override site) + claude.py:914, claude.py:321, claude.py:276",
+      "description": "process_queue_item leases the workspace, then mutates `session_manager._sessions[channel_key].cwd = str(resolved_cwd)` (line 152-154). It then calls `send_streaming_response(...)`. Inside send_streaming_response → `session_manager.send_stream(...)` (claude.py:732 / claude.py:900) the very first line is `session = self._get_session(channel_key)` (claude.py:914). `_get_session` ALWAYS calls `_apply_topic_config(session, channel_key)` (claude.py:321), which executes `session.cwd = str(runtime.cwd)` (claude.py:276). For DYNAMIC topics, `topic.cwd is None`, so `resolve_topic_runtime_config` falls back to `defaults.cwd` (topic_runtime.py:45). Result: the lease succeeds, release runs, but the engine subprocess actually executes in the default cwd, NOT the leased workspace.",
+      "additional_failure_modes": [
+        "When the channel has no session yet, `_sessions.get(channel_key)` returns None and the override is a silent no-op — the very first message in a DYNAMIC topic gets the default cwd regardless of `_apply_topic_config` behavior.",
+        "Private-attribute access (`session_manager._sessions`, `session_manager._default_cwd()`, `session_manager._settings`) leaks SessionManager internals into __main__ — fragile."
+      ],
+      "recommendation": "Move DYNAMIC awareness inside SessionManager: pass `resolved_cwd` through to `send_stream`, or teach `_apply_topic_config` to skip overwriting `session.cwd` when a per-message cwd override is set (e.g., via a contextvar or per-call argument). A clean fix is to add a `cwd_override: str | None = None` kwarg to `send_stream` / `_build_exec_command` that takes precedence over `session.cwd`. The dynamic_cwd_lease context manager would then thread the override down rather than mutating private state.",
+      "test_gap": "No test verifies that the engine subprocess receives the leased cwd. The integration test stops at the resolver mock; it never asserts what cwd the engine was spawned with."
+    },
+    {
+      "id": "F2",
+      "severity": "high",
+      "dimension": "testability",
+      "title": "Integration test does not assert engine-spawn cwd",
+      "file": "/Users/syi/src/sessions/coding-fabric/mnemonik-bridge-workspace/telegram-ai-agent/tests/integration/test_dynamic_cwd_flow.py",
+      "lines": "166-199",
+      "description": "test_dynamic_cwd_topic_calls_lease_then_release verifies POST/DELETE were called and the context manager yielded the right Path, but never checks the engine actually received the leased cwd. There is no end-to-end test that spans `process_queue_item` → SessionManager → command construction. F1 went undetected because of this missing coverage.",
+      "recommendation": "Add an integration test that monkey-patches `_run_cc_stream` or `_build_exec_command` to capture the cwd argument actually passed and asserts equality with the resolver-returned path."
+    },
+    {
+      "id": "F3",
+      "severity": "medium",
+      "dimension": "API design",
+      "title": "process_queue_item reaches into SessionManager private state",
+      "file": "/Users/syi/src/sessions/coding-fabric/mnemonik-bridge-workspace/telegram-ai-agent/src/telegram_bot/__main__.py",
+      "lines": "104, 109, 152-154",
+      "description": "Uses `session_manager._default_cwd()`, `session_manager._settings.project_root`, and `session_manager._sessions.get(channel_key)`. This couples the entry point to SessionManager's internal layout — every internal refactor risks breaking DYNAMIC. Also tests would need to mock these privates.",
+      "recommendation": "Expose minimal public methods: `SessionManager.default_cwd()` (or pass `default_cwd` via BotDefaults configured at startup), `SessionManager.default_mcp_config_path()`, and an `apply_cwd_override(channel_key, cwd)` helper that participates in the locking protocol."
+    },
+    {
+      "id": "F4",
+      "severity": "medium",
+      "dimension": "correctness",
+      "title": "task_id derivation can collide across forum threads on the same chat",
+      "file": "/Users/syi/src/sessions/coding-fabric/mnemonik-bridge-workspace/telegram-ai-agent/src/telegram_bot/core/services/dynamic_cwd.py",
+      "lines": "56-85",
+      "description": "build_task_id format is `{abs(chat_id)}-{thread|M}-{message_id}`. message_id is unique per chat (not per chat+thread), so collisions across forum threads in the same supergroup are impossible by Telegram semantics — but only for the SAME chat. Across different chats, the construction is collision-free. However, a subtle issue exists with the Pydantic regex: thread_id and message_id are not zero-padded; an attacker (or weirder still, an aborted-then-retried message_id) cannot create a regex-incompatible id because both Telegram ids are positive ints. Verified safe in practice but worth a docstring note.",
+      "recommendation": "Add an inline assertion or property-based test (Hypothesis) covering the chat_id × thread_id × message_id space to lock the regex contract. Document that abs() is used because Telegram negative chat_ids (supergroups: -100xxxxx) would break the regex character class."
+    },
+    {
+      "id": "F5",
+      "severity": "medium",
+      "dimension": "error handling",
+      "title": "Missing release when WorkspaceCapacityError / WorkspaceUnreachableError surfaces from lease",
+      "file": "/Users/syi/src/sessions/coding-fabric/mnemonik-bridge-workspace/telegram-ai-agent/src/telegram_bot/core/services/dynamic_cwd.py",
+      "lines": "166-181",
+      "description": "When `resolver.lease(request)` raises (e.g., 409 capacity or 5xx exhausted), control never enters the try/finally, so no `release` is attempted — which is correct (no lease was granted). However, the spec language ('All lease releases run in finally...') in README is slightly imprecise: it correctly applies only when lease succeeded. Not a bug, but documentation could mislead operators investigating leaked workspaces.",
+      "recommendation": "Either tighten the README ('finally releases workspace once leased') or — defensively — protect against partial leases on the resolver side. Leave as-is in code; this is a doc nit."
+    },
+    {
+      "id": "F6",
+      "severity": "medium",
+      "dimension": "API design",
+      "title": "TopicRuntimeConfig.repo always None; resolver receives literal 'default'",
+      "file": "/Users/syi/src/sessions/coding-fabric/mnemonik-bridge-workspace/telegram-ai-agent/src/telegram_bot/core/services/topic_runtime.py",
+      "lines": "36-37, 64",
+      "description": "`repo` field is added to TopicRuntimeConfig with `# populated by caller when a repo override is needed`, but no caller populates it. __main__.py uses `runtime.repo or 'default'`, so the resolver always receives `repo='default'`. This defeats per-topic worktree segregation by repo, which the HTTP contract is designed for. If the workspace-manager pool is configured to route by repo, every DYNAMIC topic ends up in the same pool slot class.",
+      "recommendation": "Either read `repo` from topic_config.json (new optional field) or from the topic.name string (parse 'org/repo' prefix). At minimum, document the limitation in topic_config.example.json and README."
+    },
+    {
+      "id": "F7",
+      "severity": "low",
+      "dimension": "correctness",
+      "title": "Bare Exception catch in dynamic_cwd_lease finally is broad",
+      "file": "/Users/syi/src/sessions/coding-fabric/mnemonik-bridge-workspace/telegram-ai-agent/src/telegram_bot/core/services/dynamic_cwd.py",
+      "lines": "173-181",
+      "description": "`except Exception as exc` in the finally block intentionally swallows release failures to avoid masking the primary exception. This is correct in spirit but also swallows asyncio.CancelledError on Python 3.7 semantics (Python ≥3.8 makes CancelledError subclass BaseException, so this catch is actually safe). Worth a comment.",
+      "recommendation": "Add a comment confirming CancelledError is intentionally NOT caught (BaseException on 3.8+), or narrow to `except WorkspaceResolverError`."
+    },
+    {
+      "id": "F8",
+      "severity": "low",
+      "dimension": "observability",
+      "title": "Release failure warning lacks task_id traceability across logs",
+      "file": "/Users/syi/src/sessions/coding-fabric/mnemonik-bridge-workspace/telegram-ai-agent/src/telegram_bot/core/services/dynamic_cwd.py",
+      "lines": "176-181",
+      "description": "Release-failure warning includes task_id, which is good. But INFO-level lease/release success logs use the same prefix `dynamic_cwd:` and `workspace_resolver:` — log queries against just one prefix risk missing half the story.",
+      "recommendation": "Add a structured `extra={'task_id': task_id}` field on all dynamic_cwd / workspace_resolver log records so journalctl-friendly extraction works without parsing the message string."
+    },
+    {
+      "id": "F9",
+      "severity": "low",
+      "dimension": "performance",
+      "title": "httpx.AsyncClient created per request when no client is injected",
+      "file": "/Users/syi/src/sessions/coding-fabric/mnemonik-bridge-workspace/telegram-ai-agent/src/telegram_bot/core/services/workspace_resolver.py",
+      "lines": "328-340",
+      "description": "`_post` and `_delete` create a fresh `httpx.AsyncClient` per call when `self._client is None`. Each call pays TCP+TLS setup. For a loopback resolver this is sub-millisecond, but it is wasteful in steady state and means connection pooling is disabled in production.",
+      "recommendation": "Build a single `httpx.AsyncClient` in `resolver_from_settings` at bot startup (lifetime tied to the bot) and inject it into `WorkspaceResolver`. Already supported by the constructor; simply use it."
+    },
+    {
+      "id": "F10",
+      "severity": "low",
+      "dimension": "idiomatic style",
+      "title": "Mixed access patterns: dataclass with bool dynamic_cwd flag vs sentinel string",
+      "file": "/Users/syi/src/sessions/coding-fabric/mnemonik-bridge-workspace/telegram-ai-agent/src/telegram_bot/core/services/topic_config.py",
+      "lines": "47-48, 75-88, 194-208",
+      "description": "DYNAMIC_CWD_SENTINEL is set at module level, but the dataclass uses a parallel `dynamic_cwd: bool` flag and rewrites `cwd` to None when the sentinel is seen. Two ways to express the same fact. An alternative (cleaner) design is a tagged-union: `cwd: str | DYNAMIC_TYPE = None` where DYNAMIC_TYPE is a singleton — but that would propagate complexity. The current approach is pragmatic.",
+      "recommendation": "Keep as-is, but document the invariant `dynamic_cwd is True ⇒ cwd is None` once at the dataclass docstring."
+    },
+    {
+      "id": "F11",
+      "severity": "low",
+      "dimension": "documentation",
+      "title": "README does not describe what happens to the in-memory session.cwd on lease",
+      "file": "/Users/syi/src/sessions/coding-fabric/mnemonik-bridge-workspace/telegram-ai-agent/README.md",
+      "lines": "244-336",
+      "description": "Operator-facing docs cover the HTTP contract well, but never mention that the in-memory SessionData has its cwd field rewritten per-message — which is exactly the mechanism F1 broke.",
+      "recommendation": "Once F1 is fixed, add a one-line note: 'The leased cwd is passed to the engine subprocess for the duration of one message; it does not persist in SessionData.' Also document that DYNAMIC topics MUST use exec_mode=subprocess (already in README, but worth duplicating near the contract)."
+    },
+    {
+      "id": "F12",
+      "severity": "low",
+      "dimension": "security",
+      "title": "Resolver response cwd is not validated as absolute / writable / in-allowlist",
+      "file": "/Users/syi/src/sessions/coding-fabric/mnemonik-bridge-workspace/telegram-ai-agent/src/telegram_bot/core/services/workspace_resolver.py",
+      "lines": "63-67, 178-186",
+      "description": "`LeaseResponse.cwd: str = Field(..., min_length=1)` accepts ANY non-empty string. A compromised or misconfigured resolver could return `/etc` or `/`, and the agent would run there. Defer detail to T07 (security audit). Worth at least an `os.path.isabs` check now.",
+      "recommendation": "Validate `cwd` is absolute, exists (os.path.isdir), and optionally is inside an allowlist (env-var TELEGRAM_AI_AGENT_CWD_RESOLVER_ALLOWED_PREFIX). Defer detailed threat model to T07."
+    }
+  ],
+
+  "positive_notes": [
+    "DYNAMIC_CWD_SENTINEL is correctly module-level (no scattered string literal 'DYNAMIC').",
+    "topic_config.py back-compat is preserved: missing cwd / static cwd paths are unchanged. Test coverage in test_topic_config_dynamic.py is comprehensive (sentinel detection, lowercase rejection, engine/exec_mode/stream_mode combinations, tmux warning).",
+    "WorkspaceResolver retry/backoff logic is correct (5xx and network errors retried, 4xx fail-fast, 409 maps to a typed exception, 404 is treated as idempotent on DELETE).",
+    "Exception hierarchy (WorkspaceResolverError + 4 subclasses) is well-designed and tested.",
+    "httpx.MockTransport injection is the right choice — realistic, no respx dependency, exercises real httpx code paths including JSON serialization. Test setup helpers (_make_resolver, _mock_transport, _json_response) read cleanly.",
+    "Release-on-finally semantics are correct and tested (test_release_called_even_on_engine_crash, test_release_failure_logged_does_not_mask_engine_error).",
+    "build_task_id is documented with explicit length math (13+1+10+1+10 = 35 ≤ 40); main-thread sentinel 'M' is uppercase-safe for the regex.",
+    "check_dynamic_cwd_preconditions cleanly separates fail-fast policy from the lease/release lifecycle.",
+    "Pydantic-settings AliasChoices correctly maps TELEGRAM_AI_AGENT_CWD_RESOLVER_URL with proper test coverage of env-var precedence.",
+    "topic_runtime.py change is appropriately minimal — just three fields added (dynamic_cwd, topic_name, repo) and one assignment line in resolve_topic_runtime_config. No behavioral change for non-DYNAMIC topics.",
+    "Logging hygiene test (test_logging_does_not_include_url_with_secrets) is forward-looking — even though the contract assumes loopback resolver, the URL is treated as potentially sensitive.",
+    "Russian translation (README.ru.md) faithfully mirrors the English DYNAMIC section structurally and semantically. Workspace error strings are present in both messages.py language tables.",
+    "Worktree warning when DYNAMIC + tmux is combined in topic_config.py:202 is informative (mentions T03 deferred enforcement) and matches the runtime check in check_dynamic_cwd_preconditions."
+  ],
+
+  "coverage_summary": {
+    "unit_tests": {
+      "test_topic_config_dynamic.py": "DYNAMIC sentinel recognition + back-compat + lowercase rejection + tmux warning + engine/stream_mode combinations. Solid.",
+      "test_workspace_resolver.py": "Lease success, 409, 5xx retry-then-fail / retry-then-succeed, timeout retry, 400 fail-fast, release 204/404/5xx, task_id validation, URL trailing slash, factory from settings, log secret hygiene, exception hierarchy. Excellent.",
+      "test_config_workspace_resolver_url.py": "Direct assignment + env-var loading + env-var precedence + None default. Complete."
+    },
+    "integration_tests": {
+      "test_dynamic_cwd_flow.py": "build_task_id forms, precondition checks (static, dynamic+tmux, dynamic+no-resolver), no-op for static cwd, happy path lease+release, 409 propagation, 5xx propagation, no-resolver propagation, release-on-crash, release-failure-does-not-mask. STOPS at the dynamic_cwd_lease boundary — does not test the SessionManager integration, which is exactly where F1 lives."
+    },
+    "missing_coverage": [
+      "End-to-end: process_queue_item → leased cwd actually passed to the engine subprocess invocation.",
+      "Race: concurrent messages in two DYNAMIC topics on the same chat (task_id uniqueness under load).",
+      "Cancellation: /cancel during a lease in flight (lease raises CancelledError before yielding).",
+      "Resolver returns malicious cwd (e.g., '/etc' or relative path) — currently accepted as-is."
+    ]
+  },
+
+  "remediation_priority": [
+    {
+      "priority": 1,
+      "finding_id": "F1",
+      "rationale": "Critical correctness bug — the feature is silently broken on the happy path. Must be fixed before merge.",
+      "blocking": true
+    },
+    {
+      "priority": 2,
+      "finding_id": "F2",
+      "rationale": "Add the missing engine-cwd assertion to the integration test. Without it, F1 (or any regression of the same shape) ships undetected.",
+      "blocking": true
+    },
+    {
+      "priority": 3,
+      "finding_id": "F3",
+      "rationale": "Tighten the SessionManager surface so DYNAMIC integration doesn't depend on private internals. Best fixed together with F1.",
+      "blocking": false
+    },
+    {
+      "priority": 4,
+      "finding_id": "F6",
+      "rationale": "repo='default' is a missed opportunity; the contract supports per-repo segregation. Address before users start spinning up multi-repo pools.",
+      "blocking": false
+    },
+    {
+      "priority": 5,
+      "finding_id": "F12",
+      "rationale": "Defer detail to T07 security audit, but add at minimum an os.path.isabs() guard now.",
+      "blocking": false
+    },
+    {
+      "priority": 6,
+      "finding_id": "F9",
+      "rationale": "Performance — reuse one httpx.AsyncClient across the resolver's lifetime.",
+      "blocking": false
+    },
+    {
+      "priority": 7,
+      "finding_id": "F4",
+      "rationale": "Add Hypothesis property test for build_task_id.",
+      "blocking": false
+    },
+    {
+      "priority": 8,
+      "finding_id": "F5",
+      "rationale": "Doc nit only.",
+      "blocking": false
+    },
+    {
+      "priority": 9,
+      "finding_id": "F7",
+      "rationale": "Comment-only.",
+      "blocking": false
+    },
+    {
+      "priority": 10,
+      "finding_id": "F8",
+      "rationale": "Observability polish.",
+      "blocking": false
+    },
+    {
+      "priority": 11,
+      "finding_id": "F10",
+      "rationale": "Style nit; current design is acceptable.",
+      "blocking": false
+    },
+    {
+      "priority": 12,
+      "finding_id": "F11",
+      "rationale": "Doc enrichment after F1 lands.",
+      "blocking": false
+    }
+  ],
+
+  "verdict_rationale": "needs-remediation. F1 (leased cwd silently dropped before engine spawn) makes the feature non-functional in its intended sense — the resolver is called, a workspace is leased and released, but the agent runs in the default cwd. F2 (no test catches this) means F1 is invisible to the existing AVP. Both are blockers. The rest of the implementation is well-built and is best preserved by addressing F1 + F2 with minimal API surface changes (e.g., a `cwd_override` kwarg threaded through SessionManager.send_stream / _build_exec_command, and an integration test that captures the actual subprocess cwd argv)."
+}

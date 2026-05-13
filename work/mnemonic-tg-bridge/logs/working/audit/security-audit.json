@@ -1,0 +1,135 @@
+{
+  "status": "approved",
+  "verdict": "approved",
+  "summary": {
+    "totalFindings": 9,
+    "critical": 0,
+    "major": 2,
+    "minor": 7
+  },
+  "remediation_priority": [
+    "F1 (major): redact / drop userinfo from resolver_url before logging in __main__._start()",
+    "F2 (major): validate URL scheme + (optionally) host of workspace_resolver_url at startup to harden against SSRF / misconfiguration",
+    "F3 (minor): cap response body size when reading LeaseResponse JSON",
+    "F4 (minor): regex-validate task_id in WorkspaceResolver.release() defensively",
+    "F5 (minor): make timeout_s / retries configurable via Settings",
+    "F6 (minor): startup-time fail-fast when any topic has cwd=DYNAMIC but resolver_url is unset",
+    "F7 (minor): document SIGKILL-between-lease-and-release leak (covered by orphan watchdog) in module docstring",
+    "F8 (minor): redact resolver_url from LeaseResponse logging (cwd is logged at INFO)",
+    "F9 (minor): document trust model for resolver URL (operator-controlled, loopback by convention)"
+  ],
+  "positive_notes": [
+    "Pydantic LeaseRequest enforces task_id regex `^[A-Z0-9\\-]{3,40}$` server-side of the bot before any HTTP call — defense in depth even if build_task_id ever changed.",
+    "build_task_id() correctly normalises negative supergroup chat_ids via abs(), avoiding collisions with the hyphen separator (test_build_task_id_negative_chat_id_abs covers this).",
+    "Worst-case task_id length is asserted by test_build_task_id_max_length_within_bounds; matches the documented arithmetic in the docstring (13+1+10+1+10 = 35 ≤ 40).",
+    "release() treats 404 as success — idempotent and safe; cannot be weaponised because a 404 only short-circuits a release the bot would otherwise log as success anyway (no privilege gained by attacker).",
+    "5xx retry budget is local to a single request (per for-loop in lease()/release()) — no global multiplier.",
+    "Release path runs in `finally` and swallows its own exceptions so the primary engine error is never masked (test_release_failure_logged_does_not_mask_engine_error).",
+    "Logging hygiene test test_logging_does_not_include_url_with_secrets directly checks that the resolver module never logs the base_url or its userinfo at any level, including DEBUG.",
+    "4xx (non-409) fail-fast — no retry amplification on bad input.",
+    "DYNAMIC + tmux is rejected by check_dynamic_cwd_preconditions before any HTTP call, with a clear actionable error.",
+    "httpx.AsyncClient timeout is set (5s default) — no unbounded read.",
+    "task_id regex `^[A-Z0-9\\-]{3,40}$` plus f-string interpolation into URL path cannot inject path traversal (no `/`, `.`, `..`, `%`)."
+  ],
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "major",
+      "category": "A09: Security Logging and Monitoring",
+      "title": "resolver_url logged verbatim at startup — leaks any embedded userinfo / token",
+      "description": "src/telegram_bot/__main__.py:208 logs `settings.workspace_resolver_url` directly at INFO via `logger.info(\"Workspace resolver configured: %s\", settings.workspace_resolver_url)`. If an operator (today or in the future) sets the URL to a form like `http://user:token@resolver.internal:8765` (legal RFC 3986 userinfo) — or pushes a query-string credential — the token lands in INFO logs and any forwarded log sink. The unit test test_logging_does_not_include_url_with_secrets explicitly defends the *resolver module*, but the same hygiene is not applied in __main__.py. Tech-spec §2.6 calls this out and the audit prompt flags it.",
+      "location": "src/telegram_bot/__main__.py:208",
+      "impact": "Credential / token leakage in operator logs and any aggregation system (journald, Loki, Datadog). Defense-in-depth gap that contradicts the documented logging policy.",
+      "recommendation": "Either drop the URL from the log line entirely (host + port is sufficient diagnostically) or redact userinfo/query before logging. Example:\n```python\nfrom urllib.parse import urlsplit, urlunsplit\nu = urlsplit(settings.workspace_resolver_url)\nsafe = urlunsplit((u.scheme, u.hostname or \"\", \"\", \"\", \"\"))\nlogger.info(\"Workspace resolver configured at %s\", safe)\n```",
+      "cwe": "CWE-532"
+    },
+    {
+      "id": "F2",
+      "severity": "major",
+      "category": "A10: SSRF",
+      "title": "workspace_resolver_url scheme/host not validated — operator-controlled env var",
+      "description": "`workspace_resolver_url` is loaded from env (`TELEGRAM_AI_AGENT_CWD_RESOLVER_URL`) and passed straight to `httpx.AsyncClient` without scheme or host validation (workspace_resolver.py:109 only strips a trailing slash). If the env var is set or overridden — by a misconfigured deploy, accidental shell expansion, or a compromised systemd unit — to a `file://`, `unix://`, or cloud-metadata URL (e.g. `http://169.254.169.254/...`), the bot will faithfully POST a lease request and read JSON back. Threat model is operator-controlled (not user-controlled), so true SSRF is unlikely, but the tech-spec asks for explicit validation. Note that httpx does not natively support `file://`, so the scheme-mismatch risk is limited to http/https swaps and metadata-IP misdirection.",
+      "location": "src/telegram_bot/core/services/workspace_resolver.py:101-113; src/telegram_bot/core/config.py:45-54",
+      "impact": "If the env var is ever attacker-influenced (CI compromise, exposed admin endpoint that writes .env, etc.), the bot reads JSON from an attacker-controlled URL and pipes its `cwd` directly into subprocess working-directory — a powerful pivot.",
+      "recommendation": "In `WorkspaceResolver.__init__` (or `resolver_from_settings`) assert `urlsplit(url).scheme in {\"http\", \"https\"}` and that the host is non-empty. Optionally enforce loopback / RFC1918 by default with an explicit `allow_public_resolver` opt-in flag in Settings. Also document the trust model: 'resolver_url is operator-controlled; do not expose Settings overrides to untrusted callers.'",
+      "cwe": "CWE-918"
+    },
+    {
+      "id": "F3",
+      "severity": "minor",
+      "category": "A04: Insecure Design",
+      "title": "No response-body size limit on LeaseResponse parsing",
+      "description": "workspace_resolver.py:179 calls `response.json()` then `LeaseResponse.model_validate(...)`. httpx by default reads the full response body into memory; there is no `limits=` on the AsyncClient or any `Content-Length` cap. A malicious or buggy resolver can return a 100 MB JSON body and the bot will allocate the full buffer per-message. With many topics hitting a failing resolver concurrently this becomes a memory-exhaustion vector.",
+      "location": "src/telegram_bot/core/services/workspace_resolver.py:179, 328-340",
+      "impact": "Memory pressure / OOM on the bot host if a resolver responds with a huge body. Low likelihood since the operator owns the resolver, but cheap to fix.",
+      "recommendation": "Pass `httpx.Limits` and stream-read with a size check, or cap explicitly:\n```python\nresp = await client.post(url, json=json)\nif len(resp.content) > 64 * 1024:\n    raise WorkspaceBadRequestError('resolver response too large')\n```",
+      "cwe": "CWE-770"
+    },
+    {
+      "id": "F4",
+      "severity": "minor",
+      "category": "A03: Injection",
+      "title": "WorkspaceResolver.release() interpolates task_id without re-validation",
+      "description": "release() takes `task_id: str` (workspace_resolver.py:231) and builds `url = f\"{self._base_url}/worktree/{task_id}\"` with no regex check. In current call flow task_id always comes from `build_task_id()` whose output is provably digits+hyphens+'M', and Pydantic validates the regex on LeaseRequest, but release() is a public method on WorkspaceResolver that callers could invoke directly. Defensive validation costs nothing and aligns with the principle of least trust.",
+      "location": "src/telegram_bot/core/services/workspace_resolver.py:231-246",
+      "impact": "If a future call site forgets to go through build_task_id, an attacker-controlled value containing `..` or `/` could traverse the resolver's URL space. Today: not exploitable; tomorrow: easy regression.",
+      "recommendation": "Either re-use the LeaseRequest regex via a module-level constant and assert in release(), or extract a `validate_task_id()` helper used by both build_task_id (post-condition) and release (pre-condition).",
+      "cwe": "CWE-20"
+    },
+    {
+      "id": "F5",
+      "severity": "minor",
+      "category": "A04: Insecure Design",
+      "title": "Resolver timeout and retry budget are hardcoded — not driven from Settings",
+      "description": "WorkspaceResolver defaults `timeout_s=5.0`, `retries=3`, `backoff_base=1.0` (workspace_resolver.py:104-107). `resolver_from_settings()` constructs the client with all defaults; there are no env vars to tune them. 5 s is reasonable for loopback but tight for network resolvers; conversely, an operator who wants stricter DoS hygiene cannot lower it. The retry math (1s + 2s + 4s = up to 7s of in-flight blocking per lease) is fixed.",
+      "location": "src/telegram_bot/core/services/workspace_resolver.py:101-113, 348-366",
+      "impact": "Operator cannot tune for their environment. Worst case: many topics blocked for ~7 s + 5 s per request when the resolver is degraded, increasing tail latency under partial failure.",
+      "recommendation": "Add `workspace_resolver_timeout_s`, `workspace_resolver_retries`, `workspace_resolver_backoff_base` to Settings (with current values as defaults) and thread them through `resolver_from_settings`.",
+      "cwe": "CWE-1188"
+    },
+    {
+      "id": "F6",
+      "severity": "minor",
+      "category": "A04: Insecure Design",
+      "title": "DYNAMIC topic + unset resolver_url fails only at first message, not at startup",
+      "description": "On boot, __main__._start() logs 'No workspace resolver URL configured (cwd:DYNAMIC topics unsupported)' (line 210) but does *not* scan topic_config.json for any topic with cwd=DYNAMIC. If such a topic exists, the failure manifests only when a user sends the first message, surfacing via WorkspaceConfigError → 'ui.workspace_config_error'. The test suite confirms message-time fail-fast (test_dynamic_cwd_without_resolver_raises_config_error) but there is no startup-time check.",
+      "location": "src/telegram_bot/__main__.py:206-210; tests/integration/test_dynamic_cwd_flow.py (only covers per-message)",
+      "impact": "Misconfigurations are discovered by users, not operators. Operationally noisy, not a security issue per se, but it lets a deployed bot silently fail-open: users believe the bot is up but every DYNAMIC topic is broken.",
+      "recommendation": "After `topic_config = TopicConfig(...)` in _start(), iterate `_topics.values()` and if any `dynamic_cwd is True` but `workspace_resolver is None`, log an ERROR and either refuse to start or print a clear deprecation. Add a regression test under tests/integration/.",
+      "cwe": "CWE-755"
+    },
+    {
+      "id": "F7",
+      "severity": "minor",
+      "category": "A04: Insecure Design",
+      "title": "SIGKILL between lease and release leaks worktrees — not documented in module docstring",
+      "description": "dynamic_cwd_lease guarantees release via `finally`, but a SIGKILL (OOM killer, kill -9, supervisor force-restart) between `resolver.lease(...)` and the `finally` block leaves the worktree allocated on the resolver side. The audit prompt and tech-spec note this is acceptable because workspace-manager has an orphan watchdog, but the source code does not mention it; a future maintainer might add a 'cleanup' system thinking it's needed.",
+      "location": "src/telegram_bot/core/services/dynamic_cwd.py:88-181",
+      "impact": "Documentation gap → risk of future buggy mitigation attempts (e.g. atexit handlers that race with the resolver).",
+      "recommendation": "Add a paragraph to the module docstring of dynamic_cwd.py: 'SIGKILL between lease and the finally block will leak a worktree on the resolver; this is covered by workspace-manager's orphan watchdog (see workspace-manager §X.Y). Do not add ad-hoc cleanup here.'",
+      "cwe": "CWE-1059"
+    },
+    {
+      "id": "F8",
+      "severity": "minor",
+      "category": "A09: Security Logging and Monitoring",
+      "title": "Resolved cwd path logged at INFO — may leak path-based secrets",
+      "description": "workspace_resolver.py:182 logs `cwd=%s` at INFO on every successful lease. If a future resolver returns paths that contain identifiers, branch names, or sanitized but still sensitive substrings, those go to logs. The current resolver returns plain worktree paths so risk is low; flagging defensively.",
+      "location": "src/telegram_bot/core/services/workspace_resolver.py:181-185",
+      "impact": "Low — workspace paths are not normally sensitive. But once logged at INFO, they are forwarded to whatever sink the operator runs.",
+      "recommendation": "Move cwd logging to DEBUG, or log only the basename / a hash of the path at INFO and the full path at DEBUG.",
+      "cwe": "CWE-532"
+    },
+    {
+      "id": "F9",
+      "severity": "minor",
+      "category": "best-practice",
+      "title": "Trust model for resolver_url not documented",
+      "description": "The audit prompt explicitly asks to either enforce loopback/private-network or document trust-by-network. Neither is done. The Field description on Settings only says 'HTTP resolver URL for cwd:DYNAMIC topics. Required when any topic uses cwd:DYNAMIC.'",
+      "location": "src/telegram_bot/core/config.py:45-54",
+      "impact": "Future operators may expose the resolver across an untrusted network without realising that the lease/release contract has no authentication and assumes a trusted transport.",
+      "recommendation": "Expand the Field description: 'Operator-controlled. The resolver protocol has no authentication; either bind it to loopback (127.0.0.1) or terminate TLS + mTLS at a reverse proxy before exposing it across a network.'",
+      "cwe": "CWE-1059"
+    }
+  ]
+}

@@ -5,18 +5,20 @@ size: S
 status: approved
 created: 2026-05-12
 last_updated: 2026-05-12
-upstream_repo: git@github.com:pavel-molyanov/telegram-ai-agent.git
+upstream_origin: git@github.com:pavel-molyanov/telegram-ai-agent.git
+fork_repo: git@github.com:mnemonik-dev/telegram-ai-agent.git
 upstream_license: MIT
-upstream_maintainer: pavel-molyanov
-parent_feature: coding-fabric (consumes the merged upstream feature via Ansible role T09)
-delivery_strategy: upstream PR (preferred); fallback fork to mnemonic-org/telegram-ai-agent if PR stalls >30 days
+parent_feature: coding-fabric (consumes via Ansible role T09)
+delivery_strategy: own-the-fork (mnemonik-dev/telegram-ai-agent is the source of truth)
+upstream_sync_strategy: periodic `git fetch upstream main` + manual rebase as needed; no PR ceremony
 note: |
-  Decision recorded: user chose to REUSE pavel-molyanov/telegram-ai-agent as-is rather
-  than rewrite in Rust. This feature now scopes down from "L Rust rewrite" to "S
-  upstream patch + PR" — adding a single optional capability (`cwd: "DYNAMIC"`
-  sentinel resolved against an external HTTP API) that coding-fabric AC6 requires.
-  Feature is intentionally generic to maximise upstream acceptance — no Mnemonic-
-  specific code paths.
+  Decision history:
+  - v0.0: Rust rewrite (size L) — cancelled.
+  - v0.1: upstream PR to pavel-molyanov (size S, generic feature) — cancelled in favor of own-the-fork.
+  - v0.2 (current): own-the-fork. Feature lives on mnemonik-dev/telegram-ai-agent:main as the
+    canonical source. coding-fabric T09 Ansible role pins to this fork. We can add
+    Mnemonic-specific patches later without upstream-acceptance ceremony. Pavel's
+    upstream remains a read-only sync source for bug fixes.
 ---
 
 # User Spec — mnemonic-tg-bridge (upstream PR for cwd:"DYNAMIC" sentinel)

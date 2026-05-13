@@ -8,11 +8,12 @@ created: 2026-05-13
 last_updated: 2026-05-13
 branch: dev
 source_user_spec: work/mnemonic-tg-bridge/user-spec.md
-upstream_repo: https://github.com/pavel-molyanov/telegram-ai-agent
-fork_repo: https://github.com/mnemonik-dev/telegram-ai-agent
-fork_branch: feat/cwd-dynamic-resolver
+upstream_origin: https://github.com/pavel-molyanov/telegram-ai-agent (read-only sync source)
+fork_repo: https://github.com/mnemonik-dev/telegram-ai-agent (source of truth)
+fork_branch: feat/cwd-dynamic-resolver (will merge into mnemonik-dev/main)
 upstream_license: MIT
-parent_feature: coding-fabric (consumes the merged feature via Ansible role T09)
+parent_feature: coding-fabric (consumes the feature via Ansible role T09 pinned to fork commit/tag)
+delivery_strategy: own-the-fork (see user-spec.md frontmatter)
 ---
 
 # Tech Spec — mnemonic-tg-bridge (cwd:"DYNAMIC" HTTP resolver upstream PR)
@@ -186,12 +187,13 @@ Total: 10 tasks (5 implementation + 3 audit + 2 final). Within S-cap.
 - Reviewers: none
 - Scope: re-run lint + typecheck + tests after audit fixes land. Produce `work/mnemonic-tg-bridge/logs/tasks/pre-deploy-qa.json`.
 
-**T10 — Open upstream PR**
-- Skill: `github-actions-pro` (best fit for GitHub PR flow + CI)
+**T10 — Merge feat branch into fork main + tag release** [REVISED: own-the-fork strategy]
+- Skill: `github-actions-pro`
 - Reviewers: none
-- Verify-user: user reviews PR body before publication; user pings Pavel via GitHub issue/Telegram (optional but recommended)
-- Scope: push fork branch `feat/cwd-dynamic-resolver` to `mnemonik-dev/telegram-ai-agent`; open PR against `pavel-molyanov/telegram-ai-agent:main` with structured body (Motivation, Design summary, Tests, Back-compat note, Acceptance criteria). Iterate review comments (up to 3 rounds). Track PR URL + status in decisions.md. If 30 days without merge → fallback path triggered (tag fork release `v<base>+mnemonik.1` and inform coding-fabric T09 to pin to this tag).
-- Files modify: none in this repo; PR body in upstream
+- Verify-user: user can review CHANGELOG/release notes before tag push
+- Scope: push `feat/cwd-dynamic-resolver` to `mnemonik-dev/telegram-ai-agent`; merge into `main` with `--ff` (linear history preferred — single feature branch); tag release `v0.1.0+mnemonik.1` (semver suffix marks divergence from upstream); push tag. Update coding-fabric T09 `telegram_ai_agent_pin` default to this tag. Track tag SHA + URL in decisions.md.
+- Files modify: in this repo: `infrastructure/ansible/roles/telegram-ai-agent/defaults/main.yml` (pin update); on the fork: feat branch merged + release tag pushed.
+- Note: upstream PR to pavel-molyanov NOT opened. If desired later, can be done as a separate optional contribution.
 
 ## 5. Testing Strategy (size S)
 
