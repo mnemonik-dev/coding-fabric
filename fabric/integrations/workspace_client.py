@@ -6,6 +6,13 @@ Thin httpx wrapper around the workspace-manager HTTP API
 
 Retries on 5xx with exponential back-off (max 3 attempts); raises
 immediately on 4xx so callers can surface the cause quickly.
+
+Exception hierarchy
+-------------------
+WorkspaceError
+  WorkspaceCapacityError   — HTTP 409, worktree pool full
+  WorkspaceUnreachableError — connection failure / timeout
+  WorkspaceClientError      — non-retryable 4xx (other than 409)
 """
 
 from __future__ import annotations
@@ -13,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import AsyncIterator, Callable, Awaitable
 
 import httpx
 from pydantic import BaseModel, Field
@@ -33,6 +40,41 @@ _RETRY_BASE_DELAY = 0.5  # seconds; doubles each attempt
 
 
 # ---------------------------------------------------------------------------
+# Exception hierarchy
+# ---------------------------------------------------------------------------
+
+
+class WorkspaceError(Exception):
+    """Base class for all workspace-manager errors."""
+
+
+class WorkspaceCapacityError(WorkspaceError):
+    """Raised when the worktree pool is full (HTTP 409)."""
+
+    def __init__(self, task_id: str, detail: str | None = None) -> None:
+        self.task_id = task_id
+        self.detail = detail
+        super().__init__(
+            f"Worktree pool at capacity for task {task_id!r}: {detail}"
+        )
+
+
+class WorkspaceUnreachableError(WorkspaceError):
+    """Raised when the workspace-manager is unreachable (connection/timeout)."""
+
+
+class WorkspaceClientError(WorkspaceError):
+    """Raised for non-retryable 4xx responses (other than 409)."""
+
+
+# ---------------------------------------------------------------------------
+# Backward-compat alias — keep CapacityError so existing imports don't break
+# ---------------------------------------------------------------------------
+
+CapacityError = WorkspaceCapacityError
+
+
+# ---------------------------------------------------------------------------
 # Pydantic shapes for workspace-manager responses
 # ---------------------------------------------------------------------------
 
@@ -47,21 +89,6 @@ class WorktreeCreated(BaseModel):
 class WorktreeDeleted(BaseModel):
     task_id: str
     deleted: bool
-
-
-class CapacityError(Exception):
-    """Raised when the worktree pool is full (HTTP 409)."""
-
-    def __init__(self, task_id: str, detail: str | None = None) -> None:
-        self.task_id = task_id
-        self.detail = detail
-        super().__init__(
-            f"Worktree pool at capacity for task {task_id!r}: {detail}"
-        )
-
-
-class WorkspaceClientError(Exception):
-    """Generic workspace-manager error (non-retryable 4xx)."""
 
 
 # ---------------------------------------------------------------------------
@@ -113,8 +140,9 @@ class WorkspaceClient:
         Retries transparently on 5xx responses.
 
         Raises:
-            CapacityError: On HTTP 409 (pool full).
+            WorkspaceCapacityError: On HTTP 409 (pool full).
             WorkspaceClientError: On other 4xx responses.
+            WorkspaceUnreachableError: On connection failure or timeout.
             httpx.HTTPStatusError: On persistent 5xx after retries exhausted.
         """
         client = await self._get_client()
@@ -124,9 +152,14 @@ class WorkspaceClient:
             "base_ref": base_ref,
             "topic": topic,
         }
-        response = await self._with_retry(
-            lambda: client.post("/worktree", json=payload)
-        )
+        try:
+            response = await self._with_retry(
+                lambda: client.post("/worktree", json=payload)
+            )
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise WorkspaceUnreachableError(
+                f"workspace-manager unreachable for task {task_id!r}: {exc}"
+            ) from exc
         self._raise_for_status(response, task_id)
         return WorktreeCreated.model_validate(response.json())
 
@@ -137,11 +170,17 @@ class WorkspaceClient:
 
         Raises:
             WorkspaceClientError: On 4xx responses other than 404.
+            WorkspaceUnreachableError: On connection failure or timeout.
         """
         client = await self._get_client()
-        response = await self._with_retry(
-            lambda: client.delete(f"/worktree/{task_id}")
-        )
+        try:
+            response = await self._with_retry(
+                lambda: client.delete(f"/worktree/{task_id}")
+            )
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            raise WorkspaceUnreachableError(
+                f"workspace-manager unreachable while deleting task {task_id!r}: {exc}"
+            ) from exc
         if response.status_code == 404:
             logger.warning("worktree %s not found on DELETE (already cleaned up)", task_id)
             return WorktreeDeleted(task_id=task_id, deleted=True)
@@ -169,6 +208,13 @@ class WorkspaceClient:
 
             async with client.lease("TASK-1", "mnemonic-core") as cwd:
                 await spawn_agent(cwd=cwd)
+
+        .. note::
+            This context manager is suitable for callers that **own** the full
+            agent lifecycle (i.e., the agent completes before the ``async with``
+            block exits).  When the agent runs asynchronously after the spawn
+            call returns, use ``SwarmBridge.dispatch_wave`` /
+            ``SwarmBridge.cleanup_wave`` instead — see swarm_bridge.py.
         """
         info = await self.create_worktree(task_id, repo, base_ref, topic)
         logger.info("worktree leased: task_id=%s path=%s", task_id, info.path)
@@ -185,7 +231,10 @@ class WorkspaceClient:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    async def _with_retry(self, request_fn) -> httpx.Response:
+    async def _with_retry(
+        self,
+        request_fn: Callable[[], Awaitable[httpx.Response]],
+    ) -> httpx.Response:
         """Execute ``request_fn`` with exponential back-off on 5xx."""
         delay = _RETRY_BASE_DELAY
         for attempt in range(1, _MAX_RETRIES + 1):
@@ -202,8 +251,7 @@ class WorkspaceClient:
             if attempt < _MAX_RETRIES:
                 await asyncio.sleep(delay)
                 delay *= 2
-        # Last attempt also raised — return the last response to let the caller
-        # decide; _raise_for_status will surface it.
+        # Last attempt exhausted — return last response; _raise_for_status surfaces it.
         return response  # type: ignore[return-value]  # last iteration set it
 
     @staticmethod
@@ -213,7 +261,7 @@ class WorkspaceClient:
             return
         body = response.text[:256]
         if response.status_code == 409:
-            raise CapacityError(task_id, detail=body)
+            raise WorkspaceCapacityError(task_id, detail=body)
         if 400 <= response.status_code < 500:
             raise WorkspaceClientError(
                 f"workspace-manager returned {response.status_code} for task {task_id!r}: {body}"

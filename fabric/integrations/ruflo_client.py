@@ -18,6 +18,11 @@ Shapes:
     AgentConfig     — arguments for agent_spawn
     SwarmHandle     — result of swarm_init (contains swarm_id)
     AgentHandle     — result of agent_spawn (contains agent_id)
+
+Exception hierarchy
+-------------------
+RufloError
+  RufloSpawnError  — agent_spawn MCP call failed
 """
 
 from __future__ import annotations
@@ -39,6 +44,39 @@ logger = logging.getLogger(__name__)
 
 # Type alias for injectable MCP tool callables
 McpCallable = Callable[..., Awaitable[dict[str, Any]]]
+
+
+# ---------------------------------------------------------------------------
+# Exception hierarchy
+# ---------------------------------------------------------------------------
+
+
+class RufloError(Exception):
+    """Base class for all ruflo MCP errors."""
+
+
+class RufloSpawnError(RufloError):
+    """Raised when agent_spawn fails.
+
+    Attributes:
+        task_id: The task for which the spawn was attempted.
+        swarm_id: The owning swarm.
+        cause: The underlying exception, if any.
+    """
+
+    def __init__(
+        self,
+        task_id: str,
+        swarm_id: str,
+        cause: BaseException | None = None,
+    ) -> None:
+        self.task_id = task_id
+        self.swarm_id = swarm_id
+        self.cause = cause
+        super().__init__(
+            f"agent_spawn failed for task {task_id!r} in swarm {swarm_id!r}"
+            + (f": {cause}" if cause else "")
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +167,10 @@ class RufloClient:
 
         Returns:
             An :class:`AgentHandle` containing the new ``agent_id``.
+
+        Raises:
+            RufloSpawnError: Wraps any exception raised by ``agent_spawn_fn``,
+                adding structured context (task_id, swarm_id).
         """
         logger.info(
             "agent_spawn: swarm_id=%s task_id=%s cwd=%s",
@@ -136,13 +178,20 @@ class RufloClient:
             config.task_id,
             config.cwd,
         )
-        result = await self._agent_spawn(
-            swarm_id=config.swarm_id,
-            task_id=config.task_id,
-            task_brief=config.task_brief,
-            cwd=config.cwd,
-            memory_namespace=config.memory_namespace,
-        )
+        try:
+            result = await self._agent_spawn(
+                swarm_id=config.swarm_id,
+                task_id=config.task_id,
+                task_brief=config.task_brief,
+                cwd=config.cwd,
+                memory_namespace=config.memory_namespace,
+            )
+        except Exception as exc:
+            raise RufloSpawnError(
+                task_id=config.task_id,
+                swarm_id=config.swarm_id,
+                cause=exc,
+            ) from exc
         handle = AgentHandle(
             agent_id=result["agent_id"],
             swarm_id=config.swarm_id,

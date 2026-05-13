@@ -1548,3 +1548,21 @@ Code-reviewer lens:
 
 ---
 
+
+## T14 swarm-bridge — Review Round 2 fixes (2026-05-12)
+
+**Issues addressed** (from code-reviewer-round1 and reliability-engineer-round1):
+
+1. **Worktree-deletion-during-agent-runtime (RUNTIME CRIT)**: `_spawn_one` no longer has a `finally: _safe_delete`. Worktree ownership is now swarm-level. `dispatch()` returns `DispatchResult.leased_worktrees`; the caller invokes `cleanup_worktrees(leased)` after agents finish. On failure paths `dispatch()` cleans up everything it owns before propagating. `auto_cleanup=True` flag supports synchronous/test workflows.
+
+2. **asyncio.gather cancellation (HIGH)**: `_dispatch_wave` now uses `asyncio.gather(*coros, return_exceptions=True)`. After gather, first non-None exception is re-raised; sibling coroutines complete normally even when a peer fails.
+
+3. **Thundering herd on capacity retry (HIGH)**: retry sleep is `capacity_wait_s + random.uniform(0, capacity_wait_s * 0.5)`. `asyncio.Semaphore(max_concurrent_creates)` wraps every `create_worktree` call inside `_lease_worktree_with_capacity_retry`.
+
+4. **Error hierarchy (MEDIUM)**: `WorkspaceError → WorkspaceCapacityError / WorkspaceUnreachableError / WorkspaceClientError`; `RufloError → RufloSpawnError`; `SwarmError` (swarm_init failure). `CapacityError` alias preserved for backward compat.
+
+5. **Missing type annotation on `_with_retry` (CRIT type)**: parameter typed as `Callable[[], Awaitable[httpx.Response]]`.
+
+6. **Lower-bound-only deps (medium)**: pins changed to `~=` (compatible release).
+
+7. **New edge-case tests**: `test_5xx_exhaustion_raises`, `test_empty_waves_dispatch`, `test_swarm_init_failure_raises_swarm_error`, `test_asyncio_cancel_during_retry_sleep`, `test_worktree_not_deleted_before_dispatch_returns`, `test_worktree_cleaned_on_swarm_completion_auto_cleanup`. Suite: 21 tests, all green.

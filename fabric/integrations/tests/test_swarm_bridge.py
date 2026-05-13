@@ -8,6 +8,13 @@ TDD anchors from tasks/14.md:
     test_worktree_cleaned_on_swarm_completion
     test_partial_failure_does_not_leak_worktrees
     test_concurrent_features_dont_collide  (added by task instructions)
+
+Round 2 additions (review fixes):
+    test_worktree_not_deleted_before_dispatch_returns
+    test_5xx_exhaustion_raises
+    test_empty_wave_dispatch
+    test_swarm_init_failure_raises_swarm_error
+    test_asyncio_cancel_during_retry_sleep
 """
 
 from __future__ import annotations
@@ -18,17 +25,26 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 import pytest
 
 from fabric.integrations.workspace_client import (
-    CapacityError,
+    WorkspaceCapacityError,
     WorkspaceClient,
     WorktreeCreated,
     WorktreeDeleted,
     WorkspaceClientError,
 )
-from fabric.integrations.ruflo_client import AgentConfig, RufloClient, SwarmConfig, SwarmHandle
+# Backward-compat alias still importable
+from fabric.integrations.workspace_client import CapacityError
+from fabric.integrations.ruflo_client import (
+    AgentConfig,
+    RufloClient,
+    RufloSpawnError,
+    SwarmConfig,
+    SwarmHandle,
+)
 from fabric.integrations.swarm_bridge import (
     DispatchResult,
     FeaturePlan,
     SwarmBridge,
+    SwarmError,
     TaskSpec,
 )
 from .conftest import McpCallRecorder, WorktreeTracker
@@ -225,12 +241,53 @@ async def test_worktree_cleaned_on_swarm_completion(
     tracker: WorktreeTracker,
     simple_plan: FeaturePlan,
 ) -> None:
-    """After successful dispatch all created worktrees must be deleted."""
-    await bridge.dispatch(simple_plan)
+    """After explicit cleanup_worktrees all created worktrees must be deleted."""
+    result = await bridge.dispatch(simple_plan)
+    # Worktrees are NOT deleted automatically (agents are still running).
+    assert tracker.active == {"TASK-1", "TASK-2"}, "expected worktrees live after dispatch"
+    # Caller cleans up when agents are done.
+    await bridge.cleanup_worktrees(result.leased_worktrees)
 
     assert set(tracker.created) == {"TASK-1", "TASK-2"}
     assert set(tracker.deleted) == {"TASK-1", "TASK-2"}
     assert tracker.active == set(), f"leaks: {tracker.active}"
+
+
+@pytest.mark.asyncio
+async def test_worktree_cleaned_on_swarm_completion_auto_cleanup(
+    bridge: SwarmBridge,
+    tracker: WorktreeTracker,
+    simple_plan: FeaturePlan,
+) -> None:
+    """auto_cleanup=True deletes all worktrees before dispatch returns."""
+    result = await bridge.dispatch(simple_plan, auto_cleanup=True)
+
+    assert set(tracker.created) == {"TASK-1", "TASK-2"}
+    assert set(tracker.deleted) == {"TASK-1", "TASK-2"}
+    assert tracker.active == set(), f"leaks: {tracker.active}"
+    assert result.leased_worktrees == {}, "leased_worktrees must be empty after auto_cleanup"
+
+
+@pytest.mark.asyncio
+async def test_worktree_not_deleted_before_dispatch_returns(
+    bridge: SwarmBridge,
+    tracker: WorktreeTracker,
+    simple_plan: FeaturePlan,
+) -> None:
+    """Worktrees must be alive immediately after dispatch returns (agents still need cwd).
+
+    This is the core fix for the worktree-deletion-during-agent-runtime bug.
+    """
+    result = await bridge.dispatch(simple_plan)
+    # At this point agents are logically still running; cwd must NOT have been deleted.
+    assert tracker.active == {"TASK-1", "TASK-2"}, (
+        "BUG: worktrees were deleted during dispatch — agent runtime window violated"
+    )
+    assert result.leased_worktrees == {"TASK-1": "/code/mnemonic-workspaces/TASK-1",
+                                       "TASK-2": "/code/mnemonic-workspaces/TASK-2"}
+    # Cleanup happens later.
+    await bridge.cleanup_worktrees(result.leased_worktrees)
+    assert tracker.active == set()
 
 
 @pytest.mark.asyncio
@@ -239,8 +296,9 @@ async def test_worktree_cleaned_for_multi_wave(
     tracker: WorktreeTracker,
     multi_wave_plan: FeaturePlan,
 ) -> None:
-    """Worktrees for all waves are cleaned up on completion."""
-    await bridge.dispatch(multi_wave_plan)
+    """Worktrees for all waves are cleaned up via explicit cleanup."""
+    result = await bridge.dispatch(multi_wave_plan)
+    await bridge.cleanup_worktrees(result.leased_worktrees)
 
     expected_ids = {"WAVE1-T1", "WAVE2-T1", "WAVE2-T2"}
     assert set(tracker.created) == expected_ids
@@ -257,7 +315,12 @@ async def test_partial_failure_does_not_leak_worktrees(
     mock_workspace: WorkspaceClient,
     tracker: WorktreeTracker,
 ) -> None:
-    """When one agent_spawn fails, worktrees for all tasks in the wave are deleted."""
+    """When one agent_spawn fails, worktrees for all tasks in the wave are deleted.
+
+    The spawn error is wrapped in RufloSpawnError which carries structured context.
+    The failed task's worktree is deleted immediately (agent never started).
+    The successful task's worktree is also cleaned up before the exception propagates.
+    """
     spawn_count = [0]
 
     async def flaky_spawn(**kwargs):
@@ -282,8 +345,12 @@ async def test_partial_failure_does_not_leak_worktrees(
         ],
     )
 
-    with pytest.raises(RuntimeError, match="agent_spawn failed deliberately"):
+    # spawn failure is wrapped in RufloSpawnError with structured context
+    with pytest.raises(RufloSpawnError) as exc_info:
         await bridge.dispatch(plan)
+    assert exc_info.value.task_id == "TASK-2"
+    assert exc_info.value.swarm_id == "swarm-x"
+    assert isinstance(exc_info.value.cause, RuntimeError)
 
     # Both worktrees that were created must have been deleted
     assert tracker.active == set(), (
@@ -297,10 +364,12 @@ async def test_partial_failure_all_creates_before_spawn(
     tracker: WorktreeTracker,
 ) -> None:
     """Each task independently creates+deletes its worktree; single task failure
-    does not prevent others from being cleaned up."""
-    # Simulate: TASK-2 create succeeds but spawn fails; TASK-1 create+spawn succeeds
+    does not prevent others from being cleaned up.
+
+    Failed-spawn worktree is deleted inline; successful-spawn worktrees are
+    cleaned up by the dispatch() exception path before propagating.
+    """
     create_count = [0]
-    delete_records: list[str] = []
 
     async def track_create(task_id: str, repo: str, base_ref: str = "main", topic: str = "ops"):
         create_count[0] += 1
@@ -344,8 +413,11 @@ async def test_partial_failure_all_creates_before_spawn(
         ],
     )
 
-    with pytest.raises(RuntimeError, match="spawn boom"):
+    # exception is now wrapped in RufloSpawnError
+    with pytest.raises(RufloSpawnError) as exc_info:
         await bridge.dispatch(plan)
+    assert exc_info.value.task_id == "TASK-B"
+    assert isinstance(exc_info.value.cause, RuntimeError)
 
     # No active leaks
     assert tracker.active == set(), f"leaked: {tracker.active}"
@@ -485,3 +557,110 @@ async def test_waves_processed_sequentially(
     w1_idx = spawned_ids.index("W1-T1")
     w2_idx = spawned_ids.index("W2-T1")
     assert w1_idx < w2_idx, "Wave 2 task spawned before Wave 1 task"
+
+
+# ===========================================================================
+# Round-2 edge-case tests
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_5xx_exhaustion_raises(mock_ruflo: RufloClient) -> None:
+    """After max retries on 5xx, WorkspaceClientError is surfaced to the caller."""
+    import httpx
+
+    # Simulate _with_retry exhausting all retries and returning a 500 response.
+    async def always_500(task_id: str, repo: str, base_ref: str = "main", topic: str = "ops"):
+        raise WorkspaceClientError(
+            f"workspace-manager returned 500 for task {task_id!r}: internal error"
+        )
+
+    workspace = MagicMock(spec=WorkspaceClient)
+    workspace.create_worktree = AsyncMock(side_effect=always_500)
+    workspace.delete_worktree = AsyncMock(
+        return_value=WorktreeDeleted(task_id="TASK-1", deleted=True)
+    )
+
+    bridge = SwarmBridge(workspace=workspace, ruflo=mock_ruflo, capacity_wait_s=0.0)
+    plan = FeaturePlan(
+        feature_id="feat-5xx",
+        waves=[[TaskSpec(task_id="TASK-1", brief="x", repo="mnemonic-core")]],
+    )
+
+    with pytest.raises(WorkspaceClientError, match="500"):
+        await bridge.dispatch(plan)
+
+
+@pytest.mark.asyncio
+async def test_empty_waves_dispatch(mock_ruflo: RufloClient, recorder: McpCallRecorder) -> None:
+    """A FeaturePlan with no waves completes without spawning any agents."""
+    workspace = MagicMock(spec=WorkspaceClient)
+
+    bridge = SwarmBridge(workspace=workspace, ruflo=mock_ruflo, capacity_wait_s=0.0)
+    plan = FeaturePlan(feature_id="feat-empty", waves=[])
+
+    result = await bridge.dispatch(plan)
+
+    assert result.agents == []
+    assert result.leased_worktrees == {}
+    # swarm_init still called (to get a valid swarm_id)
+    assert len(recorder.swarm_init_calls) == 1
+    assert recorder.swarm_init_calls[0]["feature_id"] == "feat-empty"
+    # No worktrees touched
+    workspace.create_worktree.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_swarm_init_failure_raises_swarm_error(mock_workspace: WorkspaceClient) -> None:
+    """If swarm_init raises, a SwarmError is surfaced with system='ruflo' context."""
+    async def failing_swarm_init(**kwargs):
+        raise RuntimeError("ruflo is down")
+
+    ruflo = RufloClient(
+        swarm_init_fn=failing_swarm_init,
+        agent_spawn_fn=AsyncMock(return_value={"agent_id": "a-1"}),
+    )
+    bridge = SwarmBridge(workspace=mock_workspace, ruflo=ruflo, capacity_wait_s=0.0)
+    plan = FeaturePlan(
+        feature_id="feat-init-fail",
+        waves=[[TaskSpec(task_id="T-1", brief="x", repo="mnemonic-core")]],
+    )
+
+    with pytest.raises(SwarmError) as exc_info:
+        await bridge.dispatch(plan)
+
+    assert exc_info.value.system == "ruflo"
+    assert "feat-init-fail" in exc_info.value.context.get("feature_id", "")
+
+
+@pytest.mark.asyncio
+async def test_asyncio_cancel_during_retry_sleep(mock_ruflo: RufloClient) -> None:
+    """asyncio.CancelledError propagates cleanly out of the capacity-retry sleep."""
+    sleep_started = asyncio.Event()
+
+    async def slow_create(task_id: str, repo: str, base_ref: str = "main", topic: str = "ops"):
+        # First call raises capacity error, triggering the retry sleep.
+        raise WorkspaceCapacityError(task_id, "pool full")
+
+    original_sleep = asyncio.sleep
+
+    async def intercepting_sleep(delay: float) -> None:
+        sleep_started.set()
+        # Simulate cancellation from the outside during the sleep.
+        raise asyncio.CancelledError()
+
+    workspace = MagicMock(spec=WorkspaceClient)
+    workspace.create_worktree = AsyncMock(side_effect=slow_create)
+    workspace.delete_worktree = AsyncMock(
+        return_value=WorktreeDeleted(task_id="T-cancel", deleted=True)
+    )
+
+    bridge = SwarmBridge(workspace=workspace, ruflo=mock_ruflo, capacity_wait_s=60.0)
+    plan = FeaturePlan(
+        feature_id="feat-cancel",
+        waves=[[TaskSpec(task_id="T-cancel", brief="x", repo="mnemonic-core")]],
+    )
+
+    with patch("fabric.integrations.swarm_bridge.asyncio.sleep", intercepting_sleep):
+        with pytest.raises(asyncio.CancelledError):
+            await bridge.dispatch(plan)
