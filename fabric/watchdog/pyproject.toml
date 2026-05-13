@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fabric-watchdog"
+version = "0.1.0"
+description = "Operational alert watchdog for the coding-fabric loop VM — 9 alert classes + /turn-into-task"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Mnemonic Protocol" }]
+
+dependencies = [
+    # All stdlib — no third-party runtime deps.
+    # fabric-logs-sanitizer is a hard runtime dependency but installed separately
+    # from fabric/logs/sanitizer/ to avoid circular package references.
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=5.0.0",
+]
+
+[project.scripts]
+fabric-watchdog = "fabric.watchdog.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["../.."]
+include = ["fabric.watchdog*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-v --tb=short"
+pythonpath = ["../.."]
+
+[tool.coverage.run]
+source = ["."]
+omit = ["tests/*", "systemd/*", "state/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "pass",
+]

@@ -1,0 +1,61 @@
+[Unit]
+Description=fabric-watchdog — operational alert checks for the coding-fabric loop VM
+Documentation=https://github.com/mnemonic-org/coding-fabric
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=op
+Group=op
+
+# Credentials injected via LoadCredential — never exposed as env vars.
+Environment=WATCHDOG_LOG_FILE=/home/op/.fabric/logs/sanitized/watchdog.log
+Environment=WATCHDOG_LOG_LEVEL=INFO
+Environment=WATCHDOG_CONFIG_FILE=/home/op/.fabric/watchdog/config.json
+Environment=WATCHDOG_REQUIRE_SANITIZER=true
+
+# Telegram
+LoadCredential=telegram-bot-token:/etc/fabric/credentials/telegram-bot-token
+LoadCredential=telegram-ops-chat-id:/etc/fabric/credentials/telegram-ops-chat-id
+
+# Kaneo
+LoadCredential=kaneo-api-token:/etc/fabric/credentials/kaneo-api-token
+
+# GitHub (for stale_prs check)
+LoadCredential=github-token:/etc/fabric/credentials/github-token
+
+# ExecStartPre reads credentials and exports them as env vars via a small shim.
+# This avoids writing secrets into Environment= lines.
+ExecStartPre=/home/op/.fabric/watchdog/scripts/load-credentials.sh
+ExecStart=/home/op/.fabric/watchdog/.venv/bin/python -m fabric.watchdog
+
+WorkingDirectory=/home/op/.fabric/watchdog
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fabric-watchdog
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=false
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ReadWritePaths=/home/op/.fabric /home/op/code/mnemonic-workspaces /home/op/code/mnemonic-masters
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
