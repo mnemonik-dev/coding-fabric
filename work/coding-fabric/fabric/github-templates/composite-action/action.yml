@@ -1,0 +1,149 @@
+name: "PR Conformance Check"
+description: "Composite action for PR template validation and diff cap enforcement"
+
+inputs:
+  pr_body:
+    description: "Pull request body text"
+    required: true
+  base_ref:
+    description: "Base branch/ref for git diff"
+    required: true
+  head_ref:
+    description: "Head branch/ref for git diff"
+    required: true
+  config_path:
+    description: "Path to pr-conformance.config.yml (optional; uses example defaults if not found)"
+    required: false
+    default: ".github/pr-conformance.config.yml"
+
+outputs:
+  conforms:
+    description: "Whether PR conforms to all checks (true/false)"
+    value: ${{ steps.validate.outputs.conforms }}
+  sections_missing:
+    description: "Comma-separated list of missing sections (empty if all present)"
+    value: ${{ steps.validate.outputs.sections_missing }}
+  shortstat:
+    description: "git diff --shortstat output"
+    value: ${{ steps.diff.outputs.shortstat }}
+  diff_exceeds_cap:
+    description: "Whether diff exceeds 500-line cap (true/false)"
+    value: ${{ steps.diff.outputs.exceeds_cap }}
+  task_type:
+    description: "Extracted task_type from PR body (or empty if not found)"
+    value: ${{ steps.extract_task_type.outputs.task_type }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Validate PR sections"
+      id: validate
+      shell: bash
+      run: |
+        pr_body="${{ inputs.pr_body }}"
+        required_sections=(
+          "## What changed"
+          "## Automated validation"
+          "## Protocol conformance"
+          "## Mnemonic attestation"
+        )
+
+        missing_sections=()
+        for section in "${required_sections[@]}"; do
+          if ! grep -F "$section" <<< "$pr_body" > /dev/null; then
+            missing_sections+=("$section")
+          fi
+        done
+
+        if [ ${#missing_sections[@]} -gt 0 ]; then
+          echo "conforms=false" >> $GITHUB_OUTPUT
+          echo "sections_missing=$(printf '%s,' "${missing_sections[@]}" | sed 's/,$//')" >> $GITHUB_OUTPUT
+        else
+          echo "conforms=true" >> $GITHUB_OUTPUT
+          echo "sections_missing=" >> $GITHUB_OUTPUT
+        fi
+
+    - name: "Compute git diff shortstat"
+      id: diff
+      shell: bash
+      run: |
+        git fetch origin "${{ inputs.base_ref }}" --depth=1
+        shortstat=$(git diff --shortstat "origin/${{ inputs.base_ref }}..HEAD")
+        echo "shortstat=$shortstat" >> $GITHUB_OUTPUT
+
+        # Extract total changed + deleted lines from git diff --shortstat
+        # Format: "5 files changed, 123 insertions(+), 45 deletions(-)"
+        # We sum insertions + deletions to get total line changes
+        total_changes=$(echo "$shortstat" | awk -F'[,()]' '{
+          insertions = 0
+          deletions = 0
+          for (i=1; i<=NF; i++) {
+            if ($i ~ /insertions/) {
+              match($i, /[0-9]+/)
+              insertions = substr($i, RSTART, RLENGTH)
+            }
+            if ($i ~ /deletions/) {
+              match($i, /[0-9]+/)
+              deletions = substr($i, RSTART, RLENGTH)
+            }
+          }
+          print insertions + deletions
+        }')
+
+        if [ -z "$total_changes" ] || [ "$total_changes" -eq 0 ]; then
+          total_changes=0
+        fi
+
+        if [ "$total_changes" -gt 500 ]; then
+          echo "exceeds_cap=true" >> $GITHUB_OUTPUT
+        else
+          echo "exceeds_cap=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: "Extract task_type from PR body"
+      id: extract_task_type
+      shell: bash
+      run: |
+        pr_body="${{ inputs.pr_body }}"
+
+        # Match task_type in YAML frontmatter fenced block
+        # Pattern: task_type: <value> (case-insensitive, allows whitespace)
+        task_type=$(echo "$pr_body" | grep -i "task_type:" | head -1 | sed -E 's/^[[:space:]]*task_type:[[:space:]]*([a-zA-Z0-9_-]+).*/\1/' | tr '[:upper:]' '[:lower:]')
+
+        if [ -z "$task_type" ]; then
+          echo "task_type=" >> $GITHUB_OUTPUT
+        else
+          echo "task_type=$task_type" >> $GITHUB_OUTPUT
+        fi
+
+    - name: "Enforce conformance"
+      shell: bash
+      run: |
+        if [ "${{ steps.validate.outputs.conforms }}" != "true" ]; then
+          echo "❌ PR template validation failed"
+          echo ""
+          echo "Missing required sections:"
+          echo "${{ steps.validate.outputs.sections_missing }}" | tr ',' '\n' | sed 's/^/  - /'
+          echo ""
+          echo "All four sections are required:"
+          echo "  1. ## What changed"
+          echo "  2. ## Automated validation"
+          echo "  3. ## Protocol conformance"
+          echo "  4. ## Mnemonic attestation"
+          exit 1
+        fi
+
+        if [ "${{ steps.diff.outputs.exceeds_cap }}" = "true" ]; then
+          echo "❌ Diff exceeds 500-line cap"
+          echo ""
+          echo "Shortstat: ${{ steps.diff.outputs.shortstat }}"
+          echo ""
+          echo "To reduce diff size:"
+          echo "  - Break into multiple PRs"
+          echo "  - Exclude vendored paths via .github/pr-conformance.config.yml"
+          echo "  - Ensure lockfile changes are minimal"
+          exit 1
+        fi
+
+        echo "✅ PR conforms to all requirements"
+        echo "Task type: ${{ steps.extract_task_type.outputs.task_type }}"

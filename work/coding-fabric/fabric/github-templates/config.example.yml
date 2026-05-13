@@ -1,0 +1,53 @@
+# PR Conformance Configuration Example
+# Copy this to .github/pr-conformance.config.yml in each repository
+# Paths listed here are EXCLUDED from the 500-line diff cap
+
+vendored_paths:
+  # Lockfiles and dependency manifests
+  - "Cargo.lock"
+  - "package-lock.json"
+  - "yarn.lock"
+  - "pnpm-lock.yaml"
+  - "Gemfile.lock"
+  - "poetry.lock"
+  - "uv.lock"
+
+  # Generated or compiled code
+  - "dist/"
+  - "build/"
+  - "target/"
+  - "*.pb.rs"
+  - "*.pb.js"
+  - "*.pb.go"
+  - "*.pb.d.ts"
+  - "protoc-gen-*"
+
+  # Third-party code (vendored)
+  - "vendor/"
+  - "node_modules/"
+  - "venv/"
+  - ".venv/"
+  - "site-packages/"
+
+  # Build outputs
+  - "*.o"
+  - "*.a"
+  - "*.so"
+  - "*.dylib"
+  - "*.dll"
+
+  # IDE and editor files (usually not committed, but just in case)
+  - ".vscode/"
+  - ".idea/"
+  - "*.swp"
+  - "*.swo"
+  - "*~"
+
+# Patterns to exclude from line count (e.g., auto-generated headers)
+line_patterns:
+  # Comment: Co-Authored-By trailers (commit-message metadata)
+  - "^Co-Authored-By:"
+  # Code generation markers
+  - "// GENERATED CODE"
+  - "# GENERATED CODE"
+  - "/* GENERATED CODE"

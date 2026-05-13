@@ -1,0 +1,134 @@
+name: "PR Conformance"
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+  statuses: write
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      conforms: ${{ steps.conformance.outputs.conforms }}
+      task_type: ${{ steps.conformance.outputs.task_type }}
+
+    steps:
+      - name: "Checkout repository"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: "Run PR conformance composite action"
+        id: conformance
+        uses: ./.github/composite-action/pr-conformance@v1
+        with:
+          pr_body: ${{ github.event.pull_request.body }}
+          base_ref: ${{ github.base_ref }}
+          head_ref: ${{ github.head_ref }}
+          config_path: ".github/pr-conformance.config.yml"
+
+      - name: "Create or update status comment"
+        uses: peter-evans/find-comment@v3
+        id: find_comment
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: "github-actions[bot]"
+          body-includes: "PR Conformance Report"
+
+      - name: "Format comment output"
+        id: comment_body
+        shell: bash
+        run: |
+          {
+            echo "## PR Conformance Report"
+            echo ""
+            echo "### Template Validation"
+          } > /tmp/comment.md
+
+          if [ "${{ steps.conformance.outputs.conforms }}" = "true" ]; then
+            echo "✅ **All sections present**" >> /tmp/comment.md
+          else
+            echo "❌ **Missing required sections:**" >> /tmp/comment.md
+            echo "${{ steps.conformance.outputs.sections_missing }}" | tr ',' '\n' | sed 's/^/- /' >> /tmp/comment.md
+          fi
+
+          {
+            echo ""
+            echo "### Diff Analysis"
+            echo "\`\`\`"
+            echo "${{ steps.conformance.outputs.shortstat }}"
+            echo "\`\`\`"
+            echo ""
+          } >> /tmp/comment.md
+
+          if [ "${{ steps.conformance.outputs.diff_exceeds_cap }}" = "true" ]; then
+            echo "❌ **Exceeds 500-line cap**" >> /tmp/comment.md
+          else
+            echo "✅ **Within 500-line cap**" >> /tmp/comment.md
+          fi
+
+          {
+            echo ""
+            echo "### Task Classification"
+          } >> /tmp/comment.md
+
+          if [ -n "${{ steps.conformance.outputs.task_type }}" ]; then
+            echo "- **task_type**: \`${{ steps.conformance.outputs.task_type }}\`" >> /tmp/comment.md
+            echo "- Dispatcher: Will invoke \`${{ steps.conformance.outputs.task_type }}\` harness" >> /tmp/comment.md
+          else
+            echo "- **task_type**: Not specified (optional for non-harness work)" >> /tmp/comment.md
+          fi
+
+          cat /tmp/comment.md
+
+      - name: "Post conformance comment"
+        if: always()
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-id: ${{ steps.find_comment.outputs.comment-id }}
+          edit-mode: replace
+          body-file: /tmp/comment.md
+
+      - name: "Fail if conformance check failed"
+        if: steps.conformance.outputs.conforms != 'true' || steps.conformance.outputs.diff_exceeds_cap == 'true'
+        shell: bash
+        run: |
+          echo "❌ PR does not conform to requirements"
+          exit 1
+
+  dispatch-harness:
+    needs: conformance
+    if: needs.conformance.outputs.task_type != ''
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: "Checkout repository"
+        uses: actions/checkout@v4
+
+      - name: "Validate and dispatch task_type"
+        shell: bash
+        env:
+          TASK_TYPE: ${{ needs.conformance.outputs.task_type }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          valid_types="byte-equivalence mcp-compat wasm-browser full-mode"
+
+          if ! echo "$valid_types" | grep -w "$TASK_TYPE" > /dev/null; then
+            echo "❌ Unknown task_type: $TASK_TYPE"
+            echo "Valid types: $valid_types"
+            exit 1
+          fi
+
+          echo "✅ Valid task_type: $TASK_TYPE"
+          echo "📋 PR #$PR_NUMBER will be validated against harness-$TASK_TYPE.yml"
+          echo "🔗 Head ref: $HEAD_REF"
+
+          # Note: Actual harness dispatch would be done by per-repo workflow
+          # This job validates the task_type and signals success
