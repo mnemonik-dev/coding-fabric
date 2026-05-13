@@ -80,9 +80,10 @@ class TestSkepticInvokesJujutsu:
             "fabric.molyanov.validators.skeptic_wrapper.invoke_ruflo"
         ) as mock_invoke:
             mock_invoke.return_value = _make_completed("[]")
-            run({"target": "src/", "args": ["--strict"]})
-            plugin_args = mock_invoke.call_args[0][1]
-            assert "--strict" in plugin_args
+            run({"target": "src/", "args": ["extra-pos"]})
+            # extra_args are passed as the third positional to invoke_ruflo
+            extra = mock_invoke.call_args[0][2]
+            assert "extra-pos" in extra
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +224,44 @@ class TestPropagatesFindings:
 
         assert len(result["findings"]) == 1
         assert "unexpected code" in result["findings"][0]["issue"].lower()
+
+
+# ---------------------------------------------------------------------------
+# test_timeout_returns_actionable_error
+# ---------------------------------------------------------------------------
+
+
+class TestTimeoutReturnsActionableError:
+    def test_timeout_returns_actionable_error(self):
+        with patch(
+            "fabric.molyanov.validators.skeptic_wrapper.invoke_ruflo",
+            side_effect=subprocess.TimeoutExpired(cmd=["ruflo"], timeout=300),
+        ):
+            result = run({"target": "src/"})
+
+        assert result["delegated_to"] == "ruflo:jujutsu"
+        assert len(result["findings"]) == 1
+        finding = result["findings"][0]
+        assert "timed out" in finding["issue"].lower()
+        assert finding["severity"] in ("high", "critical")
+
+
+# ---------------------------------------------------------------------------
+# test_extra_args_option_injection
+# ---------------------------------------------------------------------------
+
+
+class TestExtraArgsOptionInjection:
+    def test_option_arg_in_extra_args_returns_error(self):
+        """An option-style argument in args must be rejected as an error result."""
+        result = run({"target": "src/", "args": ["-r"]})
+        assert result["delegated_to"] == "ruflo:jujutsu"
+        assert len(result["findings"]) == 1
+        assert "invalid extra_args" in result["findings"][0]["issue"].lower()
+
+    def test_long_option_in_extra_args_returns_error(self):
+        result = run({"args": ["--evil-flag"]})
+        assert "invalid extra_args" in result["findings"][0]["issue"].lower()
 
 
 # ---------------------------------------------------------------------------

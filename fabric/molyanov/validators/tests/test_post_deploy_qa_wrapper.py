@@ -173,6 +173,63 @@ class TestPropagatesFindings:
 
 
 # ---------------------------------------------------------------------------
+# test_ssrf_url_validation
+# ---------------------------------------------------------------------------
+
+
+class TestSsrfUrlValidation:
+    def test_localhost_rejected(self):
+        result = run({"url": "http://localhost/path"})
+        assert len(result["findings"]) == 1
+        assert "url rejected" in result["findings"][0]["issue"].lower()
+
+    def test_loopback_ip_rejected(self):
+        result = run({"url": "http://127.0.0.1/path"})
+        assert len(result["findings"]) == 1
+        assert "url rejected" in result["findings"][0]["issue"].lower()
+
+    def test_ipv6_loopback_rejected(self):
+        result = run({"url": "http://[::1]/path"})
+        assert len(result["findings"]) == 1
+        assert "url rejected" in result["findings"][0]["issue"].lower()
+
+    def test_rfc1918_rejected(self):
+        result = run({"url": "http://192.168.1.1/path"})
+        assert len(result["findings"]) == 1
+        assert "url rejected" in result["findings"][0]["issue"].lower()
+
+    def test_external_hostname_allowed(self):
+        with patch(
+            "fabric.molyanov.validators.post_deploy_qa_wrapper.invoke_ruflo"
+        ) as mock_invoke:
+            mock_invoke.return_value = MagicMock(
+                spec=__import__("subprocess").CompletedProcess,
+                stdout="[]",
+                stderr="",
+                returncode=0,
+            )
+            result = run({"url": "https://example.com"})
+        assert result["delegated_to"] == "ruflo:browser"
+        assert "url rejected" not in str(result)
+
+
+# ---------------------------------------------------------------------------
+# test_extra_args_option_injection
+# ---------------------------------------------------------------------------
+
+
+class TestExtraArgsOptionInjection:
+    def test_option_arg_in_extra_args_returns_error(self):
+        result = run({"url": "https://example.com", "args": ["-r"]})
+        assert len(result["findings"]) == 1
+        assert "invalid extra_args" in result["findings"][0]["issue"].lower()
+
+    def test_long_option_in_extra_args_returns_error(self):
+        result = run({"args": ["--evil-flag"]})
+        assert "invalid extra_args" in result["findings"][0]["issue"].lower()
+
+
+# ---------------------------------------------------------------------------
 # test_dry_run_flag
 # ---------------------------------------------------------------------------
 

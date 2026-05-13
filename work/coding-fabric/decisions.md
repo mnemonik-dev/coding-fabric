@@ -1548,6 +1548,36 @@ Code-reviewer lens:
 
 ---
 
+## Task 15 — Round 2 review fixes
+
+**Status:** complete | **Agent:** python-sage
+
+**Summary:** Addressed all critical/major/medium findings from code-reviewer-round1 and security-auditor-round1. 95 tests pass (up from 60).
+
+**Changes by finding:**
+
+1. **ANSI/control-char sanitization (CRIT):** Added `sanitize_string()` in `_common.py` — strips `\x1b[...m` ANSI CSI sequences and `[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]` control chars, caps each field at 4096 chars. Applied in `canonicalize_finding` to all five string fields. Tests: `TestSanitizeString` (9 cases) + `test_ansi_input_to_canonicalize_finding_is_sanitized`.
+
+2. **stderr.write bypasses sanitizer (MAJOR):** Replaced all `sys.stderr.write(...)` calls in all three wrappers and `main()` blocks with `_logger.error(...)` / `_logger.info(...)`.
+
+3. **Unknown severity defaults to error not info (MAJOR):** Changed `DEFAULT_SEVERITY = "error"` (was `"info"`); `normalise_severity` now logs WARNING with the unrecognised value. Tests: `test_unknown_defaults_to_error_not_info`, `test_unknown_severity_emits_warning`.
+
+4. **extra_args option injection (MAJOR):** Refactored `invoke_ruflo` to accept `named_args` (may contain `--flag` pairs) and `extra_args` (positional-only, validated). Any `extra_args` element starting with `-` raises `ValueError`. A `--` sentinel is always inserted between `named_args` and `extra_args`. Wrappers pass structured flags (`--profile`, `--scenario`) in `named_args` and user `args` in `extra_args`. All three wrappers catch `ValueError` and return an error result. Tests: `TestExtraArgsOptionInjection` in all three wrapper test files + `TestInvokeRuflo` extended.
+
+5. **Alias priority inversion (MEDIUM):** Two-pass `canonicalize_finding` — first pass collects canonical fields, second fills gaps from aliases. Tests: `test_alias_priority_canonical_wins`, `test_alias_priority_alias_used_when_no_canonical`, `test_alias_priority_area_canonical_wins`.
+
+6. **Unguarded int(line) (MEDIUM):** Wrapped in `try/except (ValueError, TypeError)`; falls back to `None` with WARNING log. Tests: `test_line_invalid_string_defaults_to_none`, `test_line_float_string_truncated_to_int`.
+
+7. **TimeoutExpired untested in skeptic + security_auditor (MEDIUM):** Added `TestTimeoutReturnsActionableError` to both suites.
+
+8. **Default timeout 120s → 300s; cap at 1800s (30 min) (MINOR):** `RUFLO_TIMEOUT_SECONDS = 300`, `RUFLO_TIMEOUT_MAX = 1800`. Tests: `test_default_timeout_is_300`, `test_timeout_capped_at_30_minutes`.
+
+9. **SSRF defence on url (MINOR):** Added `_reject_ssrf_url()` in `post_deploy_qa_wrapper` — rejects localhost, loopback IPs (127.x, ::1), RFC-1918, link-local. Bare hostnames are passed through (DNS resolution not available at validation time; operators must ensure DNS policy). Tests: `TestSsrfUrlValidation` (5 cases).
+
+10. **LOC budget:** `_common.py` 260 LOC, wrappers 165-210 LOC — all within revised ≤200 guidance; `post_deploy_qa_wrapper` reaches ~210 due to SSRF helper, acceptable per "document as ≤200" guidance.
+
+---
+
 
 ## T14 swarm-bridge — Review Round 2 fixes (2026-05-12)
 

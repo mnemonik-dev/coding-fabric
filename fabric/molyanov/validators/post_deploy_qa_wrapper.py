@@ -18,10 +18,13 @@ Output is a JSON object with ``findings`` list and ``delegated_to`` field.
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import logging
+import re
 import subprocess
 import sys
+from urllib.parse import urlparse
 from typing import Any
 
 from fabric.logs.sanitizer import SanitizedStreamHandler
@@ -35,10 +38,56 @@ from fabric.molyanov.validators._common import (
 PLUGIN = "browser"
 DELEGATED_TO = f"ruflo:{PLUGIN}"
 
+# RFC-1918 and link-local prefixes that must not be reached from the validator.
+_BLOCKED_PREFIXES = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("169.254.0.0/16"),    # link-local
+    ipaddress.ip_network("fc00::/7"),           # ULA IPv6
+    ipaddress.ip_network("fe80::/10"),          # link-local IPv6
+)
+
 _logger = logging.getLogger("fabric.molyanov.validators.post_deploy_qa")
 if not _logger.handlers:
     _logger.addHandler(SanitizedStreamHandler(sys.stderr))
     _logger.setLevel(logging.WARNING)
+
+
+def _reject_ssrf_url(url: str) -> str | None:
+    """Return an error message if ``url`` targets a private/local address, else None.
+
+    Rejects: localhost, 127.0.0.1, ::1, RFC-1918, link-local ranges.
+    The ``url`` parameter should resolve only to tailnet-internal addresses that
+    are explicitly allow-listed by the operator; this function acts as a
+    defence-in-depth gate against accidental or malicious SSRF payloads.
+    """
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+    except Exception:
+        return "could not parse url"
+
+    # Reject bare loopback names and the empty host
+    if not host or host in ("localhost", "localhost."):
+        return f"url host {host!r} is not permitted (loopback)"
+
+    # Attempt IP validation
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        # Not a bare IP — hostname; we cannot resolve here, so allow it.
+        # Operators must ensure DNS does not resolve to private ranges.
+        return None
+
+    if addr.is_loopback:
+        return f"url host {host!r} is a loopback address"
+    if addr.is_unspecified:
+        return f"url host {host!r} is the unspecified address"
+    for prefix in _BLOCKED_PREFIXES:
+        if addr in prefix:
+            return f"url host {host!r} falls in blocked range {prefix}"
+    return None
 
 
 def run(
@@ -65,24 +114,33 @@ def run(
     scenario: str = molyanov_input.get("scenario", "")
     extra_args: list[str] = molyanov_input.get("args", [])
 
-    plugin_args: list[str] = []
+    # SSRF defence: reject localhost/loopback/private-IP targets.
     if url:
-        plugin_args.append(url)
+        ssrf_err = _reject_ssrf_url(url)
+        if ssrf_err:
+            msg = f"url rejected: {ssrf_err}"
+            _logger.error(msg)
+            return error_result(DELEGATED_TO, msg, area="post-deploy-qa")
+
+    named_args: list[str] = []
+    if url:
+        named_args.append(url)
     if scenario:
-        plugin_args.extend(["--scenario", scenario])
-    plugin_args.extend(extra_args)
+        named_args.extend(["--scenario", scenario])
 
     if dry_run:
-        cmd_preview = ["ruflo", PLUGIN, *plugin_args]
+        cmd_preview = ["ruflo", PLUGIN, *named_args, "--", *extra_args]
         _logger.info("dry-run: would invoke %s", cmd_preview)
-        sys.stderr.write(f"delegating to {DELEGATED_TO}: {cmd_preview}\n")
         return {"findings": [], "delegated_to": DELEGATED_TO}
 
     _logger.info("delegating to %s", DELEGATED_TO)
-    sys.stderr.write(f"delegating to {DELEGATED_TO}\n")
 
     try:
-        result = invoke_ruflo(PLUGIN, plugin_args, timeout=timeout)
+        result = invoke_ruflo(PLUGIN, named_args, extra_args, timeout=timeout)
+    except ValueError as exc:
+        msg = f"invalid extra_args: {exc}"
+        _logger.error(msg)
+        return error_result(DELEGATED_TO, msg, area="post-deploy-qa")
     except FileNotFoundError:
         msg = "ruflo binary not found on PATH; cannot invoke browser plugin"
         _logger.error(msg)
@@ -149,7 +207,7 @@ def main(argv: list[str] | None = None) -> None:
         try:
             molyanov_input = json.load(sys.stdin)
         except json.JSONDecodeError as exc:
-            sys.stderr.write(f"invalid JSON on stdin: {exc}\n")
+            _logger.error("invalid JSON on stdin: %s", exc)
             sys.exit(2)
 
     if ns.url:

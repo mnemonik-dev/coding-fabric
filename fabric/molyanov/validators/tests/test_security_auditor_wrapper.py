@@ -159,6 +159,42 @@ class TestPropagatesFindings:
 
 
 # ---------------------------------------------------------------------------
+# test_timeout_returns_actionable_error
+# ---------------------------------------------------------------------------
+
+
+class TestTimeoutReturnsActionableError:
+    def test_timeout_returns_actionable_error(self):
+        with patch(
+            "fabric.molyanov.validators.security_auditor_wrapper.invoke_ruflo",
+            side_effect=subprocess.TimeoutExpired(cmd=["ruflo"], timeout=300),
+        ):
+            result = run({"target": "src/"})
+
+        assert result["delegated_to"] == "ruflo:security-audit"
+        assert len(result["findings"]) == 1
+        finding = result["findings"][0]
+        assert "timed out" in finding["issue"].lower()
+        assert finding["severity"] in ("high", "critical")
+
+
+# ---------------------------------------------------------------------------
+# test_extra_args_option_injection
+# ---------------------------------------------------------------------------
+
+
+class TestExtraArgsOptionInjection:
+    def test_option_arg_in_extra_args_returns_error(self):
+        result = run({"target": "src/", "args": ["-r"]})
+        assert len(result["findings"]) == 1
+        assert "invalid extra_args" in result["findings"][0]["issue"].lower()
+
+    def test_long_option_in_extra_args_returns_error(self):
+        result = run({"args": ["--evil-flag"]})
+        assert "invalid extra_args" in result["findings"][0]["issue"].lower()
+
+
+# ---------------------------------------------------------------------------
 # test_dry_run_flag
 # ---------------------------------------------------------------------------
 

@@ -65,24 +65,25 @@ def run(
     profile: str = molyanov_input.get("profile", "")
     extra_args: list[str] = molyanov_input.get("args", [])
 
-    plugin_args: list[str] = []
+    named_args: list[str] = []
     if target:
-        plugin_args.append(target)
+        named_args.append(target)
     if profile:
-        plugin_args.extend(["--profile", profile])
-    plugin_args.extend(extra_args)
+        named_args.extend(["--profile", profile])
 
     if dry_run:
-        cmd_preview = ["ruflo", PLUGIN, *plugin_args]
+        cmd_preview = ["ruflo", PLUGIN, *named_args, "--", *extra_args]
         _logger.info("dry-run: would invoke %s", cmd_preview)
-        sys.stderr.write(f"delegating to {DELEGATED_TO}: {cmd_preview}\n")
         return {"findings": [], "delegated_to": DELEGATED_TO}
 
     _logger.info("delegating to %s", DELEGATED_TO)
-    sys.stderr.write(f"delegating to {DELEGATED_TO}\n")
 
     try:
-        result = invoke_ruflo(PLUGIN, plugin_args, timeout=timeout)
+        result = invoke_ruflo(PLUGIN, named_args, extra_args, timeout=timeout)
+    except ValueError as exc:
+        msg = f"invalid extra_args: {exc}"
+        _logger.error(msg)
+        return error_result(DELEGATED_TO, msg, area="security-auditor")
     except FileNotFoundError:
         msg = "ruflo binary not found on PATH; cannot invoke security-audit plugin"
         _logger.error(msg)
@@ -149,7 +150,7 @@ def main(argv: list[str] | None = None) -> None:
         try:
             molyanov_input = json.load(sys.stdin)
         except json.JSONDecodeError as exc:
-            sys.stderr.write(f"invalid JSON on stdin: {exc}\n")
+            _logger.error("invalid JSON on stdin: %s", exc)
             sys.exit(2)
 
     if ns.target:
