@@ -4,6 +4,11 @@
 
 End-to-end integration testing: signs attestations on Solana devnet, uploads to Arweave testnet, and verifies recovery via an independent verifier. Detects network failures, serialization issues, and cryptographic inconsistencies before production attestations.
 
+
+## Scaffolding Status
+
+This harness is **SCAFFOLDING**: it provides correct test structure and integration points, but real fixtures come from protocol repos. When running in stub mode, the harness verifies that the test infrastructure works correctly without depending on external repos.
+
 ## Fixture-Injection Contract
 
 This harness mocks devnet and testnet RPC to avoid real network dependency during CI runs. Real integration happens in PR when `task_type: full-mode` is set.

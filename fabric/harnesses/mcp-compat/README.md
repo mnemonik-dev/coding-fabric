@@ -4,6 +4,11 @@
 
 Verifies that MCP surface changes (new methods, resource types, notifications) are backward-compatible with existing clients. Uses golden trace format to record and validate request/response pairs against the MCP specification.
 
+
+## Scaffolding Status
+
+This harness is **SCAFFOLDING**: it provides correct test structure and integration points, but real fixtures come from protocol repos. When running in stub mode, the harness verifies that the test infrastructure works correctly without depending on external repos.
+
 ## Fixture-Injection Contract
 
 This harness records golden request/response traces from a reference MCP server and validates new implementations against them.

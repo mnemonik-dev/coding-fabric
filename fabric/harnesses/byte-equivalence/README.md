@@ -4,6 +4,10 @@
 
 Verifies that CBOR serialization output is bit-for-bit identical across Rust, TypeScript, and WebAssembly implementations. Detects schema drift, serialization bugs, and platform-specific issues before they cause consensus failures.
 
+## Scaffolding Status
+
+This harness is **SCAFFOLDING**: it provides correct test structure and integration points, but real fixtures come from protocol repos. When running in stub mode, the harness verifies that the test infrastructure works correctly without depending on external repos.
+
 ## Fixture-Injection Contract
 
 This harness uses **stub fixtures** (small, deterministic test vectors) to verify round-trip integrity. Real fixture sets are supplied by upstream protocol repos when available.

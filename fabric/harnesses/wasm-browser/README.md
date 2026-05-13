@@ -4,6 +4,11 @@
 
 Verifies that WASM-compiled serializer bindings work correctly in a headless browser environment and produce byte-equivalence with the Rust reference implementation. Detects platform-specific issues, binding errors, and WASM initialization failures before production use.
 
+
+## Scaffolding Status
+
+This harness is **SCAFFOLDING**: it provides correct test structure and integration points, but real fixtures come from protocol repos. When running in stub mode, the harness verifies that the test infrastructure works correctly without depending on external repos.
+
 ## Fixture-Injection Contract
 
 This harness loads WASM bindings via Playwright and runs serialization tests in a real browser context (Chromium).
