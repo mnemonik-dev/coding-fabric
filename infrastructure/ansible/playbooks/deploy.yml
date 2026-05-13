@@ -1,0 +1,221 @@
+---
+#
+# deploy.yml — main fabric deployment playbook
+# Orchestrates 11 Ansible roles in sequence to bring up the complete fabric on a Hetzner VM.
+#
+# Invoked by:
+#  - CI job deploy-fabric.yml (T24), post-infrastructure provisioning
+#  - Operator: ansible-playbook -i infrastructure/ansible/inventory/hosts.yml infrastructure/ansible/playbooks/deploy.yml
+#
+# Roles (in order):
+#  1. base              — OS hardening, ufw, unattended-upgrades, operator user, base dirs
+#  2. ssh-hardening     — SSH key policy, disable password auth, key rotation
+#  3. tailscale         — Tailscale VPN membership, routes, tag-based access
+#  4. vaultwarden       — Secrets vault (docker-compose + Caddy reverse-proxy)
+#  5. kaneo             — Observability backend (docker-compose, 6 default projects)
+#  6. telegram-init     — Telegram forum + 8 topic creation (Bot API)
+#  7. restic-backups    — Nightly off-site backups + verify-restore
+#  8. ruflo             — Mnemonic framework CLI + per-topic config matrix
+#  9. molyanov          — Project knowledge + PK guard hook
+# 10. mnemonic-mcp      — Local Mnemonic MCP server + 5 trigger-point hooks
+# 11. fabric-services   — Deploy compiled fabric artefacts (workspace-manager, watchdog, safe-mode, etc.)
+# 12. telegram-ai-agent — telegram-ai-agent bot + per-topic cwd:DYNAMIC resolver config
+#
+
+- name: Deploy fabric infrastructure
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  pre_tasks:
+    - name: Display deployment info
+      debug:
+        msg: |
+          Deploying to host: {{ inventory_hostname }}
+          Ansible version: {{ ansible_version.full }}
+          Playbook: deploy.yml
+
+    - name: Wait for system to stabilize post-boot
+      wait_for:
+        timeout: 30
+      when: ansible_os_family == 'Debian'
+
+    - name: Update apt cache (one-time at start)
+      apt:
+        update_cache: yes
+        cache_valid_time: 600
+
+  roles:
+    # Phase 1: Base infrastructure (OS, users, security)
+    - role: base
+      tags: [base, always]
+      vars:
+        fabric_hostname: "{{ inventory_hostname }}"
+        base_operator_user: "operator"
+
+    - role: ssh-hardening
+      tags: [ssh-hardening, security]
+      vars:
+        ssh_hardening_disable_password_auth: true
+        ssh_hardening_key_rotation_days: 90
+
+    # Phase 2: VPN + secrets (Tailscale + Vaultwarden)
+    - role: tailscale
+      tags: [tailscale, networking]
+      vars:
+        tailscale_auth_key: "{{ vault_tailscale_auth_key | default('') }}"
+        tailscale_hostname: "{{ inventory_hostname }}"
+        tailscale_routes: ["10.0.0.0/8"]
+
+    - role: vaultwarden
+      tags: [vaultwarden, secrets]
+      vars:
+        vaultwarden_data_dir: "/opt/vaultwarden"
+        vaultwarden_initial_admin_password: "{{ vault_vaultwarden_admin_password | default('') }}"
+        vaultwarden_tailnet_bind_only: true
+
+    # Phase 3: Observability + Telegram (Kaneo + Bot setup)
+    - role: kaneo
+      tags: [kaneo, observability]
+      vars:
+        kaneo_data_dir: "/opt/kaneo"
+        kaneo_projects:
+          - mnemonic-core
+          - mnemonic-mcp
+          - mnemonic-wasm
+          - mnemonic-demo-client
+          - mnemonic-docs
+          - mnemonic-loop
+
+    - role: telegram-init
+      tags: [telegram-init, communication]
+      vars:
+        telegram_bot_token: "{{ vault_telegram_bot_token | default('') }}"
+        telegram_forum_chat_id: "{{ vault_telegram_forum_chat_id | default('') }}"
+        telegram_topics:
+          - name: core
+            description: "mnemonic-core development"
+          - name: mcp
+            description: "MCP protocol work"
+          - name: wasm
+            description: "WASM compilation + browser harness"
+          - name: demo-client
+            description: "Demo client integration"
+          - name: docs
+            description: "Documentation + user-spec"
+          - name: loop
+            description: "Fabric recursive self-hosting"
+          - name: protocol-qa
+            description: "Protocol QA and testing"
+          - name: ops
+            description: "Operational alerts + safe-mode"
+
+    # Phase 4: Persistence (backups)
+    - role: restic-backups
+      tags: [restic-backups, persistence]
+      vars:
+        restic_repository: "{{ vault_restic_repository | default('') }}"
+        restic_password: "{{ vault_restic_password | default('') }}"
+        restic_backup_paths:
+          - /opt/vaultwarden
+          - /opt/kaneo
+          - /opt/mnemonic-loop
+        restic_retention_days: 30
+
+    # Phase 5: Development substrate (ruflo + molyanov)
+    - role: ruflo
+      tags: [ruflo, substrate]
+      vars:
+        ruflo_installation_dir: "/opt/ruflo"
+        ruflo_config_matrix: "{{ fabric_topic_matrix }}"
+
+    - role: molyanov
+      tags: [molyanov, substrate]
+      vars:
+        molyanov_skills_path: "/opt/molyanov/skills"
+        molyanov_pk_guard_enabled: true
+
+    # Phase 6: Attestation + MCP
+    - role: mnemonic-mcp
+      tags: [mnemonic-mcp, attestation]
+      vars:
+        mnemonic_mcp_install_dir: "/opt/mnemonic-mcp"
+        mnemonic_mcp_hooks:
+          - post-deploy.sh
+          - post-feature.sh
+          - post-merge.sh
+          - post-rollback.sh
+          - pre-deploy.sh
+
+    # Phase 7: Fabric services deployment
+    - role: fabric-services
+      tags: [fabric-services, deploy]
+      vars:
+        fabric_repo_checkout: "{{ lookup('env', 'PWD') }}"
+        fabric_target_dir: "/opt/fabric"
+        workspace_manager_listen_ip: "127.0.0.1"
+        workspace_manager_listen_port: 8080
+        workspace_manager_capacity: 10
+        workspace_manager_sccache_enabled: true
+        fabric_services:
+          - name: workspace-manager
+            systemd_unit: workspace-manager.service
+          - name: fabric-watchdog
+            systemd_timer: fabric-watchdog.timer
+            systemd_unit: fabric-watchdog.service
+
+    # Phase 8: Telegram AI agent
+    - role: telegram-ai-agent
+      tags: [telegram-ai-agent, bot]
+      vars:
+        telegram_ai_agent_repo_url: "{{ vault_telegram_ai_agent_repo | default('https://github.com/pavel-molyanov/telegram-ai-agent.git') }}"
+        telegram_ai_agent_ref: "{{ vault_telegram_ai_agent_ref | default('main') }}"
+        telegram_ai_agent_install_dir: "/opt/telegram-ai-agent"
+        telegram_ai_agent_bot_token: "{{ vault_telegram_bot_token | default('') }}"
+        telegram_ai_agent_workspace_manager_url: "http://127.0.0.1:8080"
+        telegram_ai_agent_per_topic_config: "{{ fabric_topic_matrix }}"
+
+  post_tasks:
+    - name: Verify all services are running
+      block:
+        - name: Check systemd services
+          systemd:
+            name: "{{ item }}"
+            state: started
+          register: service_check
+          loop:
+            - workspace-manager
+            - mnemonic-mcp
+            - telegram-ai-agent
+          failed_when: false
+
+        - name: Report service status
+          debug:
+            msg: |
+              Service Status Summary:
+              {% for service in service_check.results %}
+                {{ service.item }}: {{ 'running' if service.changed == false else 'restarted' }}
+              {% endfor %}
+
+    - name: Export deployment outputs
+      set_fact:
+        deployment_outputs:
+          hostname: "{{ ansible_hostname }}"
+          ipv4_address: "{{ ansible_default_ipv4.address }}"
+          tailscale_ip: "{{ hostvars[inventory_hostname].get('tailscale_ip', 'pending') }}"
+          workspace_manager_url: "http://127.0.0.1:8080"
+          vaultwarden_url: "https://vault.{{ inventory_hostname }}"
+          kaneo_url: "http://127.0.0.1:3000"
+          deployment_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+    - name: Display deployment summary
+      debug:
+        msg: |
+          ====== FABRIC DEPLOYMENT COMPLETE ======
+          Hostname: {{ deployment_outputs.hostname }}
+          IPv4: {{ deployment_outputs.ipv4_address }}
+          Workspace Manager: {{ deployment_outputs.workspace_manager_url }}
+          Vaultwarden: {{ deployment_outputs.vaultwarden_url }}
+          Kaneo: {{ deployment_outputs.kaneo_url }}
+          Deployed: {{ deployment_outputs.deployment_timestamp }}
+          =========================================

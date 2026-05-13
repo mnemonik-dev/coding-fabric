@@ -1,0 +1,43 @@
+#!/bin/bash
+#
+# fabric-backup.sh — nightly backup of fabric state
+# Installed via cron by fabric-services role
+# Invokes restic backup for /opt/mnemonic-loop and other critical paths
+# Updates last-known-good tag if successful
+#
+
+set -euo pipefail
+
+LOG_FILE="/var/log/fabric-backup.log"
+BACKUP_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+log() {
+  echo "[${BACKUP_TIMESTAMP}] $*" | tee -a "$LOG_FILE"
+}
+
+log "Starting fabric backup..."
+
+# Source restic environment (configured by restic-backups role)
+if [ -f /etc/profile.d/restic-env.sh ]; then
+  source /etc/profile.d/restic-env.sh
+fi
+
+# Run restic backup
+if restic backup /opt/mnemonic-loop /opt/vaultwarden /opt/kaneo 2>&1 | tee -a "$LOG_FILE"; then
+  log "Backup completed successfully"
+
+  # Update last-known-good tag if in mnemonic-loop directory
+  if [ -d /opt/mnemonic-loop/.git ]; then
+    cd /opt/mnemonic-loop
+    if git rev-parse last-known-good > /dev/null 2>&1; then
+      git tag -f last-known-good HEAD
+      git push origin last-known-good --force 2>&1 | tee -a "$LOG_FILE"
+      log "Updated last-known-good tag"
+    fi
+  fi
+else
+  log "ERROR: Backup failed (see above for details)"
+  exit 1
+fi
+
+log "Fabric backup complete"

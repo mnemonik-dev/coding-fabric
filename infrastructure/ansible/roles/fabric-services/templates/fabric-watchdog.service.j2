@@ -1,0 +1,18 @@
+[Unit]
+Description=Fabric Watchdog Service (9 alert classes)
+After=network-online.target workspace-manager.service
+Wants=network-online.target workspace-manager.service
+
+[Service]
+Type=oneshot
+User={{ base_operator_user }}
+WorkingDirectory={{ fabric_target_dir }}/watchdog
+Environment="PYTHONUNBUFFERED=1"
+Environment="PYTHONPATH={{ fabric_target_dir }}:$PYTHONPATH"
+ExecStart={{ fabric_target_dir }}/watchdog/venv/bin/python main.py
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fabric-watchdog
+
+[Install]
+WantedBy=multi-user.target

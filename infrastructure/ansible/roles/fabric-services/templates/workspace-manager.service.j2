@@ -1,0 +1,22 @@
+[Unit]
+Description=Fabric Workspace Manager (FastAPI service)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ base_operator_user }}
+WorkingDirectory={{ fabric_target_dir }}/workspace-manager
+Environment="PYTHONUNBUFFERED=1"
+Environment="PYTHONPATH={{ fabric_target_dir }}:$PYTHONPATH"
+ExecStart={{ fabric_target_dir }}/workspace-manager/venv/bin/python -m uvicorn main:app --host {{ workspace_manager_listen_ip }} --port {{ workspace_manager_listen_port }}
+Restart=always
+RestartSec=10
+StartLimitInterval=60s
+StartLimitBurst=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=workspace-manager
+
+[Install]
+WantedBy=multi-user.target

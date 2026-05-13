@@ -1,0 +1,58 @@
+#!/bin/bash
+#
+# update-last-known-good.sh — updates last-known-good tag after successful non-loop task
+#
+# Called from:
+#  - mnemonic-mcp post-feature.sh hook (after non-loop feature completes)
+#  - smoke-gate.yml CI job (after successful mnemonic-loop merge)
+#
+# Usage:
+#   /usr/local/bin/update-last-known-good.sh [--dry-run] [--push]
+#
+
+set -euo pipefail
+
+DRY_RUN=false
+PUSH=false
+
+# Parse flags
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) DRY_RUN=true; shift ;;
+    --push) PUSH=true; shift ;;
+    *) echo "Unknown option: $1"; exit 1 ;;
+  esac
+done
+
+LOOP_DIR="/opt/mnemonic-loop"
+
+if [ ! -d "$LOOP_DIR" ]; then
+  echo "ERROR: mnemonic-loop directory not found at $LOOP_DIR"
+  exit 1
+fi
+
+cd "$LOOP_DIR"
+
+if [ ! -d .git ]; then
+  echo "ERROR: Not a git repository: $LOOP_DIR"
+  exit 1
+fi
+
+CURRENT_HEAD="$(git rev-parse --short HEAD)"
+echo "Updating last-known-good from $(git rev-parse last-known-good 2>/dev/null || echo 'new') to $CURRENT_HEAD"
+
+if [ "$DRY_RUN" = true ]; then
+  echo "DRY-RUN: Would tag HEAD as last-known-good"
+  git tag -a last-known-good HEAD -m "Last known good (dry-run)" --force 2>&1 || true
+  echo "DRY-RUN: Would push tag" $([ "$PUSH" = true ] && echo "with --push flag")
+else
+  git tag -a last-known-good HEAD -m "Last known good at $CURRENT_HEAD" --force
+
+  if [ "$PUSH" = true ]; then
+    git push origin last-known-good --force 2>&1 || {
+      echo "WARNING: Failed to push last-known-good tag (may be offline)"
+    }
+  fi
+
+  echo "last-known-good tag updated to $CURRENT_HEAD"
+fi

@@ -1,0 +1,265 @@
+---
+#
+# fabric-services role — deploys compiled fabric artefacts to the VM
+#
+# This role orchestrates:
+#  1. rsync fabric/* from repo (checked out in CI) to /opt/fabric
+#  2. Create Python venv for each service (workspace-manager, sanitizer, watchdog, etc.)
+#  3. Install systemd units for workspace-manager.service, fabric-watchdog.timer
+#  4. Install cron/timer for fabric-backup and last-known-good hook
+#  5. Idempotent: re-rsync + venv-rebuild only on detected change
+#
+# Invoked by deploy.yml as:
+#   - role: fabric-services
+#     tags: [fabric-services, deploy]
+#
+
+- name: Create fabric target directory
+  file:
+    path: "{{ fabric_target_dir }}"
+    state: directory
+    owner: "{{ base_operator_user }}"
+    group: "{{ base_operator_user }}"
+    mode: '0755'
+
+- name: Determine if fabric repo is available for rsync
+  stat:
+    path: "{{ fabric_repo_checkout | default(lookup('env', 'PWD')) }}/fabric"
+  register: fabric_repo_stat
+  when: lookup('env', 'PWD') | length > 0
+
+- name: Rsync fabric/* to /opt/fabric (from repo or CI)
+  block:
+    - name: Sync fabric directory
+      synchronize:
+        src: "{{ fabric_repo_checkout | default(lookup('env', 'PWD')) }}/fabric/"
+        dest: "{{ fabric_target_dir }}/"
+        archive: yes
+        delete: no
+        owner: no
+        group: no
+        perms: yes
+        compress: yes
+      become: no
+      delegate_to: "{{ inventory_hostname }}"
+      when: fabric_repo_stat.stat.exists | default(false)
+      register: fabric_sync
+
+    - name: Report rsync changes
+      debug:
+        msg: "Fabric sync: {{ 'changed' if fabric_sync.changed else 'up-to-date' }}"
+
+  rescue:
+    - name: Fallback: If rsync unavailable, copy via scp/put
+      block:
+        - name: Create target directories via Ansible
+          file:
+            path: "{{ fabric_target_dir }}/{{ item }}"
+            state: directory
+          loop:
+            - logs/sanitizer
+            - workspace-manager
+            - integrations
+            - molyanov
+            - watchdog
+            - safe-mode
+            - github-templates
+
+        - name: Copy fabric modules (fallback)
+          copy:
+            src: "{{ fabric_repo_checkout | default(lookup('env', 'PWD')) }}/fabric/{{ item }}"
+            dest: "{{ fabric_target_dir }}/{{ item }}"
+            owner: "{{ base_operator_user }}"
+            group: "{{ base_operator_user }}"
+            mode: '0644'
+            recursive: yes
+          loop:
+            - logs/sanitizer
+            - workspace-manager
+            - integrations
+            - molyanov
+            - watchdog
+            - safe-mode
+          ignore_errors: yes
+      when: fabric_repo_stat.stat.exists | default(false)
+
+- name: Install Python dependencies for fabric services
+  block:
+    - name: Install system Python packages
+      apt:
+        name:
+          - python3
+          - python3-venv
+          - python3-pip
+          - python3-dev
+          - build-essential
+        state: present
+
+    - name: Create Python venv for workspace-manager
+      command:
+        cmd: python3 -m venv "{{ fabric_target_dir }}/workspace-manager/venv"
+        creates: "{{ fabric_target_dir }}/workspace-manager/venv/bin/python"
+
+    - name: Install workspace-manager dependencies
+      pip:
+        requirements: "{{ fabric_target_dir }}/workspace-manager/requirements.txt"
+        virtualenv: "{{ fabric_target_dir }}/workspace-manager/venv"
+      when: fabric_sync.changed | default(false) or
+            (lookup('file', fabric_target_dir + '/workspace-manager/requirements.txt', errors='ignore') | length > 0)
+      ignore_errors: yes
+
+    - name: Create Python venv for fabric-watchdog
+      command:
+        cmd: python3 -m venv "{{ fabric_target_dir }}/watchdog/venv"
+        creates: "{{ fabric_target_dir }}/watchdog/venv/bin/python"
+
+    - name: Install watchdog dependencies
+      pip:
+        requirements: "{{ fabric_target_dir }}/watchdog/requirements.txt"
+        virtualenv: "{{ fabric_target_dir }}/watchdog/venv"
+      when: fabric_sync.changed | default(false) or
+            (lookup('file', fabric_target_dir + '/watchdog/requirements.txt', errors='ignore') | length > 0)
+      ignore_errors: yes
+
+    - name: Create venv for sanitizer
+      command:
+        cmd: python3 -m venv "{{ fabric_target_dir }}/logs/sanitizer/venv"
+        creates: "{{ fabric_target_dir }}/logs/sanitizer/venv/bin/python"
+
+    - name: Install sanitizer dependencies
+      pip:
+        requirements: "{{ fabric_target_dir }}/logs/sanitizer/requirements.txt"
+        virtualenv: "{{ fabric_target_dir }}/logs/sanitizer/venv"
+      when: fabric_sync.changed | default(false) or
+            (lookup('file', fabric_target_dir + '/logs/sanitizer/requirements.txt', errors='ignore') | length > 0)
+      ignore_errors: yes
+
+  become: yes
+
+- name: Install systemd units for fabric services
+  block:
+    - name: Create workspace-manager systemd unit
+      template:
+        src: workspace-manager.service.j2
+        dest: /etc/systemd/system/workspace-manager.service
+        owner: root
+        group: root
+        mode: '0644'
+      register: wm_unit
+      notify: reload systemd
+
+    - name: Create fabric-watchdog systemd timer
+      template:
+        src: fabric-watchdog.timer.j2
+        dest: /etc/systemd/system/fabric-watchdog.timer
+        owner: root
+        group: root
+        mode: '0644'
+      register: watchdog_timer
+      notify: reload systemd
+
+    - name: Create fabric-watchdog systemd service
+      template:
+        src: fabric-watchdog.service.j2
+        dest: /etc/systemd/system/fabric-watchdog.service
+        owner: root
+        group: root
+        mode: '0644'
+      register: watchdog_service
+      notify: reload systemd
+
+    - name: Reload systemd daemon if units changed
+      systemd:
+        daemon_reload: yes
+      when: wm_unit.changed or watchdog_timer.changed or watchdog_service.changed
+
+    - name: Enable workspace-manager service
+      systemd:
+        name: workspace-manager
+        enabled: yes
+        state: started
+
+    - name: Enable fabric-watchdog timer
+      systemd:
+        name: fabric-watchdog.timer
+        enabled: yes
+        state: started
+
+  become: yes
+
+- name: Configure fabric backup job (restic + last-known-good)
+  block:
+    - name: Create fabric-backup.sh helper script
+      template:
+        src: fabric-backup.sh.j2
+        dest: "{{ fabric_target_dir }}/fabric-backup.sh"
+        owner: "{{ base_operator_user }}"
+        group: "{{ base_operator_user }}"
+        mode: '0755'
+
+    - name: Install cron job for fabric backup
+      cron:
+        name: "Fabric nightly backup"
+        hour: "2"
+        minute: "30"
+        job: "{{ fabric_target_dir }}/fabric-backup.sh >> /var/log/fabric-backup.log 2>&1"
+        user: "{{ base_operator_user }}"
+        state: present
+
+    - name: Create last-known-good update hook
+      template:
+        src: update-last-known-good.sh.j2
+        dest: "/usr/local/bin/update-last-known-good.sh"
+        owner: root
+        group: root
+        mode: '0755'
+
+  become: yes
+
+- name: Configure fabric environment
+  block:
+    - name: Create fabric .env template
+      template:
+        src: fabric.env.j2
+        dest: "{{ fabric_target_dir }}/.env"
+        owner: "{{ base_operator_user }}"
+        group: "{{ base_operator_user }}"
+        mode: '0640'
+
+    - name: Set PYTHONPATH for fabric services
+      lineinfile:
+        path: "/home/{{ base_operator_user }}/.bashrc"
+        line: "export PYTHONPATH={{ fabric_target_dir }}:$PYTHONPATH"
+        state: present
+
+  become: yes
+
+- name: Verify fabric services installation
+  block:
+    - name: Check workspace-manager venv
+      stat:
+        path: "{{ fabric_target_dir }}/workspace-manager/venv/bin/python"
+      register: wm_venv_stat
+
+    - name: Check watchdog venv
+      stat:
+        path: "{{ fabric_target_dir }}/watchdog/venv/bin/python"
+      register: watchdog_venv_stat
+
+    - name: Verify systemd units exist
+      stat:
+        path: "/etc/systemd/system/{{ item }}"
+      register: unit_stat
+      loop:
+        - workspace-manager.service
+        - fabric-watchdog.timer
+        - fabric-watchdog.service
+
+    - name: Report fabric-services installation status
+      debug:
+        msg: |
+          Fabric Services Installation Status:
+          Workspace Manager venv: {{ 'ready' if wm_venv_stat.stat.exists else 'missing' }}
+          Watchdog venv: {{ 'ready' if watchdog_venv_stat.stat.exists else 'missing' }}
+          Systemd units: {{ unit_stat.results | map(attribute='stat.exists') | list }}
+          Target directory: {{ fabric_target_dir }}

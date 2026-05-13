@@ -1,0 +1,42 @@
+---
+# fabric-services role defaults
+
+# Installation paths
+fabric_target_dir: /opt/fabric
+fabric_repo_checkout: "{{ lookup('env', 'PWD') | default('/root') }}"
+
+# Workspace Manager configuration
+workspace_manager_listen_ip: "127.0.0.1"
+workspace_manager_listen_port: 8080
+workspace_manager_capacity: 10
+workspace_manager_sccache_enabled: true
+workspace_manager_log_level: INFO
+
+# Fabric watchdog configuration
+fabric_watchdog_check_interval: 300
+fabric_watchdog_alert_classes: 9
+fabric_watchdog_enable_ops_notifications: true
+
+# Fabric services to deploy
+fabric_services:
+  - name: workspace-manager
+    systemd_unit: workspace-manager.service
+    venv_path: "{{ fabric_target_dir }}/workspace-manager/venv"
+  - name: fabric-watchdog
+    systemd_timer: fabric-watchdog.timer
+    systemd_unit: fabric-watchdog.service
+    venv_path: "{{ fabric_target_dir }}/watchdog/venv"
+
+# Systemd configuration
+fabric_services_systemd_dir: /etc/systemd/system
+fabric_services_enable_on_boot: true
+fabric_services_restart_on_failure: true
+
+# Backup configuration
+fabric_backup_schedule: "30 2 * * *"  # 02:30 UTC daily
+fabric_backup_enabled: true
+fabric_backup_update_last_known_good: true
+
+# Environment
+base_operator_user: operator
+fabric_pythonpath: "{{ fabric_target_dir }}"

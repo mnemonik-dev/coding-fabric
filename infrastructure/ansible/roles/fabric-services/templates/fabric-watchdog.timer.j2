@@ -1,0 +1,13 @@
+[Unit]
+Description=Fabric Watchdog Timer (5-min cadence)
+After=network-online.target
+Wants=network-online.target
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Persistent=true
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

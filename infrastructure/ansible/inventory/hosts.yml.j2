@@ -1,0 +1,223 @@
+---
+# hosts.yml.j2 — Ansible inventory template for fabric deployment
+#
+# Populated by CI (deploy-fabric.yml T24) from OpenTofu outputs.
+# Variables substituted at runtime:
+#   - fabric_ip_v4      : VM public IPv4 address (from tofu output vm_ipv4)
+#   - fabric_ip_v6      : VM public IPv6 address (from tofu output vm_ipv6, nullable)
+#   - fabric_hostname   : Server name (from tofu output server_name)
+#   - fabric_volume_dev : Block device for data volume (from tofu output volume_device)
+#
+# Operator Usage (local deploy):
+#   ansible-playbook -i infrastructure/ansible/inventory/hosts.yml \
+#     infrastructure/ansible/playbooks/deploy.yml
+#
+# CI Usage (deploy-fabric.yml job ansible-deploy):
+#   Inventory is generated dynamically from tofu outputs and does not require
+#   this template file in the GH Actions runner; it is committed for documentation
+#   and local operator reference.
+
+all:
+  hosts:
+    mnemonic-fabric:
+      # Connection parameters
+      ansible_host: "{{ fabric_ip_v4 }}"
+      ansible_user: root
+      ansible_port: 22
+      ansible_ssh_common_args: >-
+        -o StrictHostKeyChecking=no
+        -o UserKnownHostsFile=/dev/null
+        -o ConnectTimeout=30
+        -o ConnectionAttempts=5
+
+      # Fabric-specific variables
+      fabric_hostname: "{{ fabric_hostname | default('mnemonic-fabric') }}"
+      fabric_volume_device: "{{ fabric_volume_dev | default('/dev/sdb') }}"
+      fabric_ipv4: "{{ fabric_ip_v4 }}"
+      fabric_ipv6: "{{ fabric_ip_v6 | default(None) }}"
+
+      # Topic configuration matrix (per tech-spec §2.4)
+      fabric_topic_matrix:
+        - topic: core
+          engine: claude-code
+          autopilot: false
+          aidefence: false
+          rag_memory: true
+          mnemonic_mode: local
+          memory_namespace: mnemonic-core
+        - topic: mcp
+          engine: claude-code
+          autopilot: false
+          aidefence: false
+          rag_memory: true
+          mnemonic_mode: local
+          memory_namespace: mnemonic-mcp
+        - topic: wasm
+          engine: claude-code
+          autopilot: false
+          aidefence: true
+          rag_memory: true
+          mnemonic_mode: local
+          memory_namespace: mnemonic-wasm
+        - topic: demo-client
+          engine: codex
+          autopilot: true
+          aidefence: true
+          rag_memory: true
+          mnemonic_mode: local
+          memory_namespace: mnemonic-demo-client
+        - topic: docs
+          engine: claude-code
+          autopilot: true
+          aidefence: true
+          rag_memory: true
+          mnemonic_mode: local
+          memory_namespace: mnemonic-docs
+        - topic: loop
+          engine: claude-code
+          autopilot: false
+          aidefence: true
+          rag_memory: true
+          mnemonic_mode: local
+          memory_namespace: mnemonic-loop
+        - topic: protocol-qa
+          engine: claude-code
+          autopilot: false
+          aidefence: true
+          rag_memory: false
+          mnemonic_mode: full
+          memory_namespace: mnemonic-qa
+        - topic: ops
+          engine: claude-code
+          autopilot: false
+          aidefence: true
+          rag_memory: true
+          mnemonic_mode: local
+          memory_namespace: mnemonic-ops
+
+  vars:
+    # Global variables for all hosts
+    ansible_timeout: 300
+    ansible_become: yes
+    ansible_become_method: sudo
+
+    # Base role variables
+    base_operator_user: operator
+    base_operator_shell: /bin/bash
+    base_operator_groups:
+      - sudo
+      - docker
+
+    # SSH hardening
+    ssh_hardening_disable_password_auth: true
+    ssh_hardening_disable_root_login: false  # Allow root via pubkey only
+    ssh_hardening_key_rotation_enabled: true
+    ssh_hardening_key_rotation_days: 90
+
+    # Tailscale (loaded from sops at runtime)
+    # tailscale_auth_key will be decrypted from secrets.sops.yml
+    tailscale_hostname: "{{ fabric_hostname }}"
+    tailscale_routes:
+      - 10.0.0.0/8
+      - 172.16.0.0/12
+    tailscale_enable_exit_node: false
+    tailscale_enable_subnet_routes: true
+
+    # Vaultwarden (loaded from sops at runtime)
+    # vaultwarden_initial_admin_password and other secrets from secrets.sops.yml
+    vaultwarden_data_dir: /opt/vaultwarden
+    vaultwarden_domain: vault.mnemonic-fabric
+    vaultwarden_port: 80
+    vaultwarden_tailnet_bind_only: true
+
+    # Kaneo (observability)
+    kaneo_data_dir: /opt/kaneo
+    kaneo_compose_version: "3.8"
+    kaneo_projects:
+      - mnemonic-core
+      - mnemonic-mcp
+      - mnemonic-wasm
+      - mnemonic-demo-client
+      - mnemonic-docs
+      - mnemonic-loop
+
+    # Telegram (loaded from sops at runtime)
+    # telegram_bot_token, telegram_forum_chat_id from secrets.sops.yml
+    telegram_api_url: "https://api.telegram.org"
+    telegram_max_retries: 3
+    telegram_retry_delay: 2
+
+    # Restic backups (loaded from sops at runtime)
+    # restic_repository, restic_password from secrets.sops.yml
+    restic_backup_schedule: "0 2 * * *"  # 02:00 UTC daily
+    restic_backup_retention_days: 30
+    restic_backup_paths:
+      - /opt/vaultwarden
+      - /opt/kaneo
+      - /opt/mnemonic-loop
+      - /home/operator
+
+    # Ruflo (Mnemonic framework)
+    ruflo_installation_dir: /opt/ruflo
+    ruflo_enable_per_topic_isolation: true
+
+    # Molyanov (Project knowledge)
+    molyanov_skills_path: /opt/molyanov/skills
+    molyanov_pk_guard_enabled: true
+    molyanov_canonical_pk: mnemonic-loop
+
+    # Mnemonic MCP
+    mnemonic_mcp_install_dir: /opt/mnemonic-mcp
+    mnemonic_mcp_socket_path: /run/mnemonic-mcp.sock
+    mnemonic_mcp_enable_hooks: true
+    mnemonic_mcp_hooks:
+      - post-deploy.sh
+      - post-feature.sh
+      - post-merge.sh
+      - post-rollback.sh
+      - pre-deploy.sh
+
+    # Workspace Manager
+    workspace_manager_install_dir: /opt/fabric/workspace-manager
+    workspace_manager_listen_ip: 127.0.0.1
+    workspace_manager_listen_port: 8080
+    workspace_manager_capacity: 10
+    workspace_manager_sccache_enabled: true
+    workspace_manager_log_level: INFO
+
+    # Fabric watchdog
+    fabric_watchdog_install_dir: /opt/fabric/watchdog
+    fabric_watchdog_check_interval: 300  # 5 minutes
+    fabric_watchdog_alert_classes: 9
+
+    # Fabric services
+    fabric_target_dir: /opt/fabric
+    fabric_services_systemd_dir: /etc/systemd/system
+    fabric_pythonpath: /opt/fabric
+
+    # Telegram AI Agent
+    telegram_ai_agent_install_dir: /opt/telegram-ai-agent
+    telegram_ai_agent_systemd_unit: telegram-ai-agent.service
+    telegram_ai_agent_workspace_manager_url: "http://127.0.0.1:8080"
+    telegram_ai_agent_enable_cwd_dynamic: true  # For cwd:DYNAMIC sentinel support
+
+# Group variables loaded from decrypted sops file at deploy time
+# File: infrastructure/ansible/inventory/group_vars/all/secrets.sops.yml
+# Decryption happens in deploy-fabric.yml CI job via sops + age key
+# Variables available after decryption:
+#   - vault_tailscale_auth_key
+#   - vault_vaultwarden_admin_password
+#   - vault_vaultwarden_admin_token
+#   - vault_telegram_bot_token
+#   - vault_telegram_forum_chat_id
+#   - vault_telegram_ops_chat_id
+#   - vault_restic_repository
+#   - vault_restic_password
+#   - vault_solana_devnet_keypair
+#   - vault_irys_testnet_private_key
+#   - vault_anthropic_api_key
+#   - vault_openai_api_key
+#   - vault_github_deploy_pat
+#   - vault_telegram_ai_agent_repo
+#   - vault_telegram_ai_agent_ref
+#   - vault_mnemonic_signing_key_vault_ref

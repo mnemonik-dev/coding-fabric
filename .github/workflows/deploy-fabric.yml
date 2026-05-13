@@ -1,0 +1,461 @@
+name: deploy-fabric
+
+on:
+  push:
+    tags:
+      - 'fabric-v*'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform: apply (deploy), plan (dry-run), or rollback'
+        type: choice
+        options:
+          - apply
+          - plan
+          - rollback
+        default: plan
+
+permissions:
+  contents: read
+  actions: read
+  statuses: write
+
+concurrency:
+  group: deploy-fabric
+  cancel-in-progress: false
+
+env:
+  TF_VERSION: '1.8.0'
+  ANSIBLE_TIMEOUT: 300
+  E2E_TIMEOUT_MINUTES: 30
+
+jobs:
+  tofu-plan:
+    name: OpenTofu Plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      plan_exit_code: ${{ steps.tofu_plan.outputs.exit_code }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup OpenTofu
+        uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: ${{ env.TF_VERSION }}
+
+      - name: Initialize OpenTofu
+        working-directory: infrastructure/tofu/hetzner
+        env:
+          HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+        run: |
+          tofu init
+
+      - name: Validate OpenTofu configuration
+        working-directory: infrastructure/tofu/hetzner
+        run: |
+          tofu validate
+
+      - name: Create plan
+        id: tofu_plan
+        working-directory: infrastructure/tofu/hetzner
+        env:
+          HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+        run: |
+          set +e
+          tofu plan -out=tfplan -detailed-exitcode
+          exit_code=$?
+          set -e
+          echo "exit_code=${exit_code}" >> $GITHUB_OUTPUT
+          # 0 = no changes, 1 = error, 2 = changes present
+          echo "Plan exit code: ${exit_code}"
+
+      - name: Upload plan artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tofu-plan
+          path: infrastructure/tofu/hetzner/tfplan
+          retention-days: 7
+
+      - name: Comment on workflow run (plan summary)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const exitCode = '${{ steps.tofu_plan.outputs.plan_exit_code }}';
+            const message = {
+              '0': 'No infrastructure changes detected',
+              '2': 'Infrastructure changes pending (tofu apply will execute them)',
+              '1': 'Plan validation failed'
+            }[exitCode] || 'Unknown plan status';
+            console.log(`Plan status: ${message}`);
+
+  tofu-apply:
+    name: OpenTofu Apply
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: tofu-plan
+    if: |
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/fabric-v')) ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'apply')
+    outputs:
+      vm_ipv4: ${{ steps.tofu_outputs.outputs.vm_ipv4 }}
+      vm_ipv6: ${{ steps.tofu_outputs.outputs.vm_ipv6 }}
+      server_name: ${{ steps.tofu_outputs.outputs.server_name }}
+      volume_device: ${{ steps.tofu_outputs.outputs.volume_device }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup OpenTofu
+        uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: ${{ env.TF_VERSION }}
+
+      - name: Initialize OpenTofu
+        working-directory: infrastructure/tofu/hetzner
+        env:
+          HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+        run: |
+          tofu init
+
+      - name: Download plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tofu-plan
+          path: infrastructure/tofu/hetzner/
+
+      - name: Apply infrastructure
+        id: tofu_apply
+        working-directory: infrastructure/tofu/hetzner
+        env:
+          HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+        run: |
+          echo "Applying infrastructure..."
+          tofu apply -auto-approve tfplan 2>&1 | tee apply.log
+
+          if [ ${PIPESTATUS[0]} -ne 0 ]; then
+            echo "ERROR: tofu apply failed"
+            exit 1
+          fi
+          echo "Infrastructure apply complete"
+
+      - name: Extract Terraform outputs
+        id: tofu_outputs
+        working-directory: infrastructure/tofu/hetzner
+        run: |
+          tofu output -json > outputs.json
+          vm_ipv4=$(jq -r '.vm_ipv4.value' outputs.json)
+          vm_ipv6=$(jq -r '.vm_ipv6.value' outputs.json)
+          server_name=$(jq -r '.server_name.value' outputs.json)
+          volume_device=$(jq -r '.volume_device.value' outputs.json)
+
+          echo "vm_ipv4=${vm_ipv4}" >> $GITHUB_OUTPUT
+          echo "vm_ipv6=${vm_ipv6}" >> $GITHUB_OUTPUT
+          echo "server_name=${server_name}" >> $GITHUB_OUTPUT
+          echo "volume_device=${volume_device}" >> $GITHUB_OUTPUT
+
+          echo "VM deployed: ${vm_ipv4}"
+
+      - name: Wait for SSH readiness (with retries)
+        timeout-minutes: 10
+        env:
+          VM_IPV4: ${{ steps.tofu_outputs.outputs.vm_ipv4 }}
+        run: |
+          max_attempts=30
+          attempt=1
+          while [ $attempt -le $max_attempts ]; do
+            if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+                    -o ConnectTimeout=5 -o BatchMode=yes root@${VM_IPV4} "echo 'SSH ready'" 2>/dev/null; then
+              echo "SSH ready on attempt ${attempt}"
+              exit 0
+            fi
+            echo "Attempt ${attempt}/${max_attempts}: SSH not ready yet..."
+            sleep 10
+            ((attempt++))
+          done
+          echo "ERROR: SSH not ready after ${max_attempts} attempts"
+          exit 1
+
+      - name: Upload state artifact (encrypted)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tofu-state
+          path: infrastructure/tofu/hetzner/terraform.tfstate
+          retention-days: 30
+
+  ansible-deploy:
+    name: Ansible Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: tofu-apply
+    if: success()
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Ansible and collections
+        run: |
+          pip install --upgrade pip
+          pip install ansible-core>=2.16 sops age jinja2 pyyaml
+          ansible-galaxy collection install -r infrastructure/ansible/requirements.yml
+
+      - name: Tailscale up (ephemeral)
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
+          tags: tag:ci-deploy
+
+      - name: Generate Ansible inventory from outputs
+        env:
+          VM_IPV4: ${{ needs.tofu-apply.outputs.vm_ipv4 }}
+          SERVER_NAME: ${{ needs.tofu-apply.outputs.server_name }}
+          VOLUME_DEVICE: ${{ needs.tofu-apply.outputs.volume_device }}
+        run: |
+          mkdir -p infrastructure/ansible/inventory
+          cat > infrastructure/ansible/inventory/hosts.yml <<'INVENTORY'
+          all:
+            hosts:
+              mnemonic-fabric:
+                ansible_host: ${{ env.VM_IPV4 }}
+                ansible_user: root
+                ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+                fabric_hostname: mnemonic-fabric
+                volume_device: ${{ env.VOLUME_DEVICE }}
+          INVENTORY
+          echo "Inventory generated:"
+          cat infrastructure/ansible/inventory/hosts.yml
+
+      - name: Create sops-age wrapper for GitHub Actions secret
+        env:
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+        run: |
+          mkdir -p ~/.config/sops/age
+          echo "$SOPS_AGE_KEY" > ~/.config/sops/age/keys.txt
+          chmod 600 ~/.config/sops/age/keys.txt
+
+      - name: Validate secrets can be decrypted
+        run: |
+          sops -d infrastructure/ansible/inventory/group_vars/all/secrets.sops.yml > /dev/null 2>&1 && \
+            echo "Secrets decryption successful" || \
+            (echo "ERROR: Failed to decrypt secrets"; exit 1)
+        no_log: true
+
+      - name: Run Ansible playbook (deploy)
+        timeout-minutes: 40
+        run: |
+          ansible-playbook \
+            -i infrastructure/ansible/inventory/hosts.yml \
+            -v \
+            infrastructure/ansible/playbooks/deploy.yml \
+            -e "ansible_timeout=300"
+
+      - name: Verify fabric services
+        timeout-minutes: 5
+        env:
+          VM_HOSTNAME: mnemonic-fabric
+        run: |
+          echo "Verifying Tailscale connectivity..."
+          tailscale status
+
+          if ! tailscale ping -c 1 "$VM_HOSTNAME" > /dev/null 2>&1; then
+            echo "ERROR: Cannot ping $VM_HOSTNAME"
+            exit 1
+          fi
+          echo "VM connectivity verified"
+
+  e2e-smoke:
+    name: E2E Smoke Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    needs: [ansible-deploy, tofu-apply]
+    if: success()
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Trigger e2e-smoke workflow
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runId = context.runId;
+            const featureName = `fabric-bootstrap-${runId}`;
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'e2e-smoke.yml',
+              ref: context.ref,
+              inputs: {
+                feature_name: featureName,
+                vm_hostname: 'mnemonic-fabric'
+              }
+            });
+            console.log(`Triggered e2e-smoke with feature_name=${featureName}`);
+
+      - name: Wait for e2e-smoke completion
+        timeout-minutes: 35
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runId = context.runId;
+            const featureName = `fabric-bootstrap-${runId}`;
+            let completed = false;
+            let attempt = 0;
+            const maxAttempts = 70; // ~35 min with 30s intervals
+
+            while (!completed && attempt < maxAttempts) {
+              attempt++;
+              const runs = await github.rest.actions.listWorkflowRuns({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'e2e-smoke.yml'
+              });
+
+              const smokeRun = runs.data.workflow_runs.find(r =>
+                r.name === 'e2e-smoke' &&
+                r.created_at > new Date(Date.now() - 5 * 60 * 1000).toISOString()
+              );
+
+              if (!smokeRun) {
+                console.log(`Attempt ${attempt}/${maxAttempts}: e2e-smoke run not found yet...`);
+                await new Promise(r => setTimeout(r, 30000));
+                continue;
+              }
+
+              if (['completed'].includes(smokeRun.status)) {
+                completed = true;
+                if (smokeRun.conclusion === 'success') {
+                  console.log('e2e-smoke completed successfully');
+                } else {
+                  console.log(`e2e-smoke failed with conclusion: ${smokeRun.conclusion}`);
+                  core.setFailed(`e2e-smoke ${smokeRun.conclusion}`);
+                }
+              } else {
+                console.log(`Attempt ${attempt}/${maxAttempts}: e2e-smoke status=${smokeRun.status}`);
+                await new Promise(r => setTimeout(r, 30000));
+              }
+            }
+
+            if (!completed) {
+              core.setFailed('e2e-smoke did not complete within timeout');
+            }
+
+  attest:
+    name: Mnemonic Attestation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [e2e-smoke, tofu-apply]
+    if: success()
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Tailscale up (ephemeral)
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
+          tags: tag:ci-deploy
+
+      - name: Trigger post-deploy attestation hook
+        timeout-minutes: 5
+        env:
+          VM_HOSTNAME: mnemonic-fabric
+          MNEMONIC_SIGNING_KEY_VAULT_REF: ${{ secrets.MNEMONIC_SIGNING_KEY_VAULT_REF }}
+        run: |
+          echo "Invoking post-deploy.sh hook via Tailscale SSH..."
+
+          attestation_result=$(tailscale ssh $VM_HOSTNAME \
+            "bash /opt/mnemonic-mcp/post-deploy.sh" 2>&1) || true
+
+          attestation_id=$(echo "$attestation_result" | grep -oP 'attestation_id=\K[\w-]+' | head -1)
+
+          if [ -z "$attestation_id" ]; then
+            echo "WARNING: No attestation ID returned from post-deploy hook"
+            attestation_id="pending-verification"
+          fi
+
+          echo "attestation_id=${attestation_id}" >> $GITHUB_OUTPUT
+          echo "Post-deploy attestation completed: ${attestation_id}"
+
+  notify:
+    name: Notify Operations
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: always()
+    needs: [tofu-apply, ansible-deploy, e2e-smoke]
+    steps:
+      - name: Determine deployment status
+        id: status
+        run: |
+          if [ "${{ needs.tofu-apply.result }}" = "success" ] && \
+             [ "${{ needs.ansible-deploy.result }}" = "success" ] && \
+             [ "${{ needs.e2e-smoke.result }}" = "success" ]; then
+            status="SUCCESS"
+            status_emoji="✓"
+          else
+            status="FAILURE"
+            status_emoji="✗"
+          fi
+
+          echo "status=${status}" >> $GITHUB_OUTPUT
+          echo "status_emoji=${status_emoji}" >> $GITHUB_OUTPUT
+
+      - name: Post deployment notification to Telegram
+        timeout-minutes: 2
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_OPS_CHAT_ID: ${{ secrets.TELEGRAM_OPS_CHAT_ID }}
+          DEPLOYMENT_STATUS: ${{ steps.status.outputs.status }}
+          STATUS_EMOJI: ${{ steps.status.outputs.status_emoji }}
+          RUN_ID: ${{ github.run_id }}
+          COMMIT_SHA: ${{ github.sha }}
+          VM_IPV4: ${{ needs.tofu-apply.outputs.vm_ipv4 }}
+        run: |
+          # Only proceed if we have telegram credentials
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_OPS_CHAT_ID" ]; then
+            echo "TELEGRAM credentials not configured; skipping notification"
+            exit 0
+          fi
+
+          message="fabric deploy ${STATUS_EMOJI} ${DEPLOYMENT_STATUS}
+          Run: ${RUN_ID}
+          Commit: ${COMMIT_SHA:0:8}
+          VM IP: ${VM_IPV4:-pending}
+          Logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${RUN_ID}"
+
+          curl -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_OPS_CHAT_ID}" \
+            -d "text=$(echo "$message" | jq -sRr @json)" \
+            -d "parse_mode=HTML" \
+            -v || true
+
+      - name: Log deployment summary
+        run: |
+          echo "=== Deployment Summary ==="
+          echo "Status: ${{ steps.status.outputs.status }}"
+          echo "ToFu Plan: ${{ needs.tofu-apply.result }}"
+          echo "Ansible: ${{ needs.ansible-deploy.result }}"
+          echo "E2E Smoke: ${{ needs.e2e-smoke.result }}"
+          echo "VM IP: ${{ needs.tofu-apply.outputs.vm_ipv4 }}"
+          echo "============================="

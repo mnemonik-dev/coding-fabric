@@ -1,0 +1,23 @@
+---
+galaxy_info:
+  author: Mnemonic Protocol
+  description: Deploy compiled fabric services to the VM
+  company: Mnemonic
+  license: MPL-2.0
+  min_ansible_version: '2.16'
+  platforms:
+    - name: Ubuntu
+      versions:
+        - '24.04'
+  galaxy_tags:
+    - fabric
+    - deployment
+    - services
+    - python
+    - systemd
+
+dependencies:
+  - base
+  - vaultwarden
+  - kaneo
+  - workspace-manager
