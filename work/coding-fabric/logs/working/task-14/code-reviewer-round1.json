@@ -1,0 +1,101 @@
+{
+  "review_meta": {
+    "reviewer": "code-reviewer",
+    "round": 1,
+    "commit": "e7334a6",
+    "target": "fabric/integrations/ (swarm_bridge.py, workspace_client.py, ruflo_client.py, tests/)",
+    "date": "2026-05-12",
+    "specs": ["AC9", "D12"]
+  },
+  "summary": "Core protocol (swarm_init once, concurrent wave spawn, 5xx-only retry, 409 single-retry, module separation) is correctly implemented. Five blocking defects: asyncio.gather silently drops all-but-first simultaneous exceptions; _spawn_one bypasses the workspace_client.lease() context manager and deletes the worktree on the success path (agent runs in deleted cwd); _with_retry lacks a type annotation on request_fn; deps are lower-bound-only with no lockfile; zero direct unit tests cover WorkspaceClient._with_retry, workspace_client.lease, or any ruflo_client logic.",
+  "checks": [
+    {
+      "id": "CHK-CR-1",
+      "title": "asyncio.gather usage — return_exceptions missing",
+      "verdict": "FAIL",
+      "severity": "HIGH",
+      "detail": "_dispatch_wave calls asyncio.gather(*[self._spawn_one(...)]) with no return_exceptions=True. Under Python asyncio semantics, when one coroutine raises, gather propagates that exception but does NOT cancel siblings — they continue running. However if gather itself is cancelled (e.g. by an outer timeout or KeyboardInterrupt) all siblings receive CancelledError, which is a BaseException, not caught by the bare 'except Exception' in _spawn_one. This means the finally: await self._safe_delete() block can be bypassed for cancelled siblings, leaking worktrees. Additionally, when multiple tasks fail simultaneously gather returns only the first exception; the rest are silently discarded, violating the requirement that errors surface to the originating topic (D12 / docstring line 20). The test test_partial_failure_does_not_leak_worktrees passes because mock callables have no async yield points where CancelledError could interrupt the finally.",
+      "evidence": "swarm_bridge.py:203-205",
+      "recommendation": "Use asyncio.gather(*coroutines, return_exceptions=True). After awaiting, iterate results: collect all exceptions, re-raise as ExceptionGroup (Python 3.11+) or raise the first after logging the rest. This guarantees each coroutine reaches its finally block under cancellation and all errors are reported."
+    },
+    {
+      "id": "CHK-CR-2",
+      "title": "Context manager for worktree lifetime — lease() bypassed",
+      "verdict": "FAIL",
+      "severity": "HIGH",
+      "detail": "The task spec hint (tasks/14.md line 65) and workspace_client.py:156-182 both define and document the workspace.lease() asynccontextmanager as the canonical lifetime abstraction. SwarmBridge._spawn_one does NOT use it: it calls _lease_worktree_with_capacity_retry() directly, then manages cleanup manually in a try/finally. Consequently: (a) the workspace_client.lease() context manager is dead code never exercised by the bridge; (b) the manual path duplicates delete logic already present in lease(). More critically, _spawn_one calls _safe_delete in the finally block, meaning the worktree is deleted on the SUCCESS path immediately after spawn_agent() returns — before the spawned agent finishes using its cwd on disk. If workspace_client DELETE removes the git worktree from the filesystem (the normal expectation), the running agent is left with a non-existent working directory. This defect is masked by tests because spawn_agent is mocked as instantaneous.",
+      "evidence": "swarm_bridge.py:214-235; workspace_client.py:156-182",
+      "recommendation": "Refactor _spawn_one to use 'async with self._workspace.lease(...) as cwd:' and move the spawn_agent call inside the block. The worktree lifetime should span the full duration of agent execution, not just the spawn_agent MCP handshake. Extend workspace_client.lease() to accept an optional capacity_wait_s parameter if the retry behaviour is needed, rather than re-implementing it in swarm_bridge."
+    },
+    {
+      "id": "CHK-CR-3",
+      "title": "finally block reliability — _safe_delete on success path",
+      "verdict": "FAIL",
+      "severity": "HIGH",
+      "detail": "Related to CHK-CR-2 but distinct: regardless of whether lease() is used, the current _spawn_one finally block runs unconditionally on both success and failure paths. This is architecturally wrong for the success case: an agent has been dispatched with a cwd that will immediately cease to exist on disk. On the failure path (spawn_agent raises), deleting the worktree is correct. The semantic contract should be: delete on error, preserve on success (until the agent completes). Using the context manager correctly (wrapping both spawn and agent lifetime) resolves this. As a minimal fix short of the context manager refactor: move _safe_delete out of finally into the except block only, and track worktree paths for deferred cleanup by the caller.",
+      "evidence": "swarm_bridge.py:233-234 — finally always fires after spawn_agent returns",
+      "recommendation": "Move cleanup to except path only until the full lease() refactor is in place. Add a comment flagging that agent completion signals (ruflo callbacks or polling) should trigger deferred cleanup."
+    },
+    {
+      "id": "CHK-CR-4",
+      "title": "Pydantic v2 model correctness",
+      "verdict": "PASS",
+      "severity": "INFO",
+      "detail": "All six Pydantic models (SwarmConfig, AgentConfig, SwarmHandle, AgentHandle, WorktreeCreated, WorktreeDeleted) use BaseModel with no class Config inner class (correct v2 style; v1 used class Config). Field() calls use the ge= constraint syntax (not v1's gt/ge in a validator decorator). model_validate() is used instead of parse_obj(). No root_validator or @validator decorators. The type annotations are standard Python 3.10+ union syntax (str | None). One minor observation: AgentConfig.cwd has no path existence validator — a non-absolute or non-existent path would pass model validation silently. This is acceptable at the model layer (validation responsibility belongs to the workspace-manager) but worth a comment.",
+      "evidence": "ruflo_client.py:49-74; workspace_client.py:40-50",
+      "recommendation": "Add Field(..., description='Absolute filesystem path') to AgentConfig.cwd and WorktreeCreated.path to document the contract. Optionally add a field_validator checking path.startswith('/') for local safety."
+    },
+    {
+      "id": "CHK-CR-5",
+      "title": "httpx retry strategy — 5xx only, not 4xx",
+      "verdict": "PASS",
+      "severity": "INFO",
+      "detail": "workspace_client._with_retry checks response.status_code < 500 and returns immediately for any non-5xx response (including 4xx and 2xx/3xx). Only responses with status_code >= 500 are retried. _raise_for_status then converts 409 to CapacityError, other 4xx to WorkspaceClientError, and calls response.raise_for_status() for persistent 5xx after retries exhausted. The boundary is correct. One edge case: HTTP 5xx responses carry no explicit check for status_code == 599 (network-level synthetic codes from httpx proxies) — these would also be retried, which is acceptable. Note: network-level exceptions (httpx.ConnectError, httpx.TimeoutException) are NOT caught by _with_retry since it only inspects response objects; a connection failure would propagate immediately without retry.",
+      "evidence": "workspace_client.py:193, 210-221",
+      "recommendation": "Document the no-retry-on-network-error behaviour in the method docstring. Consider catching httpx.TransportError in _with_retry for production robustness, though this is a separate concern from the 4xx/5xx boundary."
+    },
+    {
+      "id": "CHK-CR-6",
+      "title": "Type hints completeness",
+      "verdict": "FAIL",
+      "severity": "MEDIUM",
+      "detail": "WorkspaceClient._with_retry(self, request_fn) has no type annotation for the request_fn parameter. The correct annotation is Callable[[], Awaitable[httpx.Response]] or equivalently Callable[[], Coroutine[Any, Any, httpx.Response]]. Without it, mypy treats the parameter as Any and provides no type-checking for callers passing wrong callables. All other public methods in all three modules have complete return type annotations. RufloClient correctly defines McpCallable = Callable[..., Awaitable[dict[str, Any]]] for its injectable callables (ruflo_client.py:41). The _with_retry gap is inconsistent with this pattern.",
+      "evidence": "workspace_client.py:188 — 'async def _with_retry(self, request_fn) -> httpx.Response'",
+      "recommendation": "Add annotation: 'async def _with_retry(self, request_fn: Callable[[], Awaitable[httpx.Response]]) -> httpx.Response'. Import Callable and Awaitable from collections.abc (preferred over typing in Python 3.12+, though typing aliases still work)."
+    },
+    {
+      "id": "CHK-CR-7",
+      "title": "Test quality — edge case coverage",
+      "verdict": "FAIL",
+      "severity": "MEDIUM",
+      "detail": "15/15 tests pass but coverage has material gaps: (a) No test for WorkspaceClient._with_retry exhausting all 3 retries on consecutive 5xx and surfacing httpx.HTTPStatusError — only the 409/CapacityError path is exercised through bridge mocks. (b) No test for workspace_client.lease() context manager directly (it is never used by swarm_bridge, so it has zero test coverage). (c) No test for swarm_init() failure propagation — if ruflo.init_swarm() raises, no worktrees have been created yet but the test suite has no case asserting dispatch() re-raises cleanly. (d) No test for an empty waves list (FeaturePlan(waves=[])) — dispatch would call swarm_init with task_count=0, violating SwarmConfig.task_count ge=1 and raising a Pydantic ValidationError, which is untested. (e) test_concurrent_features_dont_collide contains dead code at lines 395-396 (ruflo_a and ruflo_b are constructed but immediately overwritten at lines 405-406); this is a code quality defect in the test itself. (f) No direct unit tests for ruflo_client.py — RufloClient.init_swarm and RufloClient.spawn_agent are only exercised indirectly through bridge fixtures.",
+      "evidence": "tests/test_swarm_bridge.py:395-396 (dead ruflo_a/b); pyproject.toml line 9 (requires-python = >=3.12); SwarmConfig ge=1 with no empty-waves test",
+      "recommendation": "Add: test_with_retry_exhausts_5xx_and_raises (httpx mock returning 500 three times), test_swarm_init_failure_propagates (swarm_init_fn raises, assert dispatch raises, no DELETE called), test_dispatch_empty_waves_raises_validation_error, unit tests for RufloClient directly. Remove dead ruflo_a/b lines 395-396 in test_concurrent_features_dont_collide."
+    },
+    {
+      "id": "CHK-CR-8",
+      "title": "pyproject.toml dependencies — pinning strategy",
+      "verdict": "FAIL",
+      "severity": "MEDIUM",
+      "detail": "Runtime deps use lower-bound-only ranges: httpx>=0.27.0 and pydantic>=2.7.0. Dev deps: pytest>=8.2.0, pytest-asyncio>=1.0.0, pytest-cov>=5.0.0. There is no upper bound and no lockfile (uv.lock, requirements.txt, or pip-tools .txt). This means: (a) httpx 1.0 (breaking API changes expected when released) would be silently picked up in CI; (b) pydantic 3.x (if released) could break model_validate semantics; (c) CI reproducibility is not guaranteed — different install times get different transitive dependency versions. The requires-python = >=3.12 is correct (uses 3.10+ union syntax and relies on 3.12 asyncio behaviour).",
+      "evidence": "pyproject.toml:13-23; no uv.lock or requirements*.txt in fabric/integrations/",
+      "recommendation": "Add upper-bound pins: httpx>=0.27.0,<1.0; pydantic>=2.7.0,<3.0. Generate a lockfile (uv lock or pip-compile) and commit it. Alternatively add a compatible-release specifier: httpx~=0.27, pydantic~=2.7."
+    },
+    {
+      "id": "CHK-CR-9",
+      "title": "Module separation — swarm_bridge / workspace_client / ruflo_client",
+      "verdict": "PASS",
+      "severity": "INFO",
+      "detail": "The three concerns are correctly separated into three distinct modules with clean one-directional import topology: swarm_bridge imports from workspace_client and ruflo_client; workspace_client and ruflo_client do not import from each other or from swarm_bridge. Domain models (TaskSpec, FeaturePlan, DispatchResult) live in swarm_bridge; HTTP response shapes (WorktreeCreated, WorktreeDeleted, CapacityError, WorkspaceClientError) in workspace_client; MCP callable shapes (SwarmConfig, AgentConfig, SwarmHandle, AgentHandle) in ruflo_client. The RufloClient injectable-callable pattern keeps ruflo_client free of MCP SDK imports, making it independently testable. The McpCallable type alias is exported from ruflo_client for use by callers wiring the real MCP tools.",
+      "evidence": "fabric/integrations/__init__.py; import sections of all three .py files",
+      "recommendation": "None. Module boundaries and separation of concerns are clean."
+    }
+  ],
+  "defect_count": {
+    "HIGH": 3,
+    "MEDIUM": 3,
+    "INFO": 3
+  },
+  "verdict": "NEEDS_REVISION",
+  "blocking_defects": ["CHK-CR-1", "CHK-CR-2", "CHK-CR-3", "CHK-CR-6", "CHK-CR-7", "CHK-CR-8"]
+}

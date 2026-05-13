@@ -1,0 +1,81 @@
+{
+  "status": "changes_required",
+  "summary": {
+    "totalFindings": 7,
+    "critical": 1,
+    "major": 3,
+    "minor": 3
+  },
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "A03: Injection (Log/Terminal Injection)",
+      "title": "Plugin-controlled fix_recommendation / issue passed through unfiltered; ANSI escape and control-char injection possible",
+      "description": "canonicalize_finding() in _common.py copies the plugin's `fix_recommendation`, `issue`, `area`, and `file` strings verbatim into the molyanov result. parse_plugin_output() does not strip control characters (\\x1b ANSI escapes, \\r carriage returns, NUL bytes, BEL). A malicious or compromised ruflo plugin can emit e.g. `{\"severity\":\"info\",\"fix_recommendation\":\"\\u001b[2J\\u001b[H\\u001b[31mFAKE CRITICAL ALERT\"}`. When molyanov (or any downstream consumer) prints this to a TTY, the attacker controls the terminal: cursor moves, color spoofing, screen clearing, OSC 8 hyperlink redirection, and on some terminals command injection via escape sequences (CVE-2003-0063 family). This also enables log forgery: \\r\\n in plugin output lets a malicious plugin inject fake log lines into structured downstream logs that ingest the molyanov JSON. The values are also a vehicle for human-deception: a downgraded `severity: \"info\"` paired with `issue: \"\\nCRITICAL: see fix_recommendation\"` reads convincingly to a reviewer scanning the JSON.",
+      "location": "fabric/molyanov/validators/_common.py:111-142 (canonicalize_finding), :195-236 (parse_plugin_output)",
+      "impact": "Terminal hijack of any operator viewing wrapper output; log forgery into downstream pipelines that ingest the molyanov JSON; perceived severity tampering (a critical issue can be visually disguised as info, or vice versa). Trust boundary between ruflo plugins and molyanov is currently treated as fully trusted — that assumption is not stated anywhere and contradicts the README claim of sanitised handling.",
+      "recommendation": "In canonicalize_finding, strip control characters from every string field before storing. Minimal fix:\n```python\n_CTRL_RE = re.compile(r'[\\x00-\\x08\\x0b-\\x1f\\x7f\\x1b]')\ndef _clean(s):\n    return _CTRL_RE.sub('', s)[:4096] if isinstance(s, str) else ''\n```\nApply to `area`, `file`, `issue`, `fix_recommendation`. Also cap length to bound memory and prevent prompt-injection payloads from ballooning. Document in README that plugin output is treated as untrusted.",
+      "cwe": "CWE-150 (Improper Neutralization of Escape Sequences) / CWE-117 (Log Injection)"
+    },
+    {
+      "severity": "major",
+      "category": "A09: Security Logging and Monitoring",
+      "title": "Plain sys.stderr.write() bypasses SanitizedStreamHandler — secrets in plugin args can leak to stderr",
+      "description": "Each wrapper invokes `sys.stderr.write(f\"delegating to {DELEGATED_TO}: {cmd_preview}\\n\")` on the dry-run path and `sys.stderr.write(f\"delegating to {DELEGATED_TO}\\n\")` on the normal path. These writes bypass the SanitizedStreamHandler entirely — they go straight to the underlying fd. `cmd_preview` contains `target`, `profile`, `url`, `scenario`, and any `extra_args` from molyanov_input. If a caller passes a secret in `--profile=sk-abc123...` or in extra_args, it is written raw to stderr and into any captured CI log. The README explicitly claims `no raw plugin stderr reaches disk unfiltered`, but plugin-INPUT-derived values reach disk unfiltered via this code path. The same applies to `_logger.debug(\"invoking ruflo: %s\", cmd)` in _common.py:179 — though that is sanitized via the handler, debug is filtered out at WARNING level, so it is currently latent.",
+      "location": "fabric/molyanov/validators/security_auditor_wrapper.py:78,82; skeptic_wrapper.py:73,77; post_deploy_qa_wrapper.py:78,82; _common.py:179",
+      "impact": "Operator-supplied secrets in molyanov input leak unredacted to stderr / journald / CI logs. Defeats the entire purpose of the SanitizedStreamHandler integration. Concrete scenario: a CI job invokes the wrapper with `--profile=$SECRET_PROFILE` where the profile name contains a tokenised id — the dry-run log line writes it in cleartext.",
+      "recommendation": "Replace `sys.stderr.write(...)` calls with `_logger.info(...)` so they pass through SanitizedStreamHandler. If a side-channel announcement to stderr is required for tooling that parses stderr (and so cannot use logging), apply `sanitize()` manually:\n```python\nfrom fabric.logs.sanitizer.filter import sanitize\nsys.stderr.write(sanitize(f\"delegating to {DELEGATED_TO}: {cmd_preview}\\n\"))\n```\nAlso raise the _common logger level (or guard the debug log) so the cmd argv is never emitted unredacted at debug level either.",
+      "cwe": "CWE-532 (Insertion of Sensitive Information into Log File)"
+    },
+    {
+      "severity": "major",
+      "category": "A04: Insecure Design (Severity Downgrade)",
+      "title": "Severity mapping silently downgrades unrecognised or plugin-spoofed labels to 'info'",
+      "description": "SEVERITY_MAP in _common.py:37-59 contains `\"pass\": \"info\"`, `\"unknown\": \"info\"`, plus a fall-through to DEFAULT_SEVERITY = \"info\" for any unrecognised string and any non-string value. A buggy or malicious plugin can therefore mark a genuinely critical finding as `severity: \"pass\"` or `severity: null` or `severity: \"critical-but-typo\"` and the wrapper will faithfully downgrade it to `info`. Combined with finding #1, an attacker controlling plugin output can present a critical finding under an info banner. There is also no warning logged when a severity falls back to default — silent loss of fidelity.",
+      "location": "fabric/molyanov/validators/_common.py:37-71",
+      "impact": "Suppression of critical findings: any orchestrator that gates on `severity in {critical, high}` will let through downgraded findings. The presence of `\"pass\": \"info\"` is particularly dangerous because a misconfigured plugin emitting `pass` for failed checks erases the entire signal. This is the inverse of the threat the task brief flagged (escalation): escalation cannot happen (mapping has finite codomain), but downgrade is trivial.",
+      "recommendation": "1. Remove `\"pass\"` from the alias map — `pass` is an outcome, not a severity. Plugins that emit pass/fail should be wrapped by a translator, not silently coerced. 2. Log a WARNING when an incoming severity is unrecognised, so the downgrade is observable: `_logger.warning('unrecognised severity %r from plugin; defaulting to info', raw)`. 3. Consider failing closed instead of open: change DEFAULT_SEVERITY to `\"medium\"` so unknown values are surfaced for review rather than buried.",
+      "cwe": "CWE-693 (Protection Mechanism Failure)"
+    },
+    {
+      "severity": "major",
+      "category": "A04: Insecure Design (Argument Injection)",
+      "title": "extra_args forwarded to ruflo verbatim without allowlist or `--` separator",
+      "description": "All three wrappers accept `args: list[str]` from `molyanov_input` and splice them directly into the ruflo argv (security_auditor_wrapper.py:66-73, skeptic_wrapper.py:63-68, post_deploy_qa_wrapper.py:66-73). There is no validation, no allowlist, and no `--` end-of-options separator before user-controlled positionals. If molyanov_input is ever populated from data that crosses a trust boundary (e.g. a webhook, a CI variable, a config file under another team's control), the caller can inject flags that ruflo or its plugins interpret as side-effect-bearing options: `--config=/path/attacker/owns`, `--output=/etc/...`, `--exec=...`, or chain into plugin-specific flags that read files or make network calls. The subprocess is argv-form so `shell=True` injection is not possible — this is purely **argument** injection.\n\nAdditionally, in post_deploy_qa, the `url` is positional and could be confused with a flag if it starts with `-` (e.g. `-Lo /tmp/x`).",
+      "location": "fabric/molyanov/validators/security_auditor_wrapper.py:66-73; skeptic_wrapper.py:63-68; post_deploy_qa_wrapper.py:66-73",
+      "impact": "Caller-controlled extra_args become attacker-controlled ruflo flags if molyanov_input ever sees untrusted input. Even with trusted callers, the lack of a `--` separator means a value like `target=\"--help\"` silently changes plugin behaviour rather than being treated as a file path.",
+      "recommendation": "1. Insert `--` between the known options and positionals/extras: `cmd = [\"ruflo\", plugin, *known_options, \"--\", *positionals, *extra_args]`. 2. Reject extra_args entries beginning with `-` unless an explicit allowlist permits them. 3. Reject `target` / `url` / `profile` / `scenario` strings starting with `-`. 4. Validate `url` parses as http/https with `urllib.parse.urlparse` and reject `file://`, `gopher://`, internal addresses for SSRF defense-in-depth (post_deploy_qa already hits an arbitrary URL — see finding #5).",
+      "cwe": "CWE-88 (Argument Injection)"
+    },
+    {
+      "severity": "minor",
+      "category": "A10: SSRF",
+      "title": "post_deploy_qa accepts any URL with no scheme/host validation",
+      "description": "post_deploy_qa_wrapper.py:64 reads `url = molyanov_input.get(\"url\", \"\")` and passes it as the first positional to `ruflo browser`. Although the actual fetch is performed by ruflo (out of scope here), the wrapper provides zero defense-in-depth: no scheme check, no host allowlist, no rejection of RFC1918 / localhost / link-local / metadata-service addresses (169.254.169.254). If ruflo browser is ever exposed to untrusted input, the wrapper does not even log a warning when an internal-network URL is passed through.",
+      "location": "fabric/molyanov/validators/post_deploy_qa_wrapper.py:64,70",
+      "impact": "If a future caller routes external input to this wrapper (e.g. a smoke-test endpoint name from a PR comment), an attacker can scan internal services or read AWS/GCP metadata via the browser plugin.",
+      "recommendation": "Validate the URL: parse with `urllib.parse.urlparse`, require scheme in `{http, https}`, optionally accept a hostname allowlist via env var, and reject loopback / private / link-local addresses by default. Log a warning when an internal address is supplied even if accepted.",
+      "cwe": "CWE-918 (SSRF)"
+    },
+    {
+      "severity": "minor",
+      "category": "A05: Security Misconfiguration",
+      "title": "Default timeout is 120s, not the 5-minute default the task brief specifies; no per-plugin override path documented",
+      "description": "Task T15 brief asks for `max wall-clock per plugin invocation, e.g., 5 min default`. The actual default in _common.py:149 is `RUFLO_TIMEOUT_SECONDS = 120` (2 minutes). This is **stricter** than asked (so not a security regression) but is also undocumented in the README and not configurable via environment variable — operators cannot raise it without editing source. More importantly: there is no maximum cap on the `timeout` parameter accepted by `invoke_ruflo` — a caller can pass `timeout=10**9` and the subprocess will be allowed to run indefinitely, defeating the resource-exhaustion protection.",
+      "location": "fabric/molyanov/validators/_common.py:149,152-187",
+      "impact": "Resource exhaustion if a caller sets an absurd timeout. Operational confusion because the documented contract (5 min) does not match the implementation (2 min). Plugin hangs may also leak file descriptors / temp files held by ruflo.",
+      "recommendation": "1. Cap timeout to a hard ceiling (e.g. 600s) inside invoke_ruflo: `timeout = min(max(int(timeout), 1), 600)`. 2. Read `RUFLO_TIMEOUT_SECONDS` from env var (with the same cap) for operator overrides. 3. Document the actual default and the cap in the README. 4. On TimeoutExpired, ensure the subprocess is reaped (subprocess.run with timeout does send SIGKILL, but verify no orphaned grandchildren by setting `start_new_session=True` and killing the process group on timeout).",
+      "cwe": "CWE-400 (Uncontrolled Resource Consumption)"
+    },
+    {
+      "severity": "minor",
+      "category": "A04: Insecure Design (Crash on Malformed Input)",
+      "title": "int() on plugin-controlled `line` field raises unhandled ValueError → DoS of wrapper",
+      "description": "_common.py:137-138 reads `line = out.get(\"line\"); out[\"line\"] = int(line) if line is not None else None`. If a plugin emits `\"line\": \"not-a-number\"` or `\"line\": [1,2]` or `\"line\": \"\"`, `int()` raises ValueError or TypeError. canonicalize_finding has no try/except, so parse_plugin_output crashes for the entire batch of findings, returning an exception to the wrapper caller. A malicious plugin can therefore deny the wrapper's entire output by including one bad finding among many real ones. Also there is no upper bound on the JSON output size or on the number of findings — a plugin emitting a 1 GB JSON document will be fully parsed into memory by json.loads.",
+      "location": "fabric/molyanov/validators/_common.py:137-138,212-234",
+      "impact": "Malformed plugin output suppresses all findings (DoS / denial of signal). Unbounded JSON parsing enables memory-exhaustion DoS of the wrapper process and its parent.",
+      "recommendation": "1. Wrap the int coercion: `try: out[\"line\"] = int(line) if line is not None else None; except (TypeError, ValueError): out[\"line\"] = None`. 2. Cap stdout size before json.loads: `if len(stripped) > MAX_STDOUT_BYTES: _logger.error(...); return {...empty...}`. 3. Cap findings count post-parse (e.g. 10000) to bound memory of downstream consumers.",
+      "cwe": "CWE-20 (Improper Input Validation) / CWE-400 (Uncontrolled Resource Consumption)"
+    }
+  ]
+}

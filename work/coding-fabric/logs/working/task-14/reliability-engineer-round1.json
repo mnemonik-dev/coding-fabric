@@ -1,0 +1,82 @@
+{
+  "review_meta": {
+    "reviewer": "reliability-engineer",
+    "round": 1,
+    "commit": "e7334a6",
+    "target": "fabric/integrations/ (swarm_bridge.py, workspace_client.py, ruflo_client.py)",
+    "date": "2026-05-12"
+  },
+  "summary": "Core cleanup contracts hold: partial-failure DELETE runs in finally per task. 409 surfaces correctly after one retry. Concurrent features share no mutable state. SanitizedFileHandler is a hard import fail. Three defects: (1) _spawn_one deletes the worktree unconditionally after spawn — successful agents lose their cwd. (2) Wave gather uses default return_exceptions=False, so asyncio.gather cancels sibling tasks mid-flight and may skip their finally-blocks on KeyboardInterrupt. (3) 409 retry consumes workspace-manager 5xx retry budget from _with_retry because capacity_wait_s sleep happens outside the client.",
+  "checks": [
+    {
+      "id": "CHK-1",
+      "title": "Partial failure cleanup: one spawn fails, others get DELETE",
+      "verdict": "PASS_WITH_DEFECT",
+      "severity": "HIGH",
+      "detail": "_spawn_one leases a worktree, then wraps only the spawn call in try/finally where finally calls _safe_delete. This guarantees DELETE is attempted for the task whose spawn failed. Because asyncio.gather runs all _spawn_one coroutines concurrently each runs its own try/finally independently, so all created worktrees get DELETE regardless of which spawns fail. However _safe_delete is called in the finally block UNCONDITIONALLY — it fires even on the success path. This means the worktree is deleted before the agent is actually finished with it. The agent_spawn call only registers the agent; the agent presumably runs asynchronously using cwd as its working directory. Deleting the worktree immediately after spawn_agent returns races with the agent process reading that directory. This is a correctness defect masked as a test pass because tests mock spawn_agent as instantaneous.",
+      "evidence": "swarm_bridge.py:233-234 — `finally: await self._safe_delete(task.task_id)` runs after every spawn attempt, success or failure.",
+      "recommendation": "Only call _safe_delete from the error path (except block), not finally. Return the worktree path alongside the handle, or move lifecycle ownership to the caller. The WorkspaceClient.lease() context manager already provides the right abstraction — consider using it in _spawn_one instead of manual lease/delete."
+    },
+    {
+      "id": "CHK-2",
+      "title": "409 capacity handling: graceful surface to topic, not silent retry-forever",
+      "verdict": "PASS",
+      "severity": "INFO",
+      "detail": "_lease_worktree_with_capacity_retry catches CapacityError on the first create_worktree call, sleeps capacity_wait_s, then tries once more. If the second attempt also raises CapacityError the exception propagates through _spawn_one (no catch on CapacityError there), through _dispatch_wave (asyncio.gather re-raises), through dispatch (no swallowing), to the caller. The docstring for dispatch documents CapacityError as a declared raise. This is correct: one retry then hard fail. capacity_wait_s defaults to 5.0s and can be zeroed in tests. The 409 is not silently retried in a loop.",
+      "evidence": "swarm_bridge.py:238-261",
+      "recommendation": "Consider logging the CapacityError at WARNING before re-raise to give operators a signal in the sanitized log chain. Currently the second CapacityError propagates silently (no logger.warning on the retry failure path)."
+    },
+    {
+      "id": "CHK-3",
+      "title": "Concurrent features isolation",
+      "verdict": "PASS",
+      "severity": "INFO",
+      "detail": "SwarmBridge holds no mutable state at instance level beyond the constructor arguments (_workspace, _ruflo, _capacity_wait_s). dispatch() creates purely local variables (all_agents list, swarm handle). _dispatch_wave and _spawn_one operate on task-scoped data only. No class-level or module-level shared mutable collections. Two SwarmBridge instances dispatched concurrently via asyncio.gather cannot interfere with each other's swarm IDs, agent lists, or worktree paths provided each is constructed with distinct workspace/ruflo clients — which test_concurrent_features_dont_collide validates.",
+      "evidence": "swarm_bridge.py:116-135 — constructor; swarm_bridge.py:137-185 — dispatch() uses only local scope",
+      "recommendation": "None. Isolation is clean."
+    },
+    {
+      "id": "CHK-4",
+      "title": "SanitizedFileHandler hard-fail on import",
+      "verdict": "PASS",
+      "severity": "INFO",
+      "detail": "All three modules (swarm_bridge.py, workspace_client.py, ruflo_client.py) wrap the SanitizedFileHandler import in try/except ImportError and re-raise with a descriptive message rather than continuing with a fallback logger. This ensures that if fabric.logs.sanitizer is missing the module fails at import time with a clear error rather than silently emitting unsanitized log output at runtime.",
+      "evidence": "swarm_bridge.py:45-51; workspace_client.py:21-27; ruflo_client.py:30-36",
+      "recommendation": "None. Hard-fail contract is satisfied."
+    },
+    {
+      "id": "CHK-5",
+      "title": "Retry budget vs ops budget: don't burn entire feature dispatch on retries",
+      "verdict": "FAIL",
+      "severity": "HIGH",
+      "detail": "workspace_client._with_retry retries all 5xx responses up to 3 attempts (0.5s, 1.0s delays) per HTTP call. swarm_bridge._lease_worktree_with_capacity_retry adds a separate capacity_wait_s=5.0s sleep before a second create_worktree attempt, each of which can itself trigger the 3-attempt 5xx retry loop inside the client. For a wave of N tasks running concurrently via asyncio.gather, each task independently triggers its own retry budget. With N=10 tasks and worst-case 5xx retries on create_worktree: 10 tasks * (0.5 + 1.0)s = 15s of cumulative delay blocking the event loop's sleep calls. More critically, the capacity retry sleep (5.0s by default) combined with gather means 10 concurrent 409s each independently sleep 5s before retrying — all converge on the workspace-manager simultaneously (thundering herd on retry). There is no jitter on the capacity retry sleep and no circuit-breaker pattern. Under sustained overload this creates a retry storm without any ops budget cap.",
+      "evidence": "workspace_client.py:188-207 (_with_retry: 3 attempts, fixed base); swarm_bridge.py:250-253 (sleep no jitter); swarm_bridge.py:203-205 (gather with no concurrency limit)",
+      "recommendation": "Add jitter to capacity retry sleep (random.uniform(0, capacity_wait_s)). Consider a semaphore in _dispatch_wave to cap concurrent workspace create calls. Document or enforce that capacity_wait_s plus 3x5xx retry time constitutes the per-task budget, and that wave-level timeout should be set accordingly."
+    },
+    {
+      "id": "CHK-6",
+      "title": "Error semantics: workspace-manager outage vs ruflo outage vs agent crash",
+      "verdict": "FAIL",
+      "severity": "MEDIUM",
+      "detail": "The exception hierarchy does not distinguish the three failure modes the caller needs to differentiate for routing to correct remediation. (1) Workspace-manager outage: surfaces as httpx.HTTPStatusError (after 3 5xx retries exhausted) or WorkspaceClientError (4xx). (2) Ruflo outage: any exception from self._ruflo.spawn_agent() bubbles as a raw Exception — could be a network error, a pydantic ValidationError if swarm_init returns unexpected shape, or a RuntimeError from ruflo itself. (3) Agent crash: spawn_agent returning successfully means the agent was registered, not that it completed — there is no agent-failure feedback path in this module at all. The caller catching Exception cannot distinguish ruflo being unreachable from an agent process dying post-spawn. The logger.exception call in _spawn_one at line 227 logs all three failure types at the same level with the same message prefix 'agent_spawn failed for task', making them indistinguishable in the sanitized log chain.",
+      "evidence": "swarm_bridge.py:226-233 — bare except Exception with single log message; ruflo_client.py has no typed exception hierarchy",
+      "recommendation": "Define RufloClientError (and optionally RufloNetworkError, RufloProtocolError) in ruflo_client.py. Wrap ruflo call in swarm_bridge._spawn_one to distinguish ruflo errors from workspace errors. Separate log messages for each category. The agent-completion feedback gap is architectural (out of scope for this module) but should be noted in the docstring."
+    },
+    {
+      "id": "CHK-7",
+      "title": "asyncio.gather return_exceptions not set: sibling cancellation on failure",
+      "verdict": "FAIL",
+      "severity": "MEDIUM",
+      "detail": "asyncio.gather(*coroutines) in _dispatch_wave uses the default return_exceptions=False. When one coroutine raises, gather cancels all still-running sibling coroutines. An asyncio.CancelledError injected into a coroutine that is currently inside asyncio.sleep (the capacity retry wait) or inside an httpx await will bypass the finally block if the CancelledError propagates before the finally runs. In Python 3.8+ CancelledError is a BaseException subclass, so bare `except Exception` does not catch it — meaning _safe_delete in finally may not run for cancelled siblings. The test test_partial_failure_does_not_leak_worktrees passes because mock functions return immediately without async yield points where cancellation could interrupt them.",
+      "evidence": "swarm_bridge.py:203-205 — `asyncio.gather(*[...])` with no return_exceptions; Python docs: 'If gather itself is cancelled, all submitted awaitables are also cancelled'",
+      "recommendation": "Use asyncio.gather(*coroutines, return_exceptions=True) in _dispatch_wave, then inspect results to re-raise the first exception after all coroutines have completed (allowing each task to run its own cleanup). Alternatively wrap each coroutine's body to handle CancelledError and ensure cleanup. This is the standard gather pattern for fan-out with cleanup guarantees."
+    }
+  ],
+  "defect_count": {
+    "HIGH": 2,
+    "MEDIUM": 2,
+    "INFO": 3
+  },
+  "verdict": "NEEDS_REVISION",
+  "blocking_defects": ["CHK-1", "CHK-5", "CHK-6", "CHK-7"]
+}

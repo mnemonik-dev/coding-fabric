@@ -1,0 +1,119 @@
+{
+  "reviewer": "code-reviewer",
+  "round": 1,
+  "task": "T15",
+  "verdict": "conditional-pass",
+  "test_result": "60/60 passed",
+  "summary": "All 60 tests pass. Core design is sound: argv-form subprocess, SanitizedStreamHandler on every logger, correct FileNotFoundError/TimeoutExpired -> actionable error_result, pyproject deps minimal and correct. Four defects found: alias priority inversion in canonicalize_finding allows alias to shadow same-target canonical field; unguarded int() on non-numeric line strings raises ValueError; sys.stderr.write used directly in run() bypassing SanitizedStreamHandler (url/target values could carry sensitive data); TimeoutExpired not tested in skeptic or security-auditor wrappers. Two metric flags: security_auditor_wrapper and post_deploy_qa_wrapper are 166 LOC (exceeds claimed <=160 and task hint of <=150); no dedicated validate_output_schema() function in _common despite task spec calling for it.",
+  "checks": {
+    "subprocess_argv_form_no_shell": {
+      "status": "pass",
+      "detail": "_common.invoke_ruflo builds cmd=['ruflo', plugin, *args] and passes it as first positional to subprocess.run with no shell keyword argument; test_no_shell_true confirms call_kwargs.get('shell') is not True."
+    },
+    "sanitized_stream_handler_everywhere": {
+      "status": "partial-fail",
+      "detail": "Every _logger uses SanitizedStreamHandler correctly. However, all three wrapper run() functions also call sys.stderr.write() directly (lines 73/77 in skeptic_wrapper, 78/82 in security_auditor_wrapper, 78/82 in post_deploy_qa_wrapper) with f-strings that may embed user-controlled values (target path, URL, cmd_preview list). These writes bypass the sanitizer entirely. The main() function also writes json.JSONDecodeError details from stdin directly to stderr (line 143 in all three wrappers), which could echo partial sensitive input.",
+      "affected_files": [
+        "skeptic_wrapper.py:73,77,143",
+        "security_auditor_wrapper.py:78,82,152",
+        "post_deploy_qa_wrapper.py:78,82,152"
+      ]
+    },
+    "severity_mapping_correctness": {
+      "status": "pass",
+      "detail": "All canonical levels are identity-mapped. Aliases cover standard synonyms: blocker->critical, major->high, warning/warn->low, informational/note->info, med->medium, error/err->high, fail->high, pass->info, unknown->info, minor->low. The fail->high and pass->info mappings are domain-correct for a browser/QA plugin (fail=problem, pass=no issue). DEFAULT_SEVERITY='info' for unknown or non-string input is conservative and correct."
+    },
+    "field_aliasing_roundtrip_stable": {
+      "status": "fail",
+      "detail": "Roundtrip is stable when input contains only canonical fields (confirmed by test). However, canonicalize_finding has a priority inversion: when a plugin emits both a canonical field name and an alias pointing to the same canonical target, whichever appears first in dict iteration wins. Example: {'message': 'alias_val', 'issue': 'canonical_val'} produces issue='alias_val' because 'message' is processed first via _FIELD_ALIASES and sets out['issue'], then the canonical 'issue' key is skipped by the 'canonical not in out' guard. This violates the Pythonic principle that explicit (canonical) should beat implicit (alias). No test covers this case.",
+      "affected_file": "_common.py:126-129",
+      "fix": "In the first pass, prefer canonical field names over aliases: either do a two-pass approach (process canonical fields first, then fill gaps from aliases), or change the guard to only apply aliases when the target canonical key is not already in raw."
+    },
+    "file_not_found_and_timeout_to_actionable_error": {
+      "status": "partial-pass",
+      "detail": "All three wrappers catch FileNotFoundError and subprocess.TimeoutExpired and return error_result with a human-readable issue message naming the plugin and a fix_recommendation pointing to PATH/installation. This is correct. However, TimeoutExpired is only tested in test_post_deploy_qa_wrapper (test_timeout_returns_error_finding). The skeptic and security_auditor test suites have no TimeoutExpired test, leaving that branch uncovered in two of three wrappers. Additionally, int(line) in canonicalize_finding is not guarded: a non-numeric string value raises ValueError which would propagate up through parse_plugin_output uncaught.",
+      "uncovered_branches": [
+        "test_skeptic_wrapper.py: missing TimeoutExpired test",
+        "test_security_auditor_wrapper.py: missing TimeoutExpired test"
+      ],
+      "secondary_defect": "_common.py:138 int(line) has no try/except; ValueError on non-numeric string propagates uncaught."
+    },
+    "module_loc_claim": {
+      "status": "fail",
+      "detail": "Task spec says 'each wrapper <= 150 lines'; review prompt says '<= 160 LOC as claimed'. Actual counts: _common.py=276, skeptic_wrapper.py=155, security_auditor_wrapper.py=166, post_deploy_qa_wrapper.py=166. skeptic_wrapper passes the 160 threshold but exceeds 150. The two longer wrappers (166 LOC) exceed both thresholds. _common.py at 276 lines is not subject to the wrapper limit but is worth noting. The overrun is due to comprehensive docstrings and comments which add value but inflate counts.",
+      "counts": {
+        "_common.py": 276,
+        "skeptic_wrapper.py": 155,
+        "security_auditor_wrapper.py": 166,
+        "post_deploy_qa_wrapper.py": 166
+      }
+    },
+    "pyproject_deps": {
+      "status": "pass",
+      "detail": "dependencies=[\"fabric-logs-sanitizer>=0.1.0\"] is the only runtime dependency. subprocess, json, logging, argparse, sys are all stdlib. dev extras list pytest>=8.0. ruflo is correctly treated as an external CLI tool rather than a Python dependency. requires-python='>=3.10' is consistent with dict[str, Any] and list[str] | None syntax used throughout. Entry points in [project.scripts] are correct.",
+      "note": "ruflo plugin version pinning is deferred to T10 per task edge-case comment; this is acceptable."
+    },
+    "type_hints": {
+      "status": "pass",
+      "detail": "All public functions have complete return type annotations and typed parameters: normalise_severity(raw: Any)->str, canonicalize_finding(raw: dict[str,Any])->dict[str,Any], invoke_ruflo(...)->subprocess.CompletedProcess[str], parse_plugin_output(...)->dict[str,Any], error_result(...)->dict[str,Any], run(...)->dict[str,Any], main(argv: list[str]|None)->None. Module-level constants are annotated. from __future__ import annotations is present in all files enabling forward references. Minor: return type dict[str,Any] is loose; a TypedDict for the finding schema and result schema would be more precise but is not required."
+    },
+    "test_quality_60_of_60": {
+      "status": "pass-with-gaps",
+      "detail": "All 60 tests pass (confirmed by pytest run). Test classes map to task TDD anchors. Edge cases covered: unknown severity, non-string severity, empty/invalid JSON stdout, non-dict items in findings list, aliases, int coercion of line, all required fields present, dry-run, returncode=1 with findings, returncode=127 with empty stdout, FileNotFoundError. Missing: TimeoutExpired for skeptic and security_auditor wrappers (only in post_deploy_qa); no test for alias-vs-canonical priority collision; no test for non-numeric line string (ValueError path); no test for the case where returncode>1 AND stdout is non-empty (partial JSON or valid JSON - the code calls parse_plugin_output regardless).",
+      "missing_tests": [
+        "test_skeptic_wrapper: TimeoutExpired -> error_result",
+        "test_security_auditor_wrapper: TimeoutExpired -> error_result",
+        "test_common: canonicalize_finding with both canonical field and alias for same target",
+        "test_common: canonicalize_finding with non-numeric string line value (ValueError)",
+        "all wrappers: returncode=127 with non-empty stdout - findings still returned"
+      ]
+    },
+    "plugin_output_schema_validation_in_common": {
+      "status": "partial-fail",
+      "detail": "parse_plugin_output in _common.py normalises each item through canonicalize_finding which enforces the molyanov schema (exactly FINDING_FIELDS keys with correct types/defaults). This is implicit schema validation via transformation. However, there is no explicit validate_output_schema() function or assertion that the final result dict has the required top-level keys ('findings' and 'delegated_to'). The task review prompt specifically calls out 'plugin output schema validation in _common' as a check item, suggesting a dedicated validator is expected. error_result also produces output consistent with the schema but likewise has no runtime assertion.",
+      "recommendation": "Add a validate_result(result: dict[str,Any]) -> None function in _common that asserts/raises if 'findings' is absent or not a list, or 'delegated_to' is absent or not a string. Call it at the return sites of parse_plugin_output and error_result."
+    }
+  },
+  "defects": [
+    {
+      "id": "D1",
+      "severity": "medium",
+      "file": "_common.py",
+      "line": 126,
+      "issue": "Alias priority inversion: alias can shadow a canonical field that appears later in dict iteration. {'message': 'A', 'issue': 'B'} produces issue='A'.",
+      "fix": "Two-pass: first copy all keys whose canonical form is already in FINDING_FIELDS, then fill remaining targets from aliases."
+    },
+    {
+      "id": "D2",
+      "severity": "medium",
+      "file": "_common.py",
+      "line": 138,
+      "issue": "int(line) raises ValueError for non-numeric string (e.g. '1-5', 'L10'). No try/except; exception propagates through parse_plugin_output to caller.",
+      "fix": "Wrap in try/except ValueError and fall back to None."
+    },
+    {
+      "id": "D3",
+      "severity": "low",
+      "file": "skeptic_wrapper.py, security_auditor_wrapper.py, post_deploy_qa_wrapper.py",
+      "lines": "73,77,78,82,143,152",
+      "issue": "sys.stderr.write() calls in run() and main() bypass SanitizedStreamHandler. cmd_preview embeds user-controlled target/url; JSONDecodeError message echoes stdin fragment.",
+      "fix": "Replace direct sys.stderr.write calls with _logger.info/_logger.error calls which route through SanitizedStreamHandler."
+    },
+    {
+      "id": "D4",
+      "severity": "low",
+      "file": "tests/test_skeptic_wrapper.py, tests/test_security_auditor_wrapper.py",
+      "issue": "TimeoutExpired is caught and returns actionable error_result in both wrappers but is only tested in post_deploy_qa. Two branches are untested.",
+      "fix": "Add test_timeout_returns_error_finding to test_skeptic_wrapper and test_security_auditor_wrapper."
+    }
+  ],
+  "metrics": {
+    "loc_violations": {
+      "security_auditor_wrapper.py": "166 > 160",
+      "post_deploy_qa_wrapper.py": "166 > 160"
+    },
+    "test_count": 60,
+    "tests_passed": 60,
+    "tests_failed": 0
+  }
+}
