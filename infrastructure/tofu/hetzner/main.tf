@@ -131,6 +131,12 @@ resource "hcloud_server" "fabric" {
   # docker group is intentionally omitted: the group does not exist on a fresh
   # Ubuntu 24.04 image, causing cloud-init warnings. The Task 02 Ansible base
   # role adds op to the docker group after Docker is installed.
+  # The ssh_authorized_keys list is built dynamically: the operator's persistent
+  # key plus an optional ephemeral CI key. Use a plain conditional string
+  # interpolation (not %{ if ~} template directives) because the latter behaved
+  # unreliably inside <<- heredocs in run 26174191941 — the CI key was silently
+  # omitted from the rendered cloud-config and the runner's SSH timed out
+  # because the VM had no authorized key for op@ci-deploy-*.
   user_data = <<-CLOUDINIT
     #cloud-config
     users:
@@ -140,9 +146,7 @@ resource "hcloud_server" "fabric" {
         sudo: "ALL=(ALL) NOPASSWD:ALL"
         ssh_authorized_keys:
           - ${var.operator_ssh_pubkey}
-%{ if var.ci_ssh_pubkey != "" ~}
-          - ${var.ci_ssh_pubkey}
-%{ endif ~}
+          ${var.ci_ssh_pubkey != "" ? "- ${var.ci_ssh_pubkey}" : "# no CI key"}
     package_update: true
     packages:
       - curl

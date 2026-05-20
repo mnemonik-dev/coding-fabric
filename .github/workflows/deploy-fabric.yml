@@ -458,6 +458,45 @@ jobs:
           echo "$SOPS_AGE_KEY" > ~/.config/sops/age/keys.txt
           chmod 600 ~/.config/sops/age/keys.txt
 
+      - name: SSH/tailnet diagnostic probe
+        env:
+          VM_IP: ${{ steps.tsip.outputs.vm_ip }}
+        run: |
+          # Verify VM is reachable via tailnet at L3 (ping) and L4 (TCP/22)
+          # BEFORE Ansible. Run 26174191941 lost ~14 minutes of Ansible SSH
+          # retries failing with TCP timeout — this probe catches it in <30s
+          # and prints actionable diagnostics (tailscale ping output, nc -vz,
+          # ssh -v).
+          set +e
+          echo "=== tailscale ping (L3 reachability over tailnet) ==="
+          tailscale ping -c 3 --timeout=10s "${VM_IP}" || echo "L3 PING FAILED"
+          echo
+          echo "=== nc -vz TCP/22 (10s timeout) ==="
+          nc -vz -w 10 "${VM_IP}" 22 || echo "TCP/22 PROBE FAILED"
+          echo
+          echo "=== ssh -v dry run as op (5s connect timeout, BatchMode) ==="
+          ssh -i /tmp/ci_deploy_key \
+              -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=/dev/null \
+              -o BatchMode=yes \
+              -o ConnectTimeout=5 \
+              -v \
+              op@"${VM_IP}" "echo SSH_OK && id && hostname" 2>&1 | head -40 || echo "SSH PROBE FAILED"
+          echo
+          echo "=== tailscale netcheck ==="
+          tailscale netcheck 2>&1 | head -15
+          echo
+          echo "=== tailscale status (full) ==="
+          tailscale status || true
+          echo
+          echo "=== tailscale status --json (peer reachability fields) ==="
+          tailscale status --json 2>/dev/null | jq -r '
+            (.Self | {self_host: .HostName, online: .Online, ips: .TailscaleIPs}),
+            (.Peer // {} | to_entries[] | .value |
+              {peer_host: .HostName, online: .Online, ips: .TailscaleIPs, last_handshake: .LastHandshake, last_seen: .LastSeen, in_engine: .InEngine})
+          ' || tailscale status
+          set -e
+
       - name: Validate secrets can be decrypted
         run: |
           # Diagnostic info — key file presence and shape (not contents).
