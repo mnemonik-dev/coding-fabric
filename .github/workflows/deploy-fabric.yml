@@ -51,6 +51,7 @@ jobs:
         working-directory: infrastructure/tofu/hetzner
         env:
           HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+          TF_VAR_hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
           TF_VAR_operator_ssh_pubkey: ${{ secrets.OPERATOR_SSH_PUBKEY }}
         run: |
           tofu init
@@ -65,6 +66,7 @@ jobs:
         working-directory: infrastructure/tofu/hetzner
         env:
           HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+          TF_VAR_hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
           TF_VAR_operator_ssh_pubkey: ${{ secrets.OPERATOR_SSH_PUBKEY }}
         run: |
           set +e
@@ -124,6 +126,7 @@ jobs:
         working-directory: infrastructure/tofu/hetzner
         env:
           HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+          TF_VAR_hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
           TF_VAR_operator_ssh_pubkey: ${{ secrets.OPERATOR_SSH_PUBKEY }}
         run: |
           tofu init
@@ -139,6 +142,7 @@ jobs:
         working-directory: infrastructure/tofu/hetzner
         env:
           HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+          TF_VAR_hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
           TF_VAR_operator_ssh_pubkey: ${{ secrets.OPERATOR_SSH_PUBKEY }}
         run: |
           echo "Applying infrastructure..."
