@@ -1,20 +1,19 @@
 ---
-namespace: coding_fabric
-name: restic_backups
-version: 1.0.0
-author: mnemonic-loop coding-fabric team
-description: Install Restic and configure nightly off-site backups with retention policy
-
-tags:
-  - restic
-  - backups
-  - disaster-recovery
+galaxy_info:
+  role_name: restic_backups
+  namespace: coding_fabric
+  author: mnemonic-loop coding-fabric team
+  description: Install Restic and configure nightly off-site backups with retention policy
+  company: Mnemonic Protocol
+  license: proprietary
+  min_ansible_version: '2.16'
+  platforms:
+    - name: Ubuntu
+      versions:
+        - '24.04'
+  galaxy_tags:
+    - restic
+    - backups
+    - disaster-recovery
 
 dependencies: []
-
-metadata:
-  role_type: infrastructure
-  stability: stable
-  supported_systems:
-    - Ubuntu 24.04 LTS
-  min_ansible_version: "2.12"
