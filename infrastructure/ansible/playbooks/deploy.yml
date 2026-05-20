@@ -115,6 +115,10 @@
       vars:
         vaultwarden_data_dir: "/opt/vaultwarden"
         vaultwarden_initial_admin_password: "{{ vault_vaultwarden_admin_password | default('') }}"
+        # Run 26185680537 failed at "Assert required secrets are provided" —
+        # the role checks `vaultwarden_admin_token`, but only the initial
+        # admin password was being passed. Map the second sops field too.
+        vaultwarden_admin_token: "{{ vault_vaultwarden_admin_token }}"
         vaultwarden_tailnet_bind_only: true
 
     # Phase 3: Observability + Telegram (Kaneo + Bot setup)
