@@ -240,8 +240,29 @@ jobs:
       - name: Install Ansible and collections
         run: |
           pip install --upgrade pip
-          pip install ansible-core>=2.16 sops age jinja2 pyyaml
+          # NOTE: 'sops' on PyPI is a different, abandoned project — NOT the
+          # Mozilla/getsops binary we need. 'age' on PyPI is also not the right
+          # tool. Install both as real CLI binaries in a separate step below.
+          pip install ansible-core>=2.16 jinja2 pyyaml
           ansible-galaxy collection install -r infrastructure/ansible/requirements.yml
+
+      - name: Install sops + age CLI binaries
+        env:
+          SOPS_VERSION: 'v3.10.2'
+        run: |
+          # age — available in Ubuntu universe (noble)
+          sudo apt-get update -qq
+          sudo apt-get install -y age
+          # sops — install from GitHub release (not in apt repo for noble)
+          curl -fsSL -o /tmp/sops "https://github.com/getsops/sops/releases/download/${SOPS_VERSION}/sops-${SOPS_VERSION}.linux.amd64"
+          sudo install -m 0755 /tmp/sops /usr/local/bin/sops
+          rm /tmp/sops
+          # Verify
+          echo "=== installed versions ==="
+          sops --version 2>&1 | head -2
+          age --version 2>&1 | head -2
+          which sops
+          which age
 
       - name: Tailscale up (ephemeral)
         uses: tailscale/github-action@v3
