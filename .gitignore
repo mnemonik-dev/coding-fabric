@@ -1,1 +1,2 @@
 mnemonik-bridge-workspace/
+infrastructure/secrets/secrets.sops.yml.backup-*
