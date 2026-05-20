@@ -147,14 +147,23 @@ resource "hcloud_server" "fabric" {
       - gnupg
       - lsb-release
     runcmd:
-      # Install Tailscale via official script (signed apt repo, idempotent).
-      - curl -fsSL https://tailscale.com/install.sh | sh
-      # Join tailnet. Hostname matches server_name so MagicDNS resolves
-      # 'mnemonic-fabric' on operator's tailnet without further config.
-      # Persistent (NOT ephemeral) so the node stays in tailnet across reboots.
-      - tailscale up --authkey=${var.tailscale_auth_key} --hostname=${var.server_name} --accept-routes --ssh
-      # Verify Tailscale is up; fail loudly so cloud-init reports error in metadata.
-      - tailscale status >/dev/null 2>&1 || { echo "ERROR: tailscale up failed"; exit 1; }
+      # Install + join tailnet in a single multi-line script.
+      # Each runcmd entry is a separate shell invocation; using a literal block
+      # avoids YAML flow-mapping ambiguity (the previous "{ ... }" form broke
+      # cloud-init parser — see archived run 26157201377).
+      - |
+        set -e
+        curl -fsSL https://tailscale.com/install.sh | sh
+        tailscale up \
+          --authkey=${var.tailscale_auth_key} \
+          --hostname=${var.server_name} \
+          --accept-routes \
+          --ssh
+        if ! tailscale status >/dev/null 2>&1; then
+          echo "ERROR: tailscale up failed — VM will not be reachable for Ansible"
+          exit 1
+        fi
+        echo "Tailscale joined tailnet successfully"
   CLOUDINIT
 
   labels = {
