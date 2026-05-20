@@ -20,4 +20,6 @@ dependencies:
   - base
   - vaultwarden
   - kaneo
-  - workspace-manager
+# workspace-manager is implemented as a sub-component (systemd service) INSIDE
+# this role, not as a separate role. Listing it under dependencies caused
+# Ansible to error out trying to locate a non-existent role 'workspace-manager'.

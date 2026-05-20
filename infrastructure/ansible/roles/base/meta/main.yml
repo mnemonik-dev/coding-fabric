@@ -16,8 +16,9 @@ galaxy_info:
     - hardening
     - firewall
 
-dependencies:
-  - name: community.general
-    version: '>=9.0.0'
-  - name: ansible.posix
-    version: '>=1.5.0'
+# Collection requirements (community.general, ansible.posix) are installed
+# externally via `ansible-galaxy collection install -r requirements.yml` from
+# the CI workflow and the operator bootstrap script. They cannot be listed
+# under `dependencies:` here — that key is for role dependencies only and
+# treating collections as roles fails playbook parse with "role X was not found".
+dependencies: []

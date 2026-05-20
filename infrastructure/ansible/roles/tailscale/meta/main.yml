@@ -17,8 +17,7 @@ galaxy_info:
     - vpn
     - tailscale
 
-dependencies:
-  - name: community.general
-    version: '>=9.0.0'
-  - name: ansible.posix
-    version: '>=1.5.0'
+# Collection requirements (community.general, ansible.posix) are installed
+# externally via `ansible-galaxy collection install -r requirements.yml`.
+# See base/meta/main.yml for full rationale.
+dependencies: []

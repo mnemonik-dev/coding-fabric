@@ -13,4 +13,10 @@ dependencies:
   - role: base
   - role: telegram-init
   - role: tailscale
-  - role: workspace-manager
+  - role: fabric-services
+# workspace-manager is a systemd service deployed by the fabric-services role,
+# not an independent role. Declaring it as a role dep failed with "role
+# workspace-manager not found". Depending on fabric-services here both
+# (a) ensures workspace-manager is up before this role configures its
+#     cwd-resolver URL, and
+# (b) avoids the missing-role failure in role meta resolution.
