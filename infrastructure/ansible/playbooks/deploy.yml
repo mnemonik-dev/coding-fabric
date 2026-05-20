@@ -40,6 +40,42 @@
           Ansible version: {{ ansible_version.full }}
           Playbook: deploy.yml
 
+    - name: Load sops-encrypted secrets (controller-side, namespaced as `sops`)
+      # Decrypts on the runner via community.sops + SOPS_AGE_KEY_FILE env. All
+      # entries become accessible as sops.<key>. Run 26182238252 failed at
+      # tailscale role assert because secrets were never loaded — the playbook
+      # referenced vault_* vars that were undefined → empty → assertion failed.
+      delegate_to: localhost
+      become: false
+      community.sops.load_vars:
+        file: "{{ playbook_dir }}/../../secrets/secrets.sops.yml"
+        name: sops
+      no_log: true
+
+    - name: Expose sops keys as flat vault_* facts for role consumption
+      # The roles use the vault_* naming convention. Map sops.<key> → vault_<key>
+      # in a single set_fact so the rest of the playbook is unchanged. Defaults
+      # for optional keys ('' for empty) prevent jinja2 KeyError when a sops
+      # field is intentionally blank (e.g. anthropic_api_key fallback).
+      delegate_to: localhost
+      become: false
+      set_fact:
+        vault_tailscale_auth_key:           "{{ sops.tailscale_auth_key }}"
+        vault_vaultwarden_admin_password:   "{{ sops.vaultwarden_initial_admin_password }}"
+        vault_vaultwarden_admin_token:      "{{ sops.vaultwarden_admin_token }}"
+        vault_telegram_bot_token:           "{{ sops.telegram_bot_token }}"
+        vault_telegram_forum_chat_id:       "{{ sops.telegram_forum_chat_id }}"
+        vault_telegram_ops_thread_id:       "{{ sops.telegram_ops_thread_id | default('0') }}"
+        vault_claude_code_oauth_token:      "{{ sops.claude_code_oauth_token | default('') }}"
+        vault_anthropic_api_key:            "{{ sops.anthropic_api_key | default('') }}"
+        vault_openai_api_key:               "{{ sops.openai_api_key | default('') }}"
+        vault_deepgram_api_key:             "{{ sops.deepgram_api_key | default('') }}"
+        vault_github_deploy_pat:            "{{ sops.github_deploy_pat | default('') }}"
+        vault_restic_repository:            "{{ sops.restic_repository }}"
+        vault_restic_password:              "{{ sops.restic_password }}"
+        vault_kaneo_api_token:              "{{ sops.kaneo_api_token | default('PLACEHOLDER_FILL_AFTER_KANEO_FIRST_DEPLOY') }}"
+      no_log: true
+
     - name: Wait for system to stabilize post-boot
       wait_for:
         timeout: 30
@@ -68,7 +104,9 @@
     - role: tailscale
       tags: [tailscale, networking]
       vars:
-        tailscale_auth_key: "{{ vault_tailscale_auth_key | default('') }}"
+        # Role's var is named `tailscale_authkey` (no underscore between auth
+        # and key). Don't rename; map the sops field to what the role expects.
+        tailscale_authkey: "{{ vault_tailscale_auth_key }}"
         tailscale_hostname: "{{ inventory_hostname }}"
         tailscale_routes: ["10.0.0.0/8"]
 
