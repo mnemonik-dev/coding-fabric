@@ -122,8 +122,12 @@ resource "hcloud_server" "fabric" {
     ipv6_enabled = true
   }
 
-  # cloud-init: create operator OS user with the injected SSH public key.
-  # This is the bootstrap access path used until Tailscale is active.
+  # cloud-init: bootstraps VM with operator user + Tailscale on first boot.
+  # The firewall blocks public SSH (port 22) — Tailscale-via-cloud-init is the
+  # ONLY way the VM becomes reachable for Ansible. Without it, deploy is stuck
+  # with chicken-and-egg: SSH needs tailnet, tailnet needs Ansible, Ansible
+  # needs SSH.
+  #
   # docker group is intentionally omitted: the group does not exist on a fresh
   # Ubuntu 24.04 image, causing cloud-init warnings. The Task 02 Ansible base
   # role adds op to the docker group after Docker is installed.
@@ -142,6 +146,15 @@ resource "hcloud_server" "fabric" {
       - ca-certificates
       - gnupg
       - lsb-release
+    runcmd:
+      # Install Tailscale via official script (signed apt repo, idempotent).
+      - curl -fsSL https://tailscale.com/install.sh | sh
+      # Join tailnet. Hostname matches server_name so MagicDNS resolves
+      # 'mnemonic-fabric' on operator's tailnet without further config.
+      # Persistent (NOT ephemeral) so the node stays in tailnet across reboots.
+      - tailscale up --authkey=${var.tailscale_auth_key} --hostname=${var.server_name} --accept-routes --ssh
+      # Verify Tailscale is up; fail loudly so cloud-init reports error in metadata.
+      - tailscale status >/dev/null 2>&1 || { echo "ERROR: tailscale up failed"; exit 1; }
   CLOUDINIT
 
   labels = {

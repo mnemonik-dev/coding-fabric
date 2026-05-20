@@ -66,3 +66,25 @@ variable "server_name" {
   type        = string
   default     = "mnemonic-fabric"
 }
+
+variable "tailscale_auth_key" {
+  # Tailscale auth key (tskey-auth-...) used by cloud-init at first boot to
+  # join the VM to the operator's tailnet. After this, all admin access
+  # (SSH, Ansible, fabric services) goes via the tailnet — public SSH is
+  # firewall-blocked by design.
+  #
+  # Generate at: https://login.tailscale.com/admin/settings/keys
+  # Settings: reusable, ephemeral=false (we want persistent membership),
+  # pre-approved, tag tag:fabric, TTL 90 days.
+  #
+  # CI injects via TF_VAR_tailscale_auth_key from GH secret TAILSCALE_AUTH_KEY
+  # (mirrored from sops field tailscale_auth_key).
+  description = "Tailscale auth key for VM cloud-init tailnet join (sensitive)."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = can(regex("^tskey-auth-[A-Za-z0-9-]+$", var.tailscale_auth_key))
+    error_message = "tailscale_auth_key must start with 'tskey-auth-' (got something else — probably wrong key type)."
+  }
+}

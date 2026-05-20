@@ -61,6 +61,7 @@ jobs:
         working-directory: infrastructure/tofu/hetzner
         env:
           HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+          TF_VAR_tailscale_auth_key: ${{ secrets.TAILSCALE_AUTH_KEY }}
           TF_VAR_hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
           TF_VAR_operator_ssh_pubkey: ${{ secrets.OPERATOR_SSH_PUBKEY }}
         run: |
@@ -76,6 +77,7 @@ jobs:
         working-directory: infrastructure/tofu/hetzner
         env:
           HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+          TF_VAR_tailscale_auth_key: ${{ secrets.TAILSCALE_AUTH_KEY }}
           TF_VAR_hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
           TF_VAR_operator_ssh_pubkey: ${{ secrets.OPERATOR_SSH_PUBKEY }}
         run: |
@@ -146,6 +148,7 @@ jobs:
         working-directory: infrastructure/tofu/hetzner
         env:
           HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+          TF_VAR_tailscale_auth_key: ${{ secrets.TAILSCALE_AUTH_KEY }}
           TF_VAR_hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
           TF_VAR_operator_ssh_pubkey: ${{ secrets.OPERATOR_SSH_PUBKEY }}
         run: |
@@ -162,6 +165,7 @@ jobs:
         working-directory: infrastructure/tofu/hetzner
         env:
           HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+          TF_VAR_tailscale_auth_key: ${{ secrets.TAILSCALE_AUTH_KEY }}
           TF_VAR_hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
           TF_VAR_operator_ssh_pubkey: ${{ secrets.OPERATOR_SSH_PUBKEY }}
         run: |
@@ -191,24 +195,41 @@ jobs:
 
           echo "VM deployed: ${vm_ipv4}"
 
-      - name: Wait for SSH readiness (with retries)
-        timeout-minutes: 10
+      - name: Wait for VM to join tailnet (via Tailscale CI runner)
+        # We cannot SSH the VM on its public IP (firewall blocks port 22 by
+        # design — only UDP/41641 Tailscale handshake is open). Instead we
+        # bring this runner onto the tailnet, then poll Tailscale's API to
+        # confirm the VM has registered. Once it has, ansible-deploy job
+        # connects via tailnet (100.x.x.x IPs).
+        timeout-minutes: 8
         env:
-          VM_IPV4: ${{ steps.tofu_outputs.outputs.vm_ipv4 }}
+          SERVER_NAME: ${{ steps.tofu_outputs.outputs.server_name }}
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
+          tags: tag:ci-deploy
+
+      - name: Poll tailnet for VM presence
+        timeout-minutes: 5
+        env:
+          SERVER_NAME: ${{ steps.tofu_outputs.outputs.server_name }}
         run: |
           max_attempts=30
           attempt=1
           while [ $attempt -le $max_attempts ]; do
-            if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-                    -o ConnectTimeout=5 -o BatchMode=yes root@${VM_IPV4} "echo 'SSH ready'" 2>/dev/null; then
-              echo "SSH ready on attempt ${attempt}"
+            if tailscale status --json 2>/dev/null | grep -q "\"HostName\": *\"${SERVER_NAME}\""; then
+              echo "VM is on tailnet after ${attempt} attempts (~$((attempt * 10))s)"
+              tailscale status | grep "${SERVER_NAME}" || true
               exit 0
             fi
-            echo "Attempt ${attempt}/${max_attempts}: SSH not ready yet..."
+            echo "Attempt ${attempt}/${max_attempts}: VM not yet on tailnet (cloud-init still installing Tailscale)..."
             sleep 10
             ((attempt++))
           done
-          echo "ERROR: SSH not ready after ${max_attempts} attempts"
+          echo "ERROR: VM did not join tailnet within 5 minutes"
+          echo "Likely cause: cloud-init failed to run 'tailscale up' on the VM"
+          echo "Check Hetzner Cloud Console -> Server -> Console for cloud-init logs"
           exit 1
 
       - name: Upload state artifact (even on apply failure)
@@ -251,24 +272,47 @@ jobs:
           oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
           tags: tag:ci-deploy
 
-      - name: Generate Ansible inventory from outputs
+      - name: Discover VM tailnet IP
+        id: ts_ip
         env:
-          VM_IPV4: ${{ needs.tofu-apply.outputs.vm_ipv4 }}
+          SERVER_NAME: ${{ needs.tofu-apply.outputs.server_name }}
+        run: |
+          # Wait briefly for tailscale status to refresh (after tailscale up earlier).
+          # The VM joined the tailnet during tofu-apply job; this runner is on the
+          # tailnet too, so peer info should be already cached.
+          for i in {1..10}; do
+            ts_ip=$(tailscale status --json 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); [print(p['TailscaleIPs'][0]) for p in d.get('Peer',{}).values() if p.get('HostName')=='${SERVER_NAME}']" | head -1)
+            if [ -n "$ts_ip" ]; then
+              echo "tailscale_ip=${ts_ip}" >> $GITHUB_OUTPUT
+              echo "VM tailnet IP: ${ts_ip}"
+              exit 0
+            fi
+            echo "Attempt ${i}: tailnet IP not yet visible..."
+            sleep 5
+          done
+          echo "ERROR: could not discover tailnet IP for ${SERVER_NAME}"
+          tailscale status || true
+          exit 1
+
+      - name: Generate Ansible inventory (via tailnet)
+        env:
+          TAILSCALE_IP: ${{ steps.ts_ip.outputs.tailscale_ip }}
           SERVER_NAME: ${{ needs.tofu-apply.outputs.server_name }}
           VOLUME_DEVICE: ${{ needs.tofu-apply.outputs.volume_device }}
         run: |
           mkdir -p infrastructure/ansible/inventory
-          cat > infrastructure/ansible/inventory/hosts.yml <<'INVENTORY'
+          cat > infrastructure/ansible/inventory/hosts.yml <<INVENTORY
           all:
             hosts:
-              mnemonic-fabric:
-                ansible_host: ${{ env.VM_IPV4 }}
+              ${SERVER_NAME}:
+                ansible_host: ${TAILSCALE_IP}
                 ansible_user: root
                 ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-                fabric_hostname: mnemonic-fabric
-                volume_device: ${{ env.VOLUME_DEVICE }}
+                fabric_hostname: ${SERVER_NAME}
+                tailscale_ip: ${TAILSCALE_IP}
+                volume_device: ${VOLUME_DEVICE}
           INVENTORY
-          echo "Inventory generated:"
+          echo "Inventory generated (tailnet path):"
           cat infrastructure/ansible/inventory/hosts.yml
 
       - name: Create sops-age wrapper for GitHub Actions secret
