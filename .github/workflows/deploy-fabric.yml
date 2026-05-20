@@ -325,6 +325,13 @@ jobs:
 
       - name: Run Ansible playbook (deploy)
         timeout-minutes: 40
+        env:
+          # ansible-playbook resolves roles relative to the playbook dir
+          # (infrastructure/ansible/playbooks/roles), but our roles live in
+          # infrastructure/ansible/roles. Point the resolver at the right path.
+          ANSIBLE_ROLES_PATH: ${{ github.workspace }}/infrastructure/ansible/roles
+          # Pass sops age key path so any sops_decrypt lookups in roles work.
+          SOPS_AGE_KEY_FILE: /home/runner/.config/sops/age/keys.txt
         run: |
           ansible-playbook \
             -i infrastructure/ansible/inventory/hosts.yml \
