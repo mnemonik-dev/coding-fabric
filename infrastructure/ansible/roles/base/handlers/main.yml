@@ -8,10 +8,14 @@
 
 - name: reload ufw
   become: true
-  ansible.builtin.systemd_service:
-    name: ufw
-    state: reloaded
+  # ufw.service is a oneshot unit and does NOT support `systemctl reload`
+  # (run 26179071156: "Job type reload is not applicable for unit
+  # ufw.service"). Use `ufw reload` CLI which re-reads /etc/ufw/* and
+  # re-applies rules to nftables/iptables.
+  ansible.builtin.command:
+    cmd: ufw reload
   listen: reload ufw
+  changed_when: true
 
 - name: restart unattended-upgrades
   become: true
