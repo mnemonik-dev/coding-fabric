@@ -51,6 +51,7 @@ jobs:
         working-directory: infrastructure/tofu/hetzner
         env:
           HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+          TF_VAR_operator_ssh_pubkey: ${{ secrets.OPERATOR_SSH_PUBKEY }}
         run: |
           tofu init
 
@@ -64,6 +65,7 @@ jobs:
         working-directory: infrastructure/tofu/hetzner
         env:
           HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+          TF_VAR_operator_ssh_pubkey: ${{ secrets.OPERATOR_SSH_PUBKEY }}
         run: |
           set +e
           tofu plan -out=tfplan -detailed-exitcode
@@ -122,6 +124,7 @@ jobs:
         working-directory: infrastructure/tofu/hetzner
         env:
           HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+          TF_VAR_operator_ssh_pubkey: ${{ secrets.OPERATOR_SSH_PUBKEY }}
         run: |
           tofu init
 
@@ -136,6 +139,7 @@ jobs:
         working-directory: infrastructure/tofu/hetzner
         env:
           HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+          TF_VAR_operator_ssh_pubkey: ${{ secrets.OPERATOR_SSH_PUBKEY }}
         run: |
           echo "Applying infrastructure..."
           tofu apply -auto-approve tfplan 2>&1 | tee apply.log
