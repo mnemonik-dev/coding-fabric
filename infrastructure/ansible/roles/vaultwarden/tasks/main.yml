@@ -129,7 +129,9 @@
   become: true
   become_user: op
   register: compose_result
-  no_log: true
+  # no_log removed for diagnostic visibility — docker compose itself does
+  # not print secrets; secrets are in /opt/vaultwarden/.env mounted from
+  # disk, not in process args.
 
 - name: Wait for Vaultwarden API to be healthy
   ansible.builtin.uri:
