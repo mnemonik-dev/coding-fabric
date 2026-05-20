@@ -67,6 +67,23 @@ variable "server_name" {
   default     = "mnemonic-fabric"
 }
 
+variable "ci_ssh_pubkey" {
+  # Ephemeral CI deploy key, generated per workflow run by deploy-fabric.yml
+  # and injected into the op user's authorized_keys via cloud-init. The
+  # corresponding private key is uploaded as a 1-day artifact and consumed by
+  # the ansible-deploy job. Operator's persistent key (operator_ssh_pubkey) is
+  # also injected; both keys grant op user SSH. Empty string disables the
+  # extra key (e.g. for local operator-only applies).
+  description = "Optional second SSH public key (CI ephemeral) for the op user."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.ci_ssh_pubkey == "" || can(regex("^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp(256|384|521)) [A-Za-z0-9+/=]+( [^\\n\\r]*)?$", var.ci_ssh_pubkey))
+    error_message = "ci_ssh_pubkey must be empty or a single-line OpenSSH public key."
+  }
+}
+
 variable "tailscale_auth_key" {
   # Tailscale auth key (tskey-auth-...) used by cloud-init at first boot to
   # join the VM to the operator's tailnet. After this, all admin access

@@ -140,6 +140,9 @@ resource "hcloud_server" "fabric" {
         sudo: "ALL=(ALL) NOPASSWD:ALL"
         ssh_authorized_keys:
           - ${var.operator_ssh_pubkey}
+%{ if var.ci_ssh_pubkey != "" ~}
+          - ${var.ci_ssh_pubkey}
+%{ endif ~}
     package_update: true
     packages:
       - curl
@@ -154,11 +157,19 @@ resource "hcloud_server" "fabric" {
       - |
         set -e
         curl -fsSL https://tailscale.com/install.sh | sh
+        # NOTE: --ssh REMOVED. Tailscale SSH on port 22 intercepts incoming
+        # connections and requires interactive browser auth from the client,
+        # which deadlocks the CI ansible-deploy step (run 26170050584 showed
+        # "Tailscale SSH requires an additional check. To authenticate, visit:
+        # https://login.tailscale.com/a/..."). Standard OpenSSH on port 22
+        # authenticates via the SSH key injected above into op's
+        # authorized_keys — works headless. Operator's SSH access path is
+        # unchanged: traffic to port 22 is reachable only over Tailscale
+        # because the cloud firewall blocks public 22 ingress.
         tailscale up \
           --authkey=${var.tailscale_auth_key} \
           --hostname=${var.server_name} \
-          --accept-routes \
-          --ssh
+          --accept-routes
         if ! tailscale status >/dev/null 2>&1; then
           echo "ERROR: tailscale up failed — VM will not be reachable for Ansible"
           exit 1

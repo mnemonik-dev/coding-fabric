@@ -72,6 +72,64 @@ jobs:
         run: |
           tofu validate
 
+      - name: Install age + generate ephemeral CI SSH keypair
+        env:
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+        run: |
+          # Headless Ansible needs a private key to SSH to the VM (run
+          # 26170050584 demonstrated that cloud-init's --ssh Tailscale path
+          # requires interactive web auth — incompatible with CI). Instead:
+          # generate an ephemeral SSH keypair for THIS workflow run, bake the
+          # pubkey into cloud-init via TF_VAR_ci_ssh_pubkey, and ship the
+          # privkey to ansible-deploy as an AGE-ENCRYPTED artifact.
+          #
+          # AGE encryption is mandatory because this is a PUBLIC repo —
+          # artifacts are downloadable by anyone with read access. Encrypting
+          # under the same age public key as sops means only the holder of
+          # SOPS_AGE_KEY (operator + GH Actions) can decrypt.
+          sudo apt-get update -qq
+          sudo apt-get install -y age
+
+          # Write age private key (also contains public key as a header line).
+          mkdir -p ~/.config/sops/age
+          echo "$SOPS_AGE_KEY" > ~/.config/sops/age/keys.txt
+          chmod 600 ~/.config/sops/age/keys.txt
+          AGE_PUBKEY=$(grep '^# public key' ~/.config/sops/age/keys.txt | awk '{print $NF}')
+          if [ -z "$AGE_PUBKEY" ]; then
+            echo "ERROR: failed to extract age public key from SOPS_AGE_KEY secret"
+            exit 1
+          fi
+
+          # Generate keypair (no passphrase; mode 600 enforced by ssh-keygen).
+          ssh-keygen -t ed25519 -N "" -C "ci-deploy-${{ github.run_id }}" -f /tmp/ci_deploy_key -q
+          # Strip trailing newline noise from pubkey so the regex in
+          # variables.tf accepts it.
+          CI_PUBKEY=$(cat /tmp/ci_deploy_key.pub)
+          echo "Generated CI keypair (pubkey fp $(ssh-keygen -lf /tmp/ci_deploy_key.pub | awk '{print $2}'))"
+
+          # Persist pubkey to env file so subsequent steps in this job see it
+          # without re-running ssh-keygen. Set as TF_VAR_ci_ssh_pubkey.
+          {
+            echo "CI_SSH_PUBKEY<<EOF_PUBKEY"
+            echo "$CI_PUBKEY"
+            echo "EOF_PUBKEY"
+          } >> "$GITHUB_ENV"
+
+          # Encrypt the private key under SOPS' age recipient.
+          mkdir -p /tmp/ci-artifacts
+          age -r "$AGE_PUBKEY" -o /tmp/ci-artifacts/ci_deploy_key.age /tmp/ci_deploy_key
+          echo "Encrypted privkey: $(ls -la /tmp/ci-artifacts/ci_deploy_key.age)"
+
+          # Defensive: wipe plaintext privkey from runner FS.
+          shred -u /tmp/ci_deploy_key
+
+      - name: Upload age-encrypted CI privkey
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-ssh-privkey-age
+          path: /tmp/ci-artifacts/ci_deploy_key.age
+          retention-days: 1
+
       - name: Create plan
         id: tofu_plan
         working-directory: infrastructure/tofu/hetzner
@@ -80,6 +138,7 @@ jobs:
           TF_VAR_tailscale_auth_key: ${{ secrets.TAILSCALE_AUTH_KEY }}
           TF_VAR_hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
           TF_VAR_operator_ssh_pubkey: ${{ secrets.OPERATOR_SSH_PUBKEY }}
+          TF_VAR_ci_ssh_pubkey: ${{ env.CI_SSH_PUBKEY }}
         run: |
           set +e
           tofu plan -out=tfplan -detailed-exitcode
@@ -339,7 +398,29 @@ jobs:
           tailscale netcheck || true
           exit 1
 
-      - name: Generate Ansible inventory (tailnet IPv4)
+      - name: Download + decrypt CI SSH privkey
+        env:
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+        run: |
+          mkdir -p ~/.config/sops/age
+          echo "$SOPS_AGE_KEY" > ~/.config/sops/age/keys.txt
+          chmod 600 ~/.config/sops/age/keys.txt
+
+      - name: Download CI privkey artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-ssh-privkey-age
+          path: /tmp/ci-artifacts/
+
+      - name: Decrypt CI privkey
+        run: |
+          age -d -i ~/.config/sops/age/keys.txt \
+            -o /tmp/ci_deploy_key \
+            /tmp/ci-artifacts/ci_deploy_key.age
+          chmod 600 /tmp/ci_deploy_key
+          echo "Decrypted ssh privkey: $(ssh-keygen -lf /tmp/ci_deploy_key)"
+
+      - name: Generate Ansible inventory (tailnet IPv4 + ephemeral SSH key)
         env:
           SERVER_NAME: ${{ needs.tofu-apply.outputs.server_name }}
           VOLUME_DEVICE: ${{ needs.tofu-apply.outputs.volume_device }}
@@ -347,19 +428,26 @@ jobs:
         run: |
           # Use the resolved tailnet IPv4 directly — avoids any DNS/MagicDNS
           # path on the runner (was the failure mode in run 26165294730).
+          # ansible_user=op: cloud-init injects op user with sudo NOPASSWD; the
+          # CI ephemeral pubkey was added to its authorized_keys at VM creation
+          # (run 26170050584 demonstrated that root has no keys + cloud-init's
+          # Tailscale --ssh interactive auth deadlocks CI — both removed).
           mkdir -p infrastructure/ansible/inventory
           cat > infrastructure/ansible/inventory/hosts.yml <<INVENTORY
           all:
             hosts:
               ${SERVER_NAME}:
                 ansible_host: ${VM_IP}
-                ansible_user: root
+                ansible_user: op
+                ansible_ssh_private_key_file: /tmp/ci_deploy_key
                 ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o ServerAliveInterval=30"
                 ansible_ssh_retries: 5
+                ansible_become: true
+                ansible_become_method: sudo
                 fabric_hostname: ${SERVER_NAME}
                 volume_device: ${VOLUME_DEVICE}
           INVENTORY
-          echo "Inventory generated (tailnet IPv4=${VM_IP}):"
+          echo "Inventory generated (tailnet IPv4=${VM_IP}, user=op, key=/tmp/ci_deploy_key):"
           cat infrastructure/ansible/inventory/hosts.yml
 
       - name: Create sops-age wrapper for GitHub Actions secret
