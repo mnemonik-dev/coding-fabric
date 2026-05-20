@@ -7,90 +7,98 @@
     fail_msg: "tailscale_authkey is required and must not be empty"
   no_log: true
 
-- name: Download Tailscale GPG key
-  become: true
-  ansible.builtin.get_url:
-    url: https://pkgs.tailscale.com/stable/ubuntu/noble.gpg
-    dest: /usr/share/keyrings/tailscale-archive-keyring.gpg
-    mode: '0644'
-    force: true
-  register: gpg_key_result
-  retries: 3
-  delay: 5
-  until: gpg_key_result is succeeded
+# In our deploy pipeline, cloud-init has already installed Tailscale and run
+# `tailscale up` BEFORE Ansible can reach the VM (the runner reaches the VM
+# only via that established tailnet membership). Detect that prior state and
+# skip the install + apt + up steps — they're not just redundant, they break:
+#
+#   Run 26183520907 failed at this role's `apt update` task ("Failed to update
+#   apt cache after 5 retries:" with empty stderr) — re-adding the Tailscale
+#   APT repo on top of what install.sh already wrote triggered the dpkg
+#   /apt-listchanges interactive flow which timed out under Ansible's
+#   non-interactive shell.
+#
+# Also: the role's original `tailscale up --ssh` reintroduced the Tailscale
+# SSH interception (web-auth-required) that we explicitly removed from
+# cloud-init (run 26170050584). Removed --ssh here too.
 
-- name: Add Tailscale APT repository
-  become: true
-  ansible.builtin.apt_repository:
-    repo: "deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] https://pkgs.tailscale.com/stable/ubuntu noble main"
-    state: present
-  register: apt_repo_result
-  retries: 3
-  delay: 5
-  until: apt_repo_result is succeeded
+- name: Detect existing Tailscale installation (cloud-init path)
+  ansible.builtin.command:
+    cmd: tailscale version
+  register: tailscale_version
+  changed_when: false
+  failed_when: false
+  check_mode: false
 
-- name: Update apt cache
+- name: Install + bring up Tailscale (only if cloud-init didn't already)
+  when: tailscale_version.rc != 0
   become: true
-  ansible.builtin.apt:
-    update_cache: true
-    cache_valid_time: 300
-  register: apt_cache
-
-- name: Install tailscaled
-  become: true
-  ansible.builtin.apt:
-    name: tailscale
-    state: present
-  register: tailscale_installed
-
-- name: Enable and start tailscaled
-  become: true
-  ansible.builtin.systemd_service:
-    name: tailscaled
-    enabled: true
-    state: started
-  register: tailscale_service
-
-- name: Authenticate with Tailscale (with secure authkey file)
   block:
+    - name: Download Tailscale GPG key
+      ansible.builtin.get_url:
+        url: https://pkgs.tailscale.com/stable/ubuntu/noble.gpg
+        dest: /usr/share/keyrings/tailscale-archive-keyring.gpg
+        mode: '0644'
+        force: true
+      retries: 3
+      delay: 5
+
+    - name: Add Tailscale APT repository
+      ansible.builtin.apt_repository:
+        repo: "deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] https://pkgs.tailscale.com/stable/ubuntu noble main"
+        state: present
+      retries: 3
+      delay: 5
+
+    - name: Update apt cache (Tailscale repo)
+      ansible.builtin.apt:
+        update_cache: true
+      retries: 3
+      delay: 10
+
+    - name: Install tailscaled
+      ansible.builtin.apt:
+        name: tailscale
+        state: present
+
+    - name: Enable and start tailscaled
+      ansible.builtin.systemd_service:
+        name: tailscaled
+        enabled: true
+        state: started
+
     - name: Write authkey to secure tmpfile
-      become: true
       ansible.builtin.copy:
         content: "{{ tailscale_authkey }}"
         dest: /run/tailscale-authkey.txt
         mode: '0600'
         owner: root
         group: root
-      register: authkey_tmpfile
       no_log: true
 
-    - name: Authenticate with Tailscale
-      become: true
+    - name: Authenticate with Tailscale (no --ssh, OpenSSH on 22 takes over)
       ansible.builtin.command:
         cmd: >
           tailscale up
           --auth-key=file:/run/tailscale-authkey.txt
           --hostname={{ fabric_hostname }}
-          {{ '--accept-routes' if tailscale_accept_routes else '' }}
-          --ssh
+          {{ '--accept-routes' if tailscale_accept_routes | default(true) else '' }}
       register: tailscale_up_result
       retries: 3
       delay: 10
       until: tailscale_up_result is succeeded
-      changed_when: tailscale_up_result.rc == 0 and 'already' not in tailscale_up_result.stdout | lower
+      changed_when: tailscale_up_result.rc == 0 and 'already' not in (tailscale_up_result.stdout | lower)
       no_log: true
 
-  always:
     - name: Remove authkey tmpfile securely
-      become: true
       ansible.builtin.file:
         path: /run/tailscale-authkey.txt
         state: absent
       no_log: true
 
-- name: Wait for Tailscale interface to be ready
+- name: Wait briefly for Tailscale interface
   ansible.builtin.pause:
-    seconds: 5
+    seconds: 3
 
 - name: Get Tailscale IPv4 address
   become: true
@@ -99,17 +107,17 @@
   changed_when: false
   retries: 3
   delay: 5
-  until: tailscale_ip_cmd is succeeded and tailscale_ip_cmd.stdout | length > 0
-  failed_when: tailscale_ip_cmd.stdout | length == 0
+  until: tailscale_ip_cmd is succeeded and tailscale_ip_cmd.stdout | trim | length > 0
+  failed_when: tailscale_ip_cmd.stdout | trim | length == 0
 
 - name: Register tailscale_ip fact
   ansible.builtin.set_fact:
     tailscale_ip: "{{ tailscale_ip_cmd.stdout | trim }}"
 
-- name: Verify tailscale is online
+- name: Verify tailscale is logged in
   become: true
   ansible.builtin.command: tailscale status
   register: tailscale_status_result
   changed_when: false
-  failed_when: "'Logged in as' not in tailscale_status_result.stdout"
+  failed_when: tailscale_status_result.rc != 0
   no_log: true
