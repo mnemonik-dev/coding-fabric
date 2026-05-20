@@ -7,6 +7,12 @@ collections:
     version: ">=7.0.0"
   - name: ansible.posix
     version: ">=1.5.0"
+  # vaultwarden + kaneo + fabric-services roles call community.docker.docker_compose_v2
+  # to manage their compose stacks. Without this collection, playbook errors with
+  # "couldn't resolve module/action 'community.docker.docker_compose_v2'" at
+  # vaultwarden/tasks/main.yml:122 (run 26161073599).
+  - name: community.docker
+    version: ">=3.10.0"
 
 # Installation:
 #   ansible-galaxy install -r infrastructure/ansible/requirements.yml
