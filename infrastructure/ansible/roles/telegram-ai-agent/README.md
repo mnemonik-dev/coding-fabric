@@ -117,8 +117,10 @@ Each topic has:
 - `chat_id`, `thread_id`: populated from `inventory/telegram-topics.yml` (T05 output)
 - `engine`: `claude` (default) or `codex` (demo-client)
 - `cwd`: always `"DYNAMIC"` (resolved at engine spawn via workspace-manager)
-- Feature toggles: `autopilot`, `aidefence`, `rag_memory` per matrix
-- MNEMONIC modes: `local` (7 topics) or `full` (protocol-qa only)
+
+Note: per-topic ruflo feature toggles (autopilot/aidefence/rag_memory) and
+MNEMONIC_MODE/memory_namespace fields were removed 2026-05-20 alongside the
+ruflo role drop (see work/coding-fabric/decisions.md Round 3).
 
 See defaults/main.yml for full per-topic config.
 

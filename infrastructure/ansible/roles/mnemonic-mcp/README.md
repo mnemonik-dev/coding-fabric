@@ -122,6 +122,6 @@ Molecule scenario mocks the Mnemonic MCP server and validates:
 
 ## Cross-Role Notes
 
-- molyanov role: Installs molyanov skills; this role registers hooks with success paths
+- molyanov role: Installs molyanov skills; this role registers hooks with success paths under `~/.fabric/molyanov/hooks.d/`
 - vaultwarden role: Provides secret store; this role only references vault URI (never requests the key)
-- ruflo role: Provides hook runner machinery; this role plugs into it via molyanov config
+- (ruflo role removed 2026-05-20; hook wiring now flows directly through molyanov when this role is re-enabled.)

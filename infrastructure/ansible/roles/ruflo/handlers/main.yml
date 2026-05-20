@@ -1,3 +1,0 @@
----
-# All validation is now synchronous in tasks/main.yml
-# This file retained for future handler patterns.

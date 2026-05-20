@@ -8,21 +8,23 @@ Install molyanov-ai-dev slash commands and Project Knowledge guard hook for codi
 2. **Global configuration**: Render `~/.fabric/molyanov/global.yml` with defaults and references
 3. **PK guard pre-write hook**: Install `~/.fabric/molyanov/hooks/pk-guard.sh` (mode 0755)
 4. **Ops-notify wrapper**: Install `~/.fabric/molyanov/hooks/ops-notify.sh` (mode 0755)
-5. **ruflo integration**: Configure `~/.fabric/ruflo/hooks.d/molyanov-pk-guard.yml` for hook loading
 
 ## Project Knowledge Guard Mechanism
 
 ### Scope (fail-closed)
 
 The `pk-guard.sh` hook **always rejects** writes that target paths matching
-`.claude/skills/project-knowledge/references/`, regardless of whether
-`RUFLO_SESSION` is set. This is fail-closed by design (audit Finding F-005 in
-T21 security-audit): the previous version gated enforcement on
-`RUFLO_SESSION`, which an agent could trivially bypass by unsetting the env
-var before invoking the hook.
+`.claude/skills/project-knowledge/references/`. This is fail-closed by design
+(audit Finding F-005 in T21 security-audit): the previous version gated
+enforcement on a session env var, which an agent could trivially bypass by
+unsetting it before invoking the hook.
 
 The guard returns immediately (exit 0) for any path that does NOT touch the PK
 references tree, so it is safe to install as a generic pre-write hook.
+
+The hook is invoked at the filesystem-write boundary by operator/agent shells
+that source the molyanov methodology (no cross-role plugin coupling — ruflo
+removed 2026-05-20).
 
 ### Enforcement
 
@@ -52,7 +54,6 @@ single command so the guard re-engages immediately after.
 
 - **base**: OS user, directories
 - **tailscale**: Telegram bot connectivity (ops alerts)
-- **ruflo**: Pre-write hook configuration loading (Task 10)
 - **Task 07 sanitizer**: Log path filtering
 
 ## File Structure
@@ -67,7 +68,6 @@ roles/molyanov/
     ops-notify.sh            - Ops alert wrapper
   templates/
     global.yml.j2            - molyanov global config
-    ruflo-hooks.d-molyanov-pk-guard.yml.j2  - Cross-role hook integration
   molecule/
     molecule.yml             - Docker test platform
     converge.yml             - Role application
@@ -99,21 +99,12 @@ molecule test -s molyanov
 Smoke test (operator verification):
 
 ```bash
-# From test worktree (no RUFLO_SESSION needed — guard is fail-closed)
+# From test worktree (guard is fail-closed regardless of caller).
 cd ~/code/mnemonic-workspaces/test-task-1
-ruflo memory write .claude/skills/project-knowledge/references/architecture.md "test" 2>&1
+~/.fabric/molyanov/hooks/pk-guard.sh .claude/skills/project-knowledge/references/architecture.md
 # Should exit non-zero; ops-topic receives alert.
 
 # Operator bypass (deliberate write):
-PK_GUARD_BYPASS=1 ruflo memory write .claude/skills/project-knowledge/references/test.md "test"
+PK_GUARD_BYPASS=1 ~/.fabric/molyanov/hooks/pk-guard.sh .claude/skills/project-knowledge/references/test.md
 # Should succeed; operator-bypass log emitted to journal + ops-topic.
 ```
-
-## Cross-Role Coupling
-
-This role creates a configuration file that ruflo loads:
-
-- **Producer** (molyanov): `~/.fabric/ruflo/hooks.d/molyanov-pk-guard.yml`
-- **Consumer** (ruflo): Loads all YAML in `hooks.d/` at startup
-
-This coupling is documented in both roles and minimizes inter-role assumptions.

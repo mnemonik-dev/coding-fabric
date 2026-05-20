@@ -1,7 +1,7 @@
 ---
 #
 # deploy.yml — main fabric deployment playbook
-# Orchestrates 11 Ansible roles in sequence to bring up the complete fabric on a Hetzner VM.
+# Orchestrates 10 Ansible roles in sequence to bring up the complete fabric on a Hetzner VM.
 #
 # Invoked by:
 #  - CI job deploy-fabric.yml (T24), post-infrastructure provisioning
@@ -15,14 +15,16 @@
 #  5. kaneo             — Observability backend (docker-compose, 6 default projects)
 #  6. telegram-init     — Telegram forum + 8 topic creation (Bot API)
 #  7. restic-backups    — Nightly off-site backups + verify-restore
-#  8. ruflo             — Mnemonic framework CLI + per-topic config matrix
-#  9. molyanov          — Project knowledge + PK guard hook
-# 10. mnemonic-mcp      — Local Mnemonic MCP server + 5 trigger-point hooks
+#  8. molyanov          — Project knowledge + PK guard hook
+#  9. mnemonic-mcp      — Local Mnemonic MCP server + 5 trigger-point hooks
 #                          (DESCOPED 2026-05: disabled by default; gated by
 #                          mnemonic_mcp_enabled var. Backlog feature:
 #                          work/mnemonic-attestation-integration/)
-# 11. fabric-services   — Deploy compiled fabric artefacts (workspace-manager, watchdog, safe-mode, etc.)
-# 12. telegram-ai-agent — telegram-ai-agent bot + per-topic cwd:DYNAMIC resolver config
+# 10. fabric-services   — Deploy compiled fabric artefacts (workspace-manager, watchdog, safe-mode, etc.)
+# 11. telegram-ai-agent — telegram-ai-agent bot + per-topic cwd:DYNAMIC resolver config
+#
+# Note: ruflo role removed 2026-05-20 (inherited-without-critical-eval cleanup;
+# see work/coding-fabric/decisions.md Round 3 section).
 #
 
 - name: Deploy fabric infrastructure
@@ -125,13 +127,7 @@
           - /opt/mnemonic-loop
         restic_retention_days: 30
 
-    # Phase 5: Development substrate (ruflo + molyanov)
-    - role: ruflo
-      tags: [ruflo, substrate]
-      vars:
-        ruflo_installation_dir: "/opt/ruflo"
-        ruflo_config_matrix: "{{ fabric_topic_matrix }}"
-
+    # Phase 5: Development substrate (molyanov)
     - role: molyanov
       tags: [molyanov, substrate]
       vars:

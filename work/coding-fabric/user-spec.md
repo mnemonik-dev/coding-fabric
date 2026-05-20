@@ -135,9 +135,9 @@ Mnemonic Protocol, где единственный интерфейс польз
 ### 5.3 Pipeline и подмена движков
 - AC8. Топик `demo-client` использует Codex CLI; остальные семь топиков — Claude Code.
 - AC9. `/do-feature` диспатчится через ruflo swarm MCP-инструменты (`swarm_init`,
-  `agent_spawn`) с per-task cwd injection.
+  `agent_spawn`) с per-task cwd injection. [DEFERRED: ruflo removed 2026-05-20; molyanov feature-execution skill handles dispatch directly]
 - AC10. Молянов-валидаторы делегируют к ruflo-плагинам:
-  skeptic → jujutsu, security-auditor → security-audit, post-deploy-qa → browser.
+  skeptic → jujutsu, security-auditor → security-audit, post-deploy-qa → browser. [DEFERRED: ruflo removed 2026-05-20; standalone Claude Code Agent types replace plugin delegation]
 
 ### 5.4 Mnemonic attestation
 - AC11. Каждое утверждённое `user-spec` создаёт memory-аттестацию. [DEFERRED to backlog: mnemonic-attestation-integration]
@@ -161,11 +161,11 @@ Mnemonic Protocol, где единственный интерфейс польз
 
 ### 5.6 Cohabitation
 - AC25. `ruflo-autopilot` выключен в `core`, `mcp`, `wasm`, `protocol-qa`, `loop`;
-  включён в `docs`, `demo-client`.
-- AC26. `MEMORY_NAMESPACE` зафиксирован per topic; ruflo-rag-memory выключена в `protocol-qa`.
-- AC27. ruflo-aidefence выключена в `core`, `mcp` (ложные срабатывания на hex keys).
+  включён в `docs`, `demo-client`. [DEFERRED: ruflo removed 2026-05-20]
+- AC26. `MEMORY_NAMESPACE` зафиксирован per topic; ruflo-rag-memory выключена в `protocol-qa`. [DEFERRED: ruflo removed 2026-05-20]
+- AC27. ruflo-aidefence выключена в `core`, `mcp` (ложные срабатывания на hex keys). [DEFERRED: ruflo removed 2026-05-20]
 - AC28. Project Knowledge молянов-методологии остаётся канонической; ruflo-substrate
-  не перезаписывает её.
+  не перезаписывает её. [DEFERRED: ruflo removed 2026-05-20; pk-guard pre-write hook now enforces fail-closed at filesystem-write level without cross-plugin coupling]
 
 ### 5.7 Watchdog и operational toil
 - AC29. `fabric-watchdog` запускается каждые 5 минут.

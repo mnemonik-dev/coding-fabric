@@ -2180,3 +2180,137 @@ project's `scripts.build` and CI both use `npm`).
 - Cross-role contracts (kaneo Caddy import, T07 sanitizer import,
   workspace-manager HTTP API) untouched.
 
+## Round 3 — Drop ruflo end-to-end (2026-05-20)
+
+**Status:** applied | **Agent:** coding-fabric-drop-ruflo
+
+### Decision
+
+Remove ruflo (https://github.com/ruvnet/ruflo) from coding-fabric end-to-end.
+
+### Rationale
+
+ruflo was inherited from `spec.md` v0.1.1 without critical evaluation.
+Operator local testing surfaced "weird usage patterns" — ruflo's
+swarm-orchestration / plugin-tools / AgentDB-memory / observability
+features overlap with what `molyanov-ai-dev` + Claude Code Agent tooling
+(security-auditor, code-reviewer, test-reviewer, feature-execution skill,
+do-task skill) already provide natively.
+
+Removing ruflo deletes ~2000 LOC and one external Node dependency without
+losing any real product capability. The cost of the dependency (cohabitation
+toggles, per-topic config matrix, cross-role pk-guard plumbing, validator
+delegation wrappers, swarm-bridge adapter, stale-swarm watchdog check,
+SHA-pinned installer) exceeded its benefit once we examined what the
+features actually do for our single-operator deployment.
+
+### Code/config removed
+
+- `infrastructure/ansible/roles/ruflo/` — entire role (tasks, defaults,
+  templates, files/validate_matrix.py, molecule scenario, tests, README,
+  meta, handlers).
+- `fabric/integrations/` — entire module (`swarm_bridge.py`,
+  `workspace_client.py`, `ruflo_client.py`, `__init__.py`, `pyproject.toml`,
+  `README.md`, `tests/{conftest.py,__init__.py,test_swarm_bridge.py}`).
+- `fabric/molyanov/validators/` — entire module (3 wrappers,
+  `_common.py`, `__init__.py`, `pyproject.toml`, `README.md`, 4 test
+  modules + tests `__init__.py`).
+- `fabric/watchdog/checks/stale_swarms.py` and its registration in
+  `fabric/watchdog/scheduler.py` `_CHECK_MODULES`; matching `TestStaleSwarms`
+  class in `fabric/watchdog/tests/test_checks.py` (4 test methods).
+- `infrastructure/ansible/playbooks/deploy.yml` — `ruflo` role block,
+  header comment updated from "11 roles" to "10 roles".
+- `infrastructure/ansible/inventory/hosts.yml.j2` — `ruflo_installation_dir`
+  and `ruflo_enable_per_topic_isolation` group_vars.
+- `infrastructure/ansible/roles/molyanov/`:
+  - `templates/ruflo-hooks.d-molyanov-pk-guard.yml.j2` deleted.
+  - `tasks/main.yml` — removed `~/.fabric/ruflo/hooks.d` directory step,
+    "Configure ruflo pk-guard integration" template task.
+  - `handlers/main.yml` — removed "Ruflo pk-guard hook configured" handler.
+  - `defaults/main.yml` — removed `molyanov_ruflo_session_env`.
+  - `templates/global.yml.j2` — removed `integrations.ruflo` block,
+    rewrote `bypasses` to reference `PK_GUARD_BYPASS=1` rather than
+    `RUFLO_SESSION=` empty.
+  - `molecule/verify.yml` — removed the two ruflo-hooks.d assertion blocks
+    and rewrote the pk-guard exercise to drop the `RUFLO_SESSION` env-var
+    gating (guard is fail-closed by design).
+  - `files/pk-guard.sh` — renamed env var `RUFLO_SESSION` → `PK_GUARD_SESSION`
+    (informational label only; gate is fail-closed regardless).
+- `infrastructure/ansible/roles/telegram-ai-agent/`:
+  - `defaults/main.yml` — per-topic matrix collapsed from 6 fields per
+    topic (engine + autopilot + aidefence + rag_memory + mnemonic_mode +
+    memory_namespace + chat_id/thread_id + exec_mode/stream_mode/mode) to
+    upstream-required fields only (engine + chat_id/thread_id + exec_mode +
+    stream_mode + mode).
+  - `templates/config.yml.j2` — removed `features:` and `memory:`
+    per-topic blocks (no consumer remains).
+  - `README.md` — Topic Matrix section trimmed.
+- `infrastructure/ansible/roles/mnemonic-mcp/`:
+  - `tasks/main.yml` — molyanov hook-wiring template destination moved
+    from `~/.fabric/ruflo/hooks.d/molyanov-mnemonic-hooks.yml` to
+    `~/.fabric/molyanov/hooks.d/mnemonic-hooks.yml` (role is descoped /
+    disabled-by-default, so this only matters when an operator opts in;
+    final shape is owned by the backlog feature
+    `mnemonic-attestation-integration`).
+  - `molecule/default/verify.yml` — corresponding stat path updated.
+  - `README.md` — Cross-Role Notes ruflo bullet replaced.
+- `fabric/watchdog/README.md` — alert-class table row + disabled_checks
+  example + config keys (`ruflo_state_file`, `swarm_ttl_hours`) removed.
+
+### Tech-spec / user-spec updates
+
+- `work/coding-fabric/tech-spec.md`:
+  - §0 Changelog entry added.
+  - §2.1 3-plane Runtime plane bullet trimmed (ruflo/mnemonic-mcp removed
+    from runtime list; the latter was already runtime-optional).
+  - §2.3 Ansible roles table — row 7 (`ruflo`) deleted, count updated to
+    10, footer note added.
+  - §2.4 per-topic matrix collapsed from 8x6 (topic + engine + 4 toggles +
+    namespace) to 8x2 (topic + engine).
+  - §2.8 file layout — entries for `fabric/integrations/`,
+    `fabric/molyanov/validators/`, `infrastructure/ansible/roles/ruflo/`
+    removed.
+  - §3 Decisions D12/D13/D17/D18 revised; D29 trimmed.
+  - §4 Tasks T10/T14/T15 marked DROPPED with replacement strategy noted.
+  - §5 Testing Strategy unit-test list trimmed (validator wrappers /
+    swarm-bridge dropped).
+- `work/coding-fabric/user-spec.md`:
+  - AC9, AC10, AC25, AC26, AC27, AC28 each appended with
+    `[DEFERRED: ruflo removed 2026-05-20 …]` (AC28 notes the pk-guard
+    fail-closed mechanism survives intact).
+- `work/coding-fabric/tasks/{10,14,15}.md`:
+  - Frontmatter `status: dropped` (was `done`).
+  - Body prepended with a "DROPPED 2026-05-20" note; original body kept
+    for historical reference so numbering and git-history continuity
+    stay stable.
+
+### Watchdog impact
+
+`_CHECK_MODULES` shrank from 10 to 9 entries. Remaining 245 tests across
+`fabric/logs/sanitizer/tests/`, `fabric/workspace-manager/tests/`, and
+`fabric/watchdog/tests/` all pass.
+
+### Per-topic matrix new shape
+
+Two columns: `topic` and `engine`. Seven topics use Claude Code; one
+(`demo-client`) uses Codex. All other previous per-topic toggles
+(autopilot / aidefence / rag_memory / MNEMONIC_MODE / MEMORY_NAMESPACE)
+had ruflo as their only consumer and are gone with it.
+
+### Cross-role coupling unwound
+
+The previous coupling — molyanov role rendered a ruflo hooks.d config so
+the ruflo role's pre-write hook runner would invoke molyanov's pk-guard —
+no longer needs an intermediary. The pk-guard hook is now a standalone
+filesystem-write boundary check (still fail-closed by design, audit
+F-005). Operator-interactive bypass survives unchanged via
+`PK_GUARD_BYPASS=1`. No CI workflow referenced ruflo, so `.github/`
+is untouched. The secrets template was already cleaned of ruflo-specific
+keys in Round 2.
+
+### Out-of-scope risks not addressed
+
+The historical "Round 2" decisions section above describes ruflo's
+git-clone + npm-build install path; that whole section is now historical
+record only and is preserved verbatim for traceability.
+

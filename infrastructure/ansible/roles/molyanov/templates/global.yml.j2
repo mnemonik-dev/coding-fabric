@@ -10,8 +10,7 @@ project_knowledge:
   enabled: true
   path: "{{ molyanov_operator_home }}/.claude/skills/project-knowledge"
   refs_pattern: "{{ molyanov_pk_guard_refs_pattern }}"
-  guard_scope: "{{ molyanov_ruflo_session_env }}"
-  description: "Molynov methodology project knowledge; protected from ruflo rewrites by pk-guard hook"
+  description: "Molyanov methodology project knowledge; protected by fail-closed pk-guard pre-write hook"
 
 # Slash commands metadata
 slash_commands:
@@ -27,10 +26,6 @@ slash_commands:
 
 # Integration points
 integrations:
-  ruflo:
-    hooks_dir: "{{ molyanov_operator_home }}/.fabric/ruflo/hooks.d"
-    config_file: "molyanov-pk-guard.yml"
-    enabled: true
   telegram:
     ops_topic: "{{ molyanov_telegram_ops_topic_id }}"
     alert_channel: true
@@ -43,6 +38,6 @@ integrations:
 # Bypass procedures (operational only, logged)
 bypasses:
   - name: "pk-guard manual override"
-    description: "Operator may set RUFLO_SESSION= (empty) to write to PK refs (emergency only)"
+    description: "Operator may set PK_GUARD_BYPASS=1 for a single command to write to PK refs (emergency only)"
     requires_verification: true
     logged_always: true

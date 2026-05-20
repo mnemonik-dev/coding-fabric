@@ -16,7 +16,6 @@ card with the `/turn-into-task` bot command.
 | `hung_tmux` | WARNING | tmux session idle > 12 hours (configurable via `tmux_idle_hours`) |
 | `solana_rpc` | CRITICAL | Devnet RPC does not respond to `getHealth` within 10 s, or returns `result != "ok"` |
 | `irys_balance` | WARNING | Irys testnet wallet balance below `irys_balance_min` (default 1 000 000 units) |
-| `stale_swarms` | WARNING | ruflo swarm age > `swarm_ttl_hours` (default 48 h) |
 | `disk_pressure` | WARNING / CRITICAL | Worktrees partition used fraction vs 50 GB budget: 75% = WARNING, 85% = WARNING, 90% = CRITICAL |
 | `master_drift` | WARNING | Local `main` HEAD differs from `origin/main` after `git fetch` |
 | `stale_prs` | WARNING | Open GitHub PR not updated in > 7 days (configurable via `stale_pr_days`) |
@@ -27,12 +26,11 @@ card with the `/turn-into-task` bot command.
 
 Add the check module name (without `.py`) to `disabled_checks` in
 `config.json` to silence individual checks. Natural-owner alternatives
-(e.g. ruflo health hook for `stale_swarms`) can set this once they have
-been deployed.
+can set this once they have been deployed.
 
 ```json
 {
-  "disabled_checks": ["stale_swarms", "hung_tmux"]
+  "disabled_checks": ["hung_tmux"]
 }
 ```
 
@@ -103,8 +101,6 @@ keys fall back to the defaults listed below.
 | `irys_node_url` | `https://devnet.irys.xyz` | Irys node URL |
 | `irys_address` | — | Wallet address to check (required for irys_balance check) |
 | `irys_balance_min` | `1000000` | Minimum acceptable balance |
-| `ruflo_state_file` | `/home/op/.fabric/ruflo/swarms.json` | ruflo swarm registry |
-| `swarm_ttl_hours` | `48` | Stale swarm threshold |
 | `disk_path` | `/home/op/code/mnemonic-workspaces` | Path to check |
 | `disk_budget_gb` | `50` | Budget in GiB |
 | `disk_warn_threshold` | `0.75` | First warning level |

@@ -102,7 +102,7 @@
 
     - name: Verify molyanov hooks config was rendered
       stat:
-        path: /home/mnemonic-operator/.fabric/ruflo/hooks.d/molyanov-mnemonic-hooks.yml
+        path: /home/mnemonic-operator/.fabric/molyanov/hooks.d/mnemonic-hooks.yml
       register: molyanov_config_stat
 
     - name: Assert molyanov config exists (may not exist in test env, skip if missing)

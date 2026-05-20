@@ -19,67 +19,9 @@ topics:
     {%- endif %}
 {%- endfor %}
 
-# Feature toggles per topic (§2.4 matrix in tech-spec)
-features:
-  core:
-    autopilot: false
-    aidefence: false
-    rag_memory: true
-  mcp:
-    autopilot: false
-    aidefence: false
-    rag_memory: true
-  wasm:
-    autopilot: false
-    aidefence: true
-    rag_memory: true
-  demo-client:
-    autopilot: true
-    aidefence: true
-    rag_memory: true
-  docs:
-    autopilot: true
-    aidefence: true
-    rag_memory: true
-  loop:
-    autopilot: false
-    aidefence: true
-    rag_memory: true
-  protocol-qa:
-    autopilot: false
-    aidefence: true
-    rag_memory: false
-  ops:
-    autopilot: false
-    aidefence: true
-    rag_memory: true
-
-# Memory namespaces per topic
-memory:
-  core:
-    namespace: mnemonic-core
-    mode: local
-  mcp:
-    namespace: mnemonic-mcp
-    mode: local
-  wasm:
-    namespace: mnemonic-wasm
-    mode: local
-  demo-client:
-    namespace: mnemonic-demo-client
-    mode: local
-  docs:
-    namespace: mnemonic-docs
-    mode: local
-  loop:
-    namespace: mnemonic-loop
-    mode: local
-  protocol-qa:
-    namespace: mnemonic-qa
-    mode: full
-  ops:
-    namespace: mnemonic-ops
-    mode: local
+# Per-topic ruflo toggles (autopilot/aidefence/rag_memory/MNEMONIC_MODE) and
+# memory namespaces were removed 2026-05-20 alongside the ruflo role drop.
+# Only the engine + cwd:DYNAMIC + upstream-required fields remain.
 
 # Logging configuration
 logging:

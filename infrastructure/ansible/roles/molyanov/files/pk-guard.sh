@@ -4,12 +4,13 @@ set -euo pipefail
 # PK Guard Hook: Reject writes to .claude/skills/project-knowledge/references/.
 #
 # Fail-closed semantics (audit Finding F-005, T21 security-audit):
-#   The previous version exited 0 unless RUFLO_SESSION was set, so any agent that
-#   simply unset RUFLO_SESSION could bypass the guard.  This version inverts the
+#   Earlier versions exited 0 unless a session env var was set, so any agent that
+#   simply unset the var could bypass the guard.  This version inverts the
 #   gate: the guard ALWAYS rejects writes to the PK references directory unless
 #   the operator explicitly opts out via PK_GUARD_BYPASS=1.  PK_GUARD_BYPASS must
 #   only be set in a deliberate operator-interactive shell; every bypass is
 #   logged to auth.notice and Telegram-ops so post-hoc review is possible.
+#   PK_GUARD_SESSION is an optional informational label written to logs.
 #
 # Telegram delivery (audit Finding F-004):
 #   The bot token is composed into a TG_URL env var BEFORE curl runs, so the
@@ -20,7 +21,7 @@ set -euo pipefail
 
 PK_REFS_PATTERN=".claude/skills/project-knowledge/references/"
 TARGET_PATH="${1:-}"
-SESSION_LABEL="${RUFLO_SESSION:-unknown-session}"
+SESSION_LABEL="${PK_GUARD_SESSION:-unknown-session}"
 
 # Only fire on writes that target the PK references tree.
 if [[ "$TARGET_PATH" != *"$PK_REFS_PATTERN"* ]]; then

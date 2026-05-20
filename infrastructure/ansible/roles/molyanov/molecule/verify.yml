@@ -52,17 +52,6 @@
           - molyanov_global_yml_stat.stat.exists
         fail_msg: "molyanov global.yml not rendered"
 
-    - name: Check ruflo hooks.d integration
-      ansible.builtin.stat:
-        path: "{{ molyanov_operator_home }}/.fabric/ruflo/hooks.d/molyanov-pk-guard.yml"
-      register: molyanov_ruflo_hooks_stat
-
-    - name: Assert ruflo hooks.d integration exists
-      ansible.builtin.assert:
-        that:
-          - molyanov_ruflo_hooks_stat.stat.exists
-        fail_msg: "ruflo pk-guard hook integration not configured"
-
     - name: Verify pk-guard.sh syntax
       ansible.builtin.shell: bash -n "{{ molyanov_operator_home }}/.fabric/molyanov/hooks/pk-guard.sh"
       changed_when: false
@@ -71,15 +60,15 @@
       ansible.builtin.shell: bash -n "{{ molyanov_operator_home }}/.fabric/molyanov/hooks/ops-notify.sh"
       changed_when: false
 
-    - name: Test pk-guard with RUFLO_SESSION unset (should pass)
+    - name: Test pk-guard on a non-PK path (should pass)
       ansible.builtin.shell: |
-        env -i RUFLO_SESSION="" "{{ molyanov_operator_home }}/.fabric/molyanov/hooks/pk-guard.sh" "/tmp/test.txt"
+        "{{ molyanov_operator_home }}/.fabric/molyanov/hooks/pk-guard.sh" "/tmp/test.txt"
       changed_when: false
       failed_when: false
 
-    - name: Test pk-guard with PK path and RUFLO_SESSION set (should fail)
+    - name: Test pk-guard on a PK path (fail-closed; should reject)
       ansible.builtin.shell: |
-        RUFLO_SESSION="test-1" "{{ molyanov_operator_home }}/.fabric/molyanov/hooks/pk-guard.sh" ".claude/skills/project-knowledge/references/test.md" 2>/dev/null
+        "{{ molyanov_operator_home }}/.fabric/molyanov/hooks/pk-guard.sh" ".claude/skills/project-knowledge/references/test.md" 2>/dev/null
         exit 0
       changed_when: false
 

@@ -19,6 +19,3 @@ molyanov_pk_guard_refs_pattern: ".claude/skills/project-knowledge/references/"
 # Telegram bot token source (from sops secrets)
 molyanov_telegram_bot_token_sops_key: "telegram_bot_token"
 molyanov_telegram_ops_topic_id: "{{ molyanov_telegram_ops_topic_id }}"
-
-# ruflo session environment variable for scoping
-molyanov_ruflo_session_env: RUFLO_SESSION

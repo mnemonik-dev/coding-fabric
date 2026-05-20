@@ -23,17 +23,14 @@ telegram_ai_agent_uv_sync_timeout: 300
 telegram_ai_agent_require_dynamic_feature: true
 
 # Topic configuration matrix (8 topics from tech-spec §2.4)
-# Each topic maps to: engine, autopilot, aidefence, rag_memory, mnemonic_mode, memory_namespace
+# Each topic maps to: engine + upstream-required fields. Per-topic ruflo
+# toggles (autopilot/aidefence/rag_memory/mnemonic_mode) were removed
+# 2026-05-20 alongside the ruflo role drop (see decisions.md Round 3).
 telegram_ai_agent_topics:
   core:
     chat_id: ""  # Populated from telegram-topics.yml at runtime
     thread_id: ""
     engine: "claude"
-    autopilot: false
-    aidefence: false
-    rag_memory: true
-    mnemonic_mode: "local"
-    memory_namespace: "mnemonic-core"
     exec_mode: "subprocess"
     stream_mode: "live"
     mode: "default"
@@ -41,11 +38,6 @@ telegram_ai_agent_topics:
     chat_id: ""
     thread_id: ""
     engine: "claude"
-    autopilot: false
-    aidefence: false
-    rag_memory: true
-    mnemonic_mode: "local"
-    memory_namespace: "mnemonic-mcp"
     exec_mode: "subprocess"
     stream_mode: "live"
     mode: "default"
@@ -53,11 +45,6 @@ telegram_ai_agent_topics:
     chat_id: ""
     thread_id: ""
     engine: "claude"
-    autopilot: false
-    aidefence: true
-    rag_memory: true
-    mnemonic_mode: "local"
-    memory_namespace: "mnemonic-wasm"
     exec_mode: "subprocess"
     stream_mode: "live"
     mode: "default"
@@ -65,11 +52,6 @@ telegram_ai_agent_topics:
     chat_id: ""
     thread_id: ""
     engine: "codex"
-    autopilot: true
-    aidefence: true
-    rag_memory: true
-    mnemonic_mode: "local"
-    memory_namespace: "mnemonic-demo-client"
     exec_mode: "subprocess"
     stream_mode: "live"
     mode: "default"
@@ -77,11 +59,6 @@ telegram_ai_agent_topics:
     chat_id: ""
     thread_id: ""
     engine: "claude"
-    autopilot: true
-    aidefence: true
-    rag_memory: true
-    mnemonic_mode: "local"
-    memory_namespace: "mnemonic-docs"
     exec_mode: "subprocess"
     stream_mode: "live"
     mode: "default"
@@ -89,11 +66,6 @@ telegram_ai_agent_topics:
     chat_id: ""
     thread_id: ""
     engine: "claude"
-    autopilot: false
-    aidefence: true
-    rag_memory: true
-    mnemonic_mode: "local"
-    memory_namespace: "mnemonic-loop"
     exec_mode: "subprocess"
     stream_mode: "live"
     mode: "default"
@@ -101,11 +73,6 @@ telegram_ai_agent_topics:
     chat_id: ""
     thread_id: ""
     engine: "claude"
-    autopilot: false
-    aidefence: true
-    rag_memory: false
-    mnemonic_mode: "full"
-    memory_namespace: "mnemonic-qa"
     exec_mode: "subprocess"
     stream_mode: "live"
     mode: "default"
@@ -113,11 +80,6 @@ telegram_ai_agent_topics:
     chat_id: ""
     thread_id: ""
     engine: "claude"
-    autopilot: false
-    aidefence: true
-    rag_memory: true
-    mnemonic_mode: "local"
-    memory_namespace: "mnemonic-ops"
     exec_mode: "subprocess"
     stream_mode: "live"
     mode: "default"

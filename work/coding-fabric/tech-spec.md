@@ -19,7 +19,15 @@ related_features:
 
 # Tech Spec — Coding Fabric (v0.2.0, IaC + CI delivery)
 
-## 0. Changelog vs v0.1.1
+## 0. Changelog
+
+- **2026-05-20:** dropped ruflo end-to-end after operator critical-evaluation
+  (planning gap caught late; ~2000 LOC + 1 external Node dependency removed).
+  Tasks T10/T14/T15 marked DROPPED. Per-topic matrix simplified to
+  topic+engine only. Decisions D12/D13/D17/D18 revised. See
+  `work/coding-fabric/decisions.md` Round 3 section for full rationale.
+
+## 0.1 Changelog vs v0.1.1
 
 v0.1.1 prescribed manual operator execution of cloud-VM bootstrap (Tasks T01–T09, T20, T21).
 v0.2.0 replaces that with **OpenTofu + Ansible + GitHub Actions**: the same final state
@@ -68,7 +76,7 @@ peer model from v0.1.1.
 +----------------------------------------------------------------+
 |  IaC plane (executed by CI or operator from laptop)            |
 |  - infrastructure/tofu/      (Hetzner VM, volume, firewall)    |
-|  - infrastructure/ansible/   (10 roles, deploy.yml)            |
+|  - infrastructure/ansible/   (10 roles, deploy.yml)             |
 |  - infrastructure/secrets/   (sops-encrypted secrets file)     |
 +----------------------------------------------------------------+
                             |
@@ -77,7 +85,7 @@ peer model from v0.1.1.
 |  Runtime plane (on Hetzner VM)                                  |
 |  - Tailscale (replaces WireGuard) — only path to admin surfaces |
 |  - Vaultwarden, Kaneo, Telegram bot, telegram-ai-agent          |
-|  - ruflo, molyanov, mnemonic-mcp                                |
+|  - molyanov                                                     |
 |  - workspace-manager (Python FastAPI, NEW)                      |
 |  - fabric-watchdog (Python systemd-timer, NEW)                  |
 |  - fabric-safe-mode (bash, NEW)                                 |
@@ -121,30 +129,37 @@ peer model from v0.1.1.
 | 4 | `kaneo` | docker-compose, six default projects (`mnemonic-core`, …, `mnemonic-loop`) |
 | 5 | `telegram-init` | Telegram-bot forum + 8 topics via Bot API (idempotent — skips if topics exist) |
 | 6 | `restic-backups` | Restic + nightly cron + off-site repo + `backup-verify.sh` |
-| 7 | `ruflo` | Install ruflo full CLI, write per-topic config matrix (§2.4) |
-| 8 | `molyanov` | Install molyanov-ai-dev, install PK guard pre-write hook |
-| 9 | `mnemonic-mcp` | **OPTIONAL, disabled by default (descoped 2026-05).** When `mnemonic_mcp_enabled=true`: install local Mnemonic MCP server, systemd unit, 5 trigger-point hook scripts. When disabled (default): install only 5 no-op stub hooks. Re-enablement tracked in backlog `mnemonic-attestation-integration`. |
-| 10 | `fabric-services` | Deploy compiled artefacts from `fabric/`: workspace-manager, sanitizer, watchdog, safe-mode, swarm-bridge, validator wrappers; install systemd units and timers |
-| 11 | `telegram-ai-agent` | `git clone` + `uv sync` upstream pavel-molyanov/telegram-ai-agent at a pinned commit (the one that contains the `cwd:"DYNAMIC"` PR — or `mnemonic-org/telegram-ai-agent` fork as fallback). Install systemd unit, render per-topic configs with `cwd: "DYNAMIC"`, set env var `TELEGRAM_AI_AGENT_CWD_RESOLVER_URL=http://{{ tailscale_ip }}:8080` (workspace-manager). |
+| 7 | `molyanov` | Install molyanov-ai-dev, install PK guard pre-write hook |
+| 8 | `mnemonic-mcp` | **OPTIONAL, disabled by default (descoped 2026-05).** When `mnemonic_mcp_enabled=true`: install local Mnemonic MCP server, systemd unit, 5 trigger-point hook scripts. When disabled (default): install only 5 no-op stub hooks. Re-enablement tracked in backlog `mnemonic-attestation-integration`. |
+| 9 | `fabric-services` | Deploy compiled artefacts from `fabric/`: workspace-manager, sanitizer, watchdog, safe-mode; install systemd units and timers |
+| 10 | `telegram-ai-agent` | `git clone` + `uv sync` upstream pavel-molyanov/telegram-ai-agent at a pinned commit (the one that contains the `cwd:"DYNAMIC"` PR — or `mnemonic-org/telegram-ai-agent` fork as fallback). Install systemd unit, render per-topic configs with `cwd: "DYNAMIC"` and `engine` only, set env var `TELEGRAM_AI_AGENT_CWD_RESOLVER_URL=http://{{ tailscale_ip }}:8080` (workspace-manager). |
 
-(11 roles total. Role `telegram-ai-agent` pins a specific upstream commit. Until the
-upstream PR from feature `mnemonic-tg-bridge` is merged, role pins to the fork; once
-merged, role pins to a tagged upstream release.)
+(10 roles total. The previous v0.2.0 `ruflo` role (originally #7) was dropped
+2026-05-20 — see Changelog. Role `telegram-ai-agent` pins a specific upstream
+commit. Until the upstream PR from feature `mnemonic-tg-bridge` is merged, role
+pins to the fork; once merged, role pins to a tagged upstream release.)
 
 ### 2.4 Per-topic configuration matrix
 
-Unchanged from v0.1.1:
+**2026-05-20 scope reduction:** with ruflo dropped end-to-end, the per-topic
+ruflo-specific columns (`autopilot`, `aidefence`, `rag_memory`,
+`MNEMONIC_MODE`, `MEMORY_NAMESPACE`) no longer apply — none of them have a
+consumer on the runtime plane anymore. The matrix collapses to topic+engine:
 
-| Topic | Engine | autopilot | aidefence | rag-memory | MNEMONIC_MODE | MEMORY_NAMESPACE |
-|-------|--------|-----------|-----------|------------|---------------|------------------|
-| core | Claude Code | off | off | on | local | `mnemonic-core` |
-| mcp | Claude Code | off | off | on | local | `mnemonic-mcp` |
-| wasm | Claude Code | off | on | on | local | `mnemonic-wasm` |
-| demo-client | Codex | on | on | on | local | `mnemonic-demo-client` |
-| docs | Claude Code | on | on | on | local | `mnemonic-docs` |
-| loop | Claude Code | off | on | on | local | `mnemonic-loop` |
-| protocol-qa | Claude Code | off | on | off | full | `mnemonic-qa` |
-| ops | Claude Code | off | on | on | local | `mnemonic-ops` |
+| Topic | Engine |
+|-------|--------|
+| core | Claude Code |
+| mcp | Claude Code |
+| wasm | Claude Code |
+| demo-client | Codex |
+| docs | Claude Code |
+| loop | Claude Code |
+| protocol-qa | Claude Code |
+| ops | Claude Code |
+
+This is a significant simplification: previously six per-topic toggles fed
+ruflo cohabitation behaviour; now only the engine choice matters, and it is
+upstream-driven (telegram-ai-agent picks `claude` vs `codex` per topic).
 
 ### 2.5 workspace-manager HTTP API
 
@@ -187,11 +202,10 @@ base58 keys, JWK fragments, `sk-`/`api_`/`ANTHROPIC_` tokens, Telegram file URLs
 fabric/
   logs/sanitizer/                   # Task 07
   workspace-manager/                # Task 08
-  integrations/swarm-bridge.py      # Task 14
-  molyanov/validators/              # Task 15
   watchdog/                         # Task 18
   safe-mode/                        # Task 19
   github-templates/                 # Task 16
+  # (fabric/integrations/ and fabric/molyanov/validators/ removed 2026-05-20 with ruflo drop)
 
 infrastructure/
   tofu/hetzner/                     # Task 01
@@ -207,11 +221,11 @@ infrastructure/
       kaneo/                        # Task 04
       telegram-init/                # Task 05
       restic-backups/               # Task 06
-      ruflo/                        # Task 10
       molyanov/                     # Task 11
       mnemonic-mcp/                 # Task 12
       telegram-ai-agent/            # Task 09 (installs upstream pavel-molyanov + DYNAMIC patch)
-      fabric-services/              # Tasks 08, 14, 15, 18, 19 deploy
+      fabric-services/              # Tasks 08, 18, 19 deploy
+      # (ruflo/ removed 2026-05-20)
   secrets/
     secrets.sops.yml                # age-encrypted, committed
     .sops.yaml                      # sops config
@@ -263,13 +277,13 @@ or added in v0.2.0 marked `[v0.2.0]`.
 | D9 | workspace-manager unchanged (FastAPI, Python, 127.0.0.1:8080 bound to tailnet) `[refined]` | API contract stable; binding changes from public-VPN-only to tailnet-IP-only | AC4–AC7 |
 | D10 | Capacity cap 10, disk thresholds 75/85/90% on 50 GB budget | spec.md "heavy" | AC5, AC32 |
 | D11 | Engine choice per topic: Claude Code default, Codex for demo-client | spec.md §12 | AC8 |
-| D12 | `/do-feature` via ruflo swarm MCP with per-task cwd injection | spec.md §4 | AC9 |
-| D13 | Validator delegation: skeptic→jujutsu, security-auditor→security-audit, post-deploy-qa→browser | spec.md §4 | AC10 |
+| D12 | `/do-feature` handled by molyanov feature-execution skill directly; ruflo swarm removed 2026-05-20 (inherited-without-critical-eval cleanup) | revised | AC9 |
+| D13 | Validators run as standalone Claude Code Agent types (security-auditor, code-reviewer, test-reviewer); no plugin-delegation needed (ruflo removed 2026-05-20) | revised | AC10 |
 | D14 | Five-point attestation lineage via local Mnemonic MCP `[DEFERRED to backlog feature mnemonic-attestation-integration — mnemonic-mcp server not yet production-ready as of 2026-05]` | spec.md §5 | AC11–AC16 |
 | D15 | QA gates by task_type (byte-equivalence / third-party-verify / MCP-compat / WASM-browser / full-mode) | spec.md §6 | AC17–AC22 |
 | D16 | PR template enforces 4 sections, 500-line cap | spec.md §6 | AC24 |
-| D17 | Per-topic feature toggles per §2.4 matrix | spec.md §7 | AC25–AC27 |
-| D18 | Molyanov Project Knowledge canonical; ruflo cannot overwrite | spec.md §7 | AC28 |
+| D17 | Per-topic config reduced to engine choice only; ruflo cohabitation toggles dropped 2026-05-20 (ruflo removed end-to-end) | revised | AC25–AC27 |
+| D18 | Molyanov Project Knowledge canonical; protected by fail-closed pk-guard pre-write hook (no plugin-cohabitation guard needed after ruflo drop) | revised | AC28 |
 | D19 | `fabric-watchdog` Python systemd-timer, 5-min cadence, 9 alert classes | spec.md §8 | AC29–AC32 |
 | D20 | `/turn-into-task` is Telegram bot command POSTing to Kaneo HTTP API | spec.md §8 | AC31 |
 | D21 | `last-known-good` git tag auto-updates after every non-loop task success | spec.md §10 | AC34 |
@@ -280,7 +294,7 @@ or added in v0.2.0 marked `[v0.2.0]`.
 | D26 | Sanitizer strips base58/JWK/sk-/api_/ANTHROPIC_/tg-file-URLs at every log site | spec.md §9 | AC40 |
 | D27 | Agent trust boundary: in-worktree write, no outward write, no Vaultwarden read, no main push, no production deploy | spec.md §9 | AC41 |
 | D28 | Nightly off-site Restic backups with verified test-restore in bootstrap | spec.md §11 Phase 0 | AC42 |
-| D29 | `ops` topic process tree independent of workspace-manager/ruflo/watchdog | spec.md §10 | AC3 |
+| D29 | `ops` topic process tree independent of workspace-manager/watchdog | spec.md §10 | AC3 |
 | D30 | `[TECHNICAL]` Ansible roles versioned via git tags; CI pins to tag, not branch | Repeatable rollouts; one less drift source | none |
 | D31 | `[TECHNICAL]` OpenTofu state in GH Actions artifact + sops encryption (no Hetzner Object Storage) | Avoid an extra service; state is small and rarely concurrent | none |
 
@@ -333,9 +347,7 @@ each individual `tasks/NN.md` file.
 
 ### Wave 3 — Substrate + methodology + attestation (Ansible)
 
-**T10 — Ansible role `ruflo` (full CLI install + per-topic cohabitation toggles)**
-- Skill: `ansible-automation`; Reviewers: `code-reviewer`, `security-auditor`
-- Files: `infrastructure/ansible/roles/ruflo/`
+**T10 — DROPPED 2026-05-20.** Originally Ansible role `ruflo` (full CLI install + per-topic cohabitation toggles). Removed after operator critical-evaluation: ruflo's features (swarm orchestration, plugin tools, AgentDB memory, observability) overlap with molyanov-ai-dev + Claude Code Agent tooling. ~2000 LOC + 1 external Node dependency removed.
 
 **T11 — Ansible role `molyanov` (skills install + PK guard hook)**
 - Skill: `ansible-automation`; Reviewers: `code-reviewer`
@@ -349,15 +361,11 @@ each individual `tasks/NN.md` file.
 - Skill: `github-actions-pro`; Reviewers: `reliability-engineer`
 - Files: `.github/workflows/e2e-smoke.yml`
 
-### Wave 4 — Swarm bridge + delegation
+### Wave 4 — DROPPED 2026-05-20
 
-**T14 — `fabric/integrations/swarm-bridge.py` (`/do-feature` → ruflo swarm with per-task cwd)**
-- Skill: `python-alchemist`; Reviewers: `code-reviewer`, `reliability-engineer`
-- Files: `fabric/integrations/swarm-bridge.py`, tests
+**T14 — DROPPED 2026-05-20.** Originally `fabric/integrations/swarm-bridge.py` (`/do-feature` → ruflo swarm with per-task cwd). With ruflo removed, `/do-feature` is handled directly by the molyanov `feature-execution` skill; no swarm-bridge adapter is needed.
 
-**T15 — `fabric/molyanov/validators/` (skeptic/security-auditor/post-deploy-qa → ruflo plugin wrappers)**
-- Skill: `python-alchemist`; Reviewers: `code-reviewer`, `security-auditor`
-- Files: `fabric/molyanov/validators/`, tests
+**T15 — DROPPED 2026-05-20.** Originally `fabric/molyanov/validators/` (skeptic/security-auditor/post-deploy-qa → ruflo plugin wrappers). With ruflo removed, validators run as standalone Claude Code Agent types — no wrapper layer needed.
 
 ### Wave 5 — PR conformance + harnesses
 
@@ -417,10 +425,13 @@ the fabric is deployed; never repeated.
 
 ## 5. Testing Strategy (size L)
 
-Unchanged conceptually from v0.1.1. Pyramid balance:
+Unchanged conceptually from v0.1.1, simplified after 2026-05-20 ruflo drop:
+validator-wrapper and swarm-bridge test suites removed alongside the code
+(T14/T15 dropped). Validator and `/do-feature` coverage now lives in the
+natural Claude Code Agent flow exercised by feature execution. Pyramid balance:
 
-- **Unit:** sanitizer (T07), workspace-manager internals (T08), validator wrappers (T15),
-  watchdog checks (T18), swarm-bridge (T14), safe-mode (T19)
+- **Unit:** sanitizer (T07), workspace-manager internals (T08),
+  watchdog checks (T18), safe-mode (T19)
 - **Integration:** workspace-manager API lifecycle; Ansible role idempotency (run each
   role twice on a docker container, second run no changes); OpenTofu `tofu validate`
   + `tofu plan -detailed-exitcode`; Mnemonic MCP signing at each trigger point

@@ -24,7 +24,6 @@
   loop:
     - "{{ molyanov_operator_home }}/.claude/skills"
     - "{{ molyanov_operator_home }}/.fabric/molyanov/hooks"
-    - "{{ molyanov_operator_home }}/.fabric/ruflo/hooks.d"
 
 - name: Ensure molyanov install dir exists
   ansible.builtin.file:
@@ -87,15 +86,6 @@
     group: "{{ molyanov_operator_user }}"
     mode: '0755'
   notify: Molyanov hook installed
-
-- name: Configure ruflo pk-guard integration
-  ansible.builtin.template:
-    src: ruflo-hooks.d-molyanov-pk-guard.yml.j2
-    dest: "{{ molyanov_operator_home }}/.fabric/ruflo/hooks.d/molyanov-pk-guard.yml"
-    owner: "{{ molyanov_operator_user }}"
-    group: "{{ molyanov_operator_user }}"
-    mode: '0644'
-  notify: Ruflo pk-guard hook configured
 
 - name: Verify molyanov skills symlink exists and points into install dir
   ansible.builtin.stat:
