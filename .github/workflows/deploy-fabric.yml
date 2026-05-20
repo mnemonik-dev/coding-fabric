@@ -284,10 +284,23 @@ jobs:
 
       - name: Validate secrets can be decrypted
         run: |
-          # sops output piped to /dev/null — no plaintext reaches logs
-          sops -d infrastructure/secrets/secrets.sops.yml > /dev/null 2>&1 && \
-            echo "Secrets decryption successful" || \
-            (echo "ERROR: Failed to decrypt secrets — check SOPS_AGE_KEY"; exit 1)
+          # Diagnostic info — key file presence and shape (not contents).
+          echo "=== age key file ==="
+          ls -la ~/.config/sops/age/keys.txt
+          echo "line count: $(wc -l < ~/.config/sops/age/keys.txt)"
+          echo "byte count: $(wc -c < ~/.config/sops/age/keys.txt)"
+          echo "first line: $(head -1 ~/.config/sops/age/keys.txt)"
+          echo "public key line: $(grep '^# public key' ~/.config/sops/age/keys.txt || echo MISSING)"
+          echo "private key prefix: $(grep '^AGE-SECRET-KEY-' ~/.config/sops/age/keys.txt | head -c 25)..."
+          echo "=== sops decrypt (stderr captured) ==="
+          # Decrypt to /dev/null but show stderr for diagnostics. Sops never
+          # prints plaintext on stderr — only the cipher/key error messages.
+          if sops -d infrastructure/secrets/secrets.sops.yml > /dev/null; then
+            echo "Secrets decryption successful"
+          else
+            echo "ERROR: sops decryption failed (see stderr above)"
+            exit 1
+          fi
 
       - name: Run Ansible playbook (deploy)
         timeout-minutes: 40
