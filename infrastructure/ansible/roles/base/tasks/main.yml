@@ -90,11 +90,13 @@
 
 - name: Configure ufw to allow Tailscale interface
   become: true
+  # NOTE: community.general.ufw rejects state=present (state accepts only
+  # enabled/disabled/reloaded/reset — see module docs). To add a rule, omit
+  # state entirely; the module is idempotent on rule presence.
   community.general.ufw:
     rule: allow
     interface: tailscale0
     direction: in
-    state: present
   notify: reload ufw
 
 - name: Enable ufw firewall (explicit, after tailscale is running)
