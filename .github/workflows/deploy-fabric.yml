@@ -264,13 +264,39 @@ jobs:
           which sops
           which age
 
-      - name: Tailscale up (ephemeral)
+      - name: Tailscale up (auth key, tag:fabric)
         uses: tailscale/github-action@v3
         with:
-          oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
-          tags: tag:ci-deploy
-          args: --accept-dns
+          # The OAuth client path requires tag:ci-deploy to be pre-approved in
+          # the Tailscale admin → OAuth clients. Run 26166654420 failed all 5
+          # retries with "requested tags [tag:ci-deploy] are invalid or not
+          # permitted". Switch to a reusable auth key from sops — the same key
+          # cloud-init uses to register the VM, with tag:fabric baked in. ACL
+          # for tag:fabric must allow intra-tag traffic for runner -> VM SSH.
+          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          args: --accept-dns --hostname=gh-runner-${{ github.run_id }}
+
+      - name: Assert runner is on tailnet
+        run: |
+          # The `tailscale/github-action` step retries 5 times then exits 0 even
+          # if all attempts fail (it logs "Tailscale up failed" but doesn't fail
+          # the step). Verify connectivity ourselves so downstream steps fail
+          # fast instead of timing out in poll loops.
+          if ! tailscale status >/dev/null 2>&1; then
+            echo "ERROR: tailscale is not running on the runner"
+            tailscale status || true
+            exit 1
+          fi
+          # status returns "Logged out" with rc=0 when not authenticated.
+          STATE=$(tailscale status 2>&1 | head -1)
+          if [[ "$STATE" == *"Logged out"* ]] || [[ "$STATE" == *"stopped"* ]]; then
+            echo "ERROR: tailscaled is up but not authenticated ($STATE)"
+            tailscale status || true
+            exit 1
+          fi
+          echo "Tailscale runner state OK:"
+          tailscale status | head -5
+          echo "Runner's own tailnet IPv4: $(tailscale ip -4 2>/dev/null | head -1)"
 
       - name: Resolve VM tailnet IPv4 (poll up to 5 min)
         id: tsip
