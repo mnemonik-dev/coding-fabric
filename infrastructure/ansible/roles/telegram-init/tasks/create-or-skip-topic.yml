@@ -1,0 +1,40 @@
+---
+# Per-topic create-or-skip sequence. Included with loop from main.yml because
+# Ansible blocks themselves cannot use `loop:` directly — only the include_tasks
+# loops over the block. loop_var: topic_name is the topic identifier
+# (e.g. core, mcp, wasm, ops).
+
+- name: Create topic if not exists
+  ansible.builtin.uri:
+    url: "https://api.telegram.org/bot{{ telegram_bot_token }}/createForumTopic"
+    method: POST
+    body_format: json
+    body:
+      chat_id: "{{ telegram_forum_chat_id }}"
+      name: "{{ topic_name }}"
+      icon_color: "{{ canonical_topics[topic_name].color }}"
+    status_code: [200, 400, 403, 429, 500, 502, 503, 504]
+    timeout: "{{ telegram_api_timeout }}"
+  register: create_topic_response
+  retries: "{{ telegram_api_retries }}"
+  delay: "{{ telegram_api_delay }}"
+  until: create_topic_response.status == 200
+  failed_when: create_topic_response.status not in [200]
+  no_log: true
+  when: topic_name not in existing_topics
+
+- name: Add newly created topic to mapping
+  ansible.builtin.set_fact:
+    telegram_topics: "{{ telegram_topics | combine({topic_name: create_topic_response.json.result.message_thread_id}) }}"
+  when: topic_name not in existing_topics
+  no_log: true
+
+- name: Add existing topic to mapping
+  ansible.builtin.set_fact:
+    telegram_topics: "{{ telegram_topics | combine({topic_name: existing_topics[topic_name]}) }}"
+  when: topic_name in existing_topics
+  no_log: true
+
+- name: Rate limit pause between API calls
+  ansible.builtin.pause:
+    seconds: "{{ telegram_api_rate_limit }}"
