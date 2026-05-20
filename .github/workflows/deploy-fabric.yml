@@ -47,6 +47,16 @@ jobs:
         with:
           tofu_version: ${{ env.TF_VERSION }}
 
+      - name: Restore tofu state from previous run (if any)
+        uses: dawidd6/action-download-artifact@v6
+        continue-on-error: true
+        with:
+          name: tofu-state
+          path: infrastructure/tofu/hetzner/
+          workflow: deploy-fabric.yml
+          workflow_conclusion: ""
+          if_no_artifact_found: warn
+
       - name: Initialize OpenTofu
         working-directory: infrastructure/tofu/hetzner
         env:
@@ -122,6 +132,16 @@ jobs:
         with:
           tofu_version: ${{ env.TF_VERSION }}
 
+      - name: Restore tofu state from previous run (if any)
+        uses: dawidd6/action-download-artifact@v6
+        continue-on-error: true
+        with:
+          name: tofu-state
+          path: infrastructure/tofu/hetzner/
+          workflow: deploy-fabric.yml
+          workflow_conclusion: ""
+          if_no_artifact_found: warn
+
       - name: Initialize OpenTofu
         working-directory: infrastructure/tofu/hetzner
         env:
@@ -191,13 +211,14 @@ jobs:
           echo "ERROR: SSH not ready after ${max_attempts} attempts"
           exit 1
 
-      - name: Upload state artifact (encrypted)
-        if: success()
+      - name: Upload state artifact (even on apply failure)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: tofu-state
           path: infrastructure/tofu/hetzner/terraform.tfstate
           retention-days: 30
+          overwrite: true
 
   ansible-deploy:
     name: Ansible Deploy

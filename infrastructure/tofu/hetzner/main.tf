@@ -210,10 +210,11 @@ resource "hcloud_volume" "fabric_data" {
   size     = var.volume_size_gb
   location = var.hcloud_location
   format   = "ext4"
-  # automount at the volume level applies on initial creation (first attach).
-  # Subsequent attach behaviour is controlled by hcloud_volume_attachment.automount
-  # below. Both are true; the attachment setting is canonical for re-attach ops.
-  automount = true
+  # NOTE: removed `automount = true` because Hetzner provider requires it to be
+  # paired with `server` at volume-creation time, which couples volume lifecycle
+  # to server lifecycle. Instead, automount is set on the SEPARATE
+  # hcloud_volume_attachment resource below — this preserves volume independence
+  # (volume survives server rebuild/replace).
 
   labels = {
     managed_by = "opentofu"
