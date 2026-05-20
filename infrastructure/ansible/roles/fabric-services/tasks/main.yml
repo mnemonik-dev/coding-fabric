@@ -50,7 +50,7 @@
         msg: "Fabric sync: {{ 'changed' if fabric_sync.changed else 'up-to-date' }}"
 
   rescue:
-    - name: Fallback: If rsync unavailable, copy via scp/put
+    - name: "Fallback: If rsync unavailable, copy via scp/put"
       block:
         - name: Create target directories via Ansible
           file:
