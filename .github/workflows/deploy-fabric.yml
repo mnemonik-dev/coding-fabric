@@ -270,29 +270,85 @@ jobs:
           oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
           tags: tag:ci-deploy
+          args: --accept-dns
 
-      - name: Generate Ansible inventory (via MagicDNS hostname over tailnet)
+      - name: Resolve VM tailnet IPv4 (poll up to 5 min)
+        id: tsip
+        env:
+          SERVER_NAME: ${{ needs.tofu-apply.outputs.server_name }}
+        run: |
+          # Multiple resolution paths: try tailscale status (works when ACL
+          # allows runner to see VM), then MagicDNS (`getent hosts`), then
+          # `tailscale ip <hostname>`. First match wins. Polling covers both
+          # cloud-init bootstrap delay and MagicDNS propagation.
+          echo "Tailscale status (full):"
+          tailscale status || true
+          echo "---"
+          for i in $(seq 1 30); do
+            # Path A: status JSON (might be ACL-restricted for tagged runners)
+            VM_IP=$(tailscale status --json 2>/dev/null | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    for peer in (d.get('Peer') or {}).values():
+        if peer.get('HostName') == '${SERVER_NAME}' and peer.get('Online'):
+            for ip in (peer.get('TailscaleIPs') or []):
+                if '.' in ip:
+                    print(ip); break
+            break
+except Exception:
+    pass
+" 2>/dev/null)
+            # Path B: MagicDNS (requires --accept-dns on runner)
+            if [ -z "$VM_IP" ]; then
+              VM_IP=$(getent hosts ${SERVER_NAME} 2>/dev/null | awk '{print $1; exit}')
+            fi
+            # Path C: tailscale ip — uses internal MagicDNS even without --accept-dns
+            if [ -z "$VM_IP" ]; then
+              VM_IP=$(tailscale ip -4 ${SERVER_NAME} 2>/dev/null | head -1)
+            fi
+            if [ -n "$VM_IP" ]; then
+              echo "VM ${SERVER_NAME} resolved to tailnet IPv4 $VM_IP (try ${i})"
+              # Sanity: tailscale IPv4 is in 100.64.0.0/10
+              if echo "$VM_IP" | grep -qE '^100\.'; then
+                echo "vm_ip=$VM_IP" >> "$GITHUB_OUTPUT"
+                exit 0
+              else
+                echo "Got non-tailnet IP $VM_IP — retry"
+                VM_IP=""
+              fi
+            fi
+            echo "[$i/30] not yet resolvable — sleeping 10s"
+            sleep 10
+          done
+          echo "ERROR: ${SERVER_NAME} never resolved in tailnet within 5 min"
+          echo "=== final tailscale status ==="
+          tailscale status || true
+          echo "=== final tailscale netcheck ==="
+          tailscale netcheck || true
+          exit 1
+
+      - name: Generate Ansible inventory (tailnet IPv4)
         env:
           SERVER_NAME: ${{ needs.tofu-apply.outputs.server_name }}
           VOLUME_DEVICE: ${{ needs.tofu-apply.outputs.volume_device }}
+          VM_IP: ${{ steps.tsip.outputs.vm_ip }}
         run: |
-          # Connect via Tailscale MagicDNS hostname (resolvable from any tailnet
-          # member). This bypasses ACL-induced 'tailscale status' visibility
-          # quirks that affect tagged CI runners — DNS resolution still works.
-          # Ansible's built-in SSH retry handles initial connectivity wait.
+          # Use the resolved tailnet IPv4 directly — avoids any DNS/MagicDNS
+          # path on the runner (was the failure mode in run 26165294730).
           mkdir -p infrastructure/ansible/inventory
           cat > infrastructure/ansible/inventory/hosts.yml <<INVENTORY
           all:
             hosts:
               ${SERVER_NAME}:
-                ansible_host: ${SERVER_NAME}
+                ansible_host: ${VM_IP}
                 ansible_user: root
                 ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o ServerAliveInterval=30"
                 ansible_ssh_retries: 5
                 fabric_hostname: ${SERVER_NAME}
                 volume_device: ${VOLUME_DEVICE}
           INVENTORY
-          echo "Inventory generated (MagicDNS path):"
+          echo "Inventory generated (tailnet IPv4=${VM_IP}):"
           cat infrastructure/ansible/inventory/hosts.yml
 
       - name: Create sops-age wrapper for GitHub Actions secret
