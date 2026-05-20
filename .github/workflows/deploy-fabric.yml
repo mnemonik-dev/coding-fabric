@@ -252,10 +252,10 @@ jobs:
 
       - name: Validate secrets can be decrypted
         run: |
-          sops -d infrastructure/ansible/inventory/group_vars/all/secrets.sops.yml > /dev/null 2>&1 && \
+          # sops output piped to /dev/null — no plaintext reaches logs
+          sops -d infrastructure/secrets/secrets.sops.yml > /dev/null 2>&1 && \
             echo "Secrets decryption successful" || \
-            (echo "ERROR: Failed to decrypt secrets"; exit 1)
-        no_log: true
+            (echo "ERROR: Failed to decrypt secrets — check SOPS_AGE_KEY"; exit 1)
 
       - name: Run Ansible playbook (deploy)
         timeout-minutes: 40
