@@ -362,36 +362,36 @@ jobs:
         env:
           SERVER_NAME: ${{ needs.tofu-apply.outputs.server_name }}
         run: |
-          # Multiple resolution paths in priority order:
-          #   1. `tailscale ip -4 <name>` (uses internal tailnet lookup; works
-          #      regardless of OS DNS config; needs the peer to be visible to
-          #      this node — which requires permissive ACL between tag:ci-deploy
-          #      and the VM tag).
-          #   2. `getent hosts <name>` MagicDNS via the OS resolver
-          #      (requires --accept-dns on the runner).
-          #   3. `tailscale status` plain-text parse (works when peer is visible).
-          # Polling covers cloud-init bootstrap delay (~30-60s) and MagicDNS
-          # propagation (~30s typical, up to 5 min worst case).
+          # Run 26175483935 found 3 stale "mnemonic-fabric" devices in the
+          # tailnet from prior deploys (Tailscale appends -1/-2 suffixes only in
+          # the plain-text status display but keeps the original HostName in
+          # JSON for ALL of them). `tailscale ip -4 <name>` returned the first
+          # match — typically the OLDEST/offline ghost — and Ansible then SSH'd
+          # to a dead IP for 14 min.
+          #
+          # Robust resolution: parse status JSON and select ONLY the peer with
+          # HostName == SERVER_NAME AND Online == true. Return its tailnet IPv4
+          # (the .x address; ignore the IPv6 fd7a:... companion).
           echo "Initial tailscale status:"
           tailscale status || true
           echo "---"
           for i in $(seq 1 30); do
-            VM_IP=$(tailscale ip -4 "${SERVER_NAME}" 2>/dev/null | head -1)
-            if [ -z "$VM_IP" ]; then
-              VM_IP=$(getent hosts "${SERVER_NAME}" 2>/dev/null | awk '{print $1; exit}')
-            fi
-            if [ -z "$VM_IP" ]; then
-              VM_IP=$(tailscale status 2>/dev/null | awk -v h="${SERVER_NAME}" '$2 == h {print $1; exit}')
-            fi
-            if [ -n "$VM_IP" ] && echo "$VM_IP" | grep -qE '^100\.'; then
-              echo "VM ${SERVER_NAME} resolved to tailnet IPv4 $VM_IP (try ${i}/30)"
+            VM_IP=$(tailscale status --json 2>/dev/null | jq -r --arg name "$SERVER_NAME" '
+              [(.Peer // {} | to_entries[].value)
+                | select(.HostName == $name and .Online == true)
+                | (.TailscaleIPs // [])[]
+                | select(test("^100\\."))
+              ] | first // ""
+            ')
+            if [ -n "$VM_IP" ]; then
+              echo "VM ${SERVER_NAME} resolved to online tailnet IPv4 $VM_IP (try ${i}/30)"
               echo "vm_ip=$VM_IP" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            echo "[$i/30] not yet resolvable — sleeping 10s"
+            echo "[$i/30] no ONLINE peer with HostName=${SERVER_NAME} yet — sleeping 10s"
             sleep 10
           done
-          echo "ERROR: ${SERVER_NAME} never resolved in tailnet within 5 min"
+          echo "ERROR: no online ${SERVER_NAME} peer appeared within 5 min"
           echo "=== final tailscale status ==="
           tailscale status || true
           echo "=== final tailscale netcheck ==="
