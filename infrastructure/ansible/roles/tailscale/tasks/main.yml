@@ -1,12 +1,4 @@
 ---
-- name: Verify tailscale_authkey is provided
-  ansible.builtin.assert:
-    that:
-      - tailscale_authkey is defined
-      - tailscale_authkey | length > 0
-    fail_msg: "tailscale_authkey is required and must not be empty"
-  no_log: true
-
 # In our deploy pipeline, cloud-init has already installed Tailscale and run
 # `tailscale up` BEFORE Ansible can reach the VM (the runner reaches the VM
 # only via that established tailnet membership). Detect that prior state and
@@ -29,6 +21,22 @@
   changed_when: false
   failed_when: false
   check_mode: false
+
+- name: Verify tailscale_authkey is provided (only if install branch will run)
+  # tailscale role runs as a meta-dependency for vaultwarden/kaneo/molyanov/
+  # telegram-ai-agent. Those dependency invocations DON'T inherit the
+  # `vars: { tailscale_authkey: ... }` from the top-level role inclusion in
+  # deploy.yml, so the var resolves to its role default of "" and the prior
+  # unconditional assertion failed mid-play (run 26184599004). Gating on
+  # rc != 0 means we only require the authkey when the install branch is
+  # actually about to run — which never happens after the first invocation.
+  ansible.builtin.assert:
+    that:
+      - tailscale_authkey is defined
+      - tailscale_authkey | length > 0
+    fail_msg: "tailscale_authkey is required when Tailscale isn't already installed"
+  when: tailscale_version.rc != 0
+  no_log: true
 
 - name: Install + bring up Tailscale (only if cloud-init didn't already)
   when: tailscale_version.rc != 0
