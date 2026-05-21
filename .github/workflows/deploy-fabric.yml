@@ -297,13 +297,26 @@ jobs:
           cache: 'pip'
 
       - name: Install Ansible and collections
+        env:
+          # galaxy.ansible.com has been flaky (HTTP 520, read timeouts) in
+          # multiple runs (26226063220, 26227243481). Raise the HTTP timeout
+          # via env, then retry the collection install up to 5 times with
+          # exponential backoff before failing the step.
+          ANSIBLE_GALAXY_SERVER_LIST: ""
+          ANSIBLE_GALAXY_HTTP_TIMEOUT: "120"
         run: |
           pip install --upgrade pip
-          # NOTE: 'sops' on PyPI is a different, abandoned project — NOT the
-          # Mozilla/getsops binary we need. 'age' on PyPI is also not the right
-          # tool. Install both as real CLI binaries in a separate step below.
           pip install ansible-core>=2.16 jinja2 pyyaml
-          ansible-galaxy collection install -r infrastructure/ansible/requirements.yml
+          for i in 1 2 3 4 5; do
+            echo "=== ansible-galaxy collection install attempt $i/5 ==="
+            if ansible-galaxy collection install --timeout 120 -r infrastructure/ansible/requirements.yml; then
+              echo "Galaxy install succeeded on attempt $i"
+              exit 0
+            fi
+            sleep $((10 * i))
+          done
+          echo "ERROR: ansible-galaxy collection install failed 5 times"
+          exit 1
 
       - name: Install sops + age CLI binaries
         env:
