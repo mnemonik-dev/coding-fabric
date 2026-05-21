@@ -214,7 +214,11 @@
     - role: mnemonic-mcp
       tags: [mnemonic-mcp, attestation]
       vars:
-        mnemonic_mcp_enabled: "{{ mnemonic_mcp_enabled | default(false) }}"
+        # Don't restate mnemonic_mcp_enabled here — referencing the same
+        # var name on the LHS produced a Jinja recursive-template loop
+        # ("{{ mnemonic_mcp_enabled | default(false) }}" expands to itself —
+        # run 26228514662). The role default (defaults/main.yml) already
+        # pins it to false; operator overrides via group_vars or CLI.
         mnemonic_mcp_install_dir: "/opt/mnemonic-mcp"
         mnemonic_mcp_hooks:
           - post-deploy.sh
