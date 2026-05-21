@@ -122,13 +122,18 @@
         vaultwarden_tailnet_bind_only: true
 
     # Phase 3: Observability + Telegram (Kaneo + Bot setup)
+    # Kaneo is DESCOPED for first happy-path deploy (run 26212106417):
+    # the upstream ghcr.io/usekaneo/kaneo:latest image's port-binding and
+    # /api/health endpoint don't match what this role assumes — probe got
+    # Connection refused on tailscale_ip:3030 after 10min of retries. The
+    # observability stack is not on the critical path (operator → Telegram
+    # bot → Claude on VM). Re-enable by setting kaneo_enabled=true after
+    # the compose template / env vars are aligned with the real image.
     - role: kaneo
       tags: [kaneo, observability]
+      when: kaneo_enabled | default(false) | bool
       vars:
         kaneo_data_dir: "/opt/kaneo"
-        # Required by kaneo role's compose template; mapped from sops field
-        # kaneo_api_token (placeholder OK on first deploy — operator updates
-        # sops with the real token from Kaneo admin UI later).
         kaneo_api_token: "{{ vault_kaneo_api_token }}"
         kaneo_projects:
           - mnemonic-core
