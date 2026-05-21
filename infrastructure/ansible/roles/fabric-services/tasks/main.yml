@@ -22,17 +22,23 @@
     group: "{{ base_operator_user }}"
     mode: '0755'
 
-- name: Determine if fabric repo is available for rsync
+- name: Determine if fabric repo is available for rsync (controller-side check)
+  # The fabric/ source tree lives on the CONTROLLER (CI runner / operator
+  # laptop), NOT the target VM. Run stat on localhost. Previously stat ran
+  # on the target (where /opt/fabric was empty), so the rsync was always
+  # skipped and downstream tasks tried to operate on missing files (run
+  # 26230891274).
+  delegate_to: localhost
+  become: false
   stat:
-    path: "{{ fabric_repo_checkout | default(lookup('env', 'PWD')) }}/fabric"
+    path: "{{ fabric_repo_checkout }}/fabric"
   register: fabric_repo_stat
-  when: lookup('env', 'PWD') | length > 0
 
-- name: Rsync fabric/* to /opt/fabric (from repo or CI)
+- name: Rsync fabric/* to /opt/fabric (from controller to target)
   block:
     - name: Sync fabric directory
       synchronize:
-        src: "{{ fabric_repo_checkout | default(lookup('env', 'PWD')) }}/fabric/"
+        src: "{{ fabric_repo_checkout }}/fabric/"
         dest: "{{ fabric_target_dir }}/"
         archive: yes
         delete: no
@@ -41,7 +47,7 @@
         perms: yes
         compress: yes
       become: no
-      delegate_to: "{{ inventory_hostname }}"
+      # Default direction is controller→target — that is what we want.
       when: fabric_repo_stat.stat.exists | default(false)
       register: fabric_sync
 

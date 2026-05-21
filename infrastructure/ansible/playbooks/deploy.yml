@@ -233,7 +233,11 @@
       vars:
         # cloud-init created `op`; default `operator` doesn't exist.
         base_operator_user: op
-        fabric_repo_checkout: "{{ lookup('env', 'PWD') }}"
+        # The fabric/ source tree lives at the repo root, two levels up
+        # from this playbook (infrastructure/ansible/playbooks/). Compute
+        # absolute path on the controller. Was previously lookup(env, PWD)
+        # which depended on the runner's shell cwd.
+        fabric_repo_checkout: "{{ playbook_dir | dirname | dirname | dirname }}"
         fabric_target_dir: "/opt/fabric"
         workspace_manager_listen_ip: "127.0.0.1"
         workspace_manager_listen_port: 8080
