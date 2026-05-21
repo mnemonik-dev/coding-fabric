@@ -19,6 +19,11 @@
       - ufw
       - unattended-upgrades
       - apt-listchanges
+      # rsync is required on the TARGET for the fabric-services role's
+      # synchronize task (run 26232377293 hung silently because the
+      # remote end of rsync was missing). Installing here lets every
+      # downstream role's synchronize calls work.
+      - rsync
     state: present
   register: packages_installed
 

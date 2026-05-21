@@ -46,6 +46,13 @@
         group: no
         perms: yes
         compress: yes
+        rsync_opts:
+          # Exclude noise that would otherwise push tens of MB of pyc
+          # cache + local dev logs over SSH on every deploy.
+          - "--exclude=__pycache__"
+          - "--exclude=*.pyc"
+          - "--exclude=logs/"
+          - "--exclude=.pytest_cache"
       become: no
       # Default direction is controller→target — that is what we want.
       when: fabric_repo_stat.stat.exists | default(false)
