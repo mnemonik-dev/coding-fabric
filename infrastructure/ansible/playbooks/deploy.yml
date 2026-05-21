@@ -195,6 +195,10 @@
     - role: molyanov
       tags: [molyanov, substrate]
       vars:
+        # cloud-init created 'op'; the role's default 'mnemonic-operator'
+        # doesn't exist (run 26223696015: "chown failed: failed to look
+        # up user mnemonic-operator").
+        molyanov_operator_user: op
         molyanov_skills_path: "/opt/molyanov/skills"
         molyanov_pk_guard_enabled: true
 
@@ -218,6 +222,8 @@
     - role: fabric-services
       tags: [fabric-services, deploy]
       vars:
+        # cloud-init created `op`; default `operator` doesn't exist.
+        base_operator_user: op
         fabric_repo_checkout: "{{ lookup('env', 'PWD') }}"
         fabric_target_dir: "/opt/fabric"
         workspace_manager_listen_ip: "127.0.0.1"
