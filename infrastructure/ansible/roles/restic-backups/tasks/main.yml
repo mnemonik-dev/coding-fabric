@@ -105,6 +105,32 @@
   no_log: true   # SECURITY: contents include RESTIC_PASSWORD plaintext
   notify: Reload systemd daemon
 
+- name: Extract SFTP host from restic_repository (for known_hosts)
+  ansible.builtin.set_fact:
+    # restic_repository looks like sftp:USER@HOST:/path — pull HOST.
+    restic_sftp_host: "{{ restic_repository | regex_search('sftp:[^@]+@([^:]+):', '\\1') | first | default('') }}"
+  when: restic_repository.startswith('sftp:')
+
+- name: Pre-accept SFTP host key for restic Storage Box
+  # restic's sftp:// transport uses the system ssh client, which prompts
+  # on first connection ("Are you sure you want to continue connecting?")
+  # and aborts under Ansible. Pre-populate /root/.ssh/known_hosts so the
+  # first restic init/list runs non-interactively (run 26221445429).
+  become: true
+  ansible.builtin.shell: |
+    set -e
+    mkdir -p /root/.ssh
+    chmod 700 /root/.ssh
+    touch /root/.ssh/known_hosts
+    chmod 600 /root/.ssh/known_hosts
+    ssh-keyscan -H "{{ restic_sftp_host }}" 2>/dev/null >> /root/.ssh/known_hosts
+    # Deduplicate; ssh-keyscan appends a fresh copy every run.
+    sort -u /root/.ssh/known_hosts -o /root/.ssh/known_hosts
+  when:
+    - restic_repository.startswith('sftp:')
+    - restic_sftp_host | length > 0
+  changed_when: false
+
 - name: Check if restic repository is initialized
   ansible.builtin.command:
     cmd: "/usr/local/bin/restic list snapshots"
