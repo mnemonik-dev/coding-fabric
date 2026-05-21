@@ -34,27 +34,55 @@
     path: "{{ fabric_repo_checkout }}/fabric"
   register: fabric_repo_stat
 
-- name: Copy fabric/ to /opt/fabric (controller → target)
-  # Originally used synchronize/rsync. That module does NOT auto-inherit
-  # ansible_ssh_private_key_file from inventory — rsync hung at SSH auth
-  # in two consecutive runs (26232377293, 26233951856). copy uses Ansible's
-  # built-in transport which DOES pick up the inventory's private key.
-  # Slower for large trees, but our fabric/ source after exclusions is <2MB.
-  ansible.builtin.copy:
-    src: "{{ fabric_repo_checkout }}/fabric/"
-    dest: "{{ fabric_target_dir }}/"
+- name: Package fabric/ into a tarball on controller (excluding bloat)
+  # Per-file SFTP via ansible.builtin.copy is too slow for the 182MB
+  # source tree (run 26239860311: 34-min timeout transferring file by
+  # file). Tar locally with exclusions, single upload, untar on target.
+  delegate_to: localhost
+  become: false
+  ansible.builtin.command:
+    cmd: >
+      tar -czf /tmp/fabric-source.tar.gz
+        --exclude=__pycache__
+        --exclude='*.pyc'
+        --exclude=logs
+        --exclude=.pytest_cache
+        --exclude=.git
+        -C {{ fabric_repo_checkout }}
+        fabric
+  when: fabric_repo_stat.stat.exists | default(false)
+  changed_when: true
+
+- name: Upload + extract fabric tarball to target
+  ansible.builtin.unarchive:
+    src: /tmp/fabric-source.tar.gz
+    dest: "{{ fabric_target_dir }}/.."
     owner: "{{ base_operator_user }}"
     group: "{{ base_operator_user }}"
-    mode: preserve
+    creates: "{{ fabric_target_dir }}/.deployed-marker"
   when: fabric_repo_stat.stat.exists | default(false)
   register: fabric_sync
 
-- name: Report fabric copy result
+- name: Touch deployed-marker so the unarchive is idempotent
+  ansible.builtin.file:
+    path: "{{ fabric_target_dir }}/.deployed-marker"
+    state: touch
+    owner: "{{ base_operator_user }}"
+    group: "{{ base_operator_user }}"
+    mode: '0644'
+  when: fabric_repo_stat.stat.exists | default(false)
+
+- name: Clean up controller-side tarball
+  delegate_to: localhost
+  become: false
+  ansible.builtin.file:
+    path: /tmp/fabric-source.tar.gz
+    state: absent
+  when: fabric_repo_stat.stat.exists | default(false)
+
+- name: Report fabric sync result
   ansible.builtin.debug:
     msg: "Fabric sync: {{ 'changed' if fabric_sync.changed | default(false) else 'up-to-date' }}"
-
-# Orphaned rsync-rescue block removed — copy is now the primary mechanism,
-# not a fallback.
 
 - name: Install Python dependencies for fabric services
   block:
