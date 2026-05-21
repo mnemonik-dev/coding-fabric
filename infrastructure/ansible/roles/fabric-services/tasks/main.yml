@@ -34,67 +34,27 @@
     path: "{{ fabric_repo_checkout }}/fabric"
   register: fabric_repo_stat
 
-- name: Rsync fabric/* to /opt/fabric (from controller to target)
-  block:
-    - name: Sync fabric directory
-      synchronize:
-        src: "{{ fabric_repo_checkout }}/fabric/"
-        dest: "{{ fabric_target_dir }}/"
-        archive: yes
-        delete: no
-        owner: no
-        group: no
-        perms: yes
-        compress: yes
-        rsync_opts:
-          # Exclude noise that would otherwise push tens of MB of pyc
-          # cache + local dev logs over SSH on every deploy.
-          - "--exclude=__pycache__"
-          - "--exclude=*.pyc"
-          - "--exclude=logs/"
-          - "--exclude=.pytest_cache"
-      become: no
-      # Default direction is controller→target — that is what we want.
-      when: fabric_repo_stat.stat.exists | default(false)
-      register: fabric_sync
+- name: Copy fabric/ to /opt/fabric (controller → target)
+  # Originally used synchronize/rsync. That module does NOT auto-inherit
+  # ansible_ssh_private_key_file from inventory — rsync hung at SSH auth
+  # in two consecutive runs (26232377293, 26233951856). copy uses Ansible's
+  # built-in transport which DOES pick up the inventory's private key.
+  # Slower for large trees, but our fabric/ source after exclusions is <2MB.
+  ansible.builtin.copy:
+    src: "{{ fabric_repo_checkout }}/fabric/"
+    dest: "{{ fabric_target_dir }}/"
+    owner: "{{ base_operator_user }}"
+    group: "{{ base_operator_user }}"
+    mode: preserve
+  when: fabric_repo_stat.stat.exists | default(false)
+  register: fabric_sync
 
-    - name: Report rsync changes
-      debug:
-        msg: "Fabric sync: {{ 'changed' if fabric_sync.changed else 'up-to-date' }}"
+- name: Report fabric copy result
+  ansible.builtin.debug:
+    msg: "Fabric sync: {{ 'changed' if fabric_sync.changed | default(false) else 'up-to-date' }}"
 
-  rescue:
-    - name: "Fallback: If rsync unavailable, copy via scp/put"
-      block:
-        - name: Create target directories via Ansible
-          file:
-            path: "{{ fabric_target_dir }}/{{ item }}"
-            state: directory
-          loop:
-            - logs/sanitizer
-            - workspace-manager
-            - integrations
-            - molyanov
-            - watchdog
-            - safe-mode
-            - github-templates
-
-        - name: Copy fabric modules (fallback)
-          copy:
-            src: "{{ fabric_repo_checkout | default(lookup('env', 'PWD')) }}/fabric/{{ item }}"
-            dest: "{{ fabric_target_dir }}/{{ item }}"
-            owner: "{{ base_operator_user }}"
-            group: "{{ base_operator_user }}"
-            mode: '0644'
-            recursive: yes
-          loop:
-            - logs/sanitizer
-            - workspace-manager
-            - integrations
-            - molyanov
-            - watchdog
-            - safe-mode
-          ignore_errors: yes
-      when: fabric_repo_stat.stat.exists | default(false)
+# Orphaned rsync-rescue block removed — copy is now the primary mechanism,
+# not a fallback.
 
 - name: Install Python dependencies for fabric services
   block:
