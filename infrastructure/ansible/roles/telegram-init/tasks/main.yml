@@ -6,15 +6,18 @@
       ansible.builtin.assert:
         that:
           - telegram_bot_token is defined
-          - telegram_bot_token | length > 0
+          - (telegram_bot_token | string | length) > 0
         fail_msg: "telegram_bot_token must be passed to role via playbook vars (decrypted by community.sops.load_vars)"
       no_log: true
 
     - name: Validate telegram_forum_chat_id is defined
+      # telegram_forum_chat_id from sops is a negative integer (e.g.
+      # -1003450829353); the `length` filter does not work on ints, so we
+      # cast to string first (run 26213211213).
       ansible.builtin.assert:
         that:
           - telegram_forum_chat_id is defined
-          - telegram_forum_chat_id | length > 0
+          - (telegram_forum_chat_id | string | length) > 0
         fail_msg: "telegram_forum_chat_id must be passed to role via playbook vars (decrypted by community.sops.load_vars)"
       no_log: true
 
