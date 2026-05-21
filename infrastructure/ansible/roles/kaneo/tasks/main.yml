@@ -142,7 +142,7 @@
 
 - name: Verify Kaneo container is running
   ansible.builtin.shell: |
-    docker ps --filter "label=com.docker.compose.service=kaneo" --format "{{.Names}}"
+    docker ps --filter "label=com.docker.compose.service=kaneo" --format "{{ '{{' }}.Names{{ '}}' }}"
   register: container_check
   failed_when: container_check.stdout_lines | length < 1
   changed_when: false

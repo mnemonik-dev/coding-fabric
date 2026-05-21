@@ -225,9 +225,11 @@
       This is the upstream Vaultwarden design: admin password is set interactively on first login, not seeded.
 
 - name: Verify Vaultwarden and Caddy containers are running
+  # Jinja escape the docker --format double-braces so Ansible does not try
+  # to interpolate them ("Syntax error in template: unexpected '.'").
   ansible.builtin.shell: |
-    docker ps --filter "label=com.docker.compose.service=vaultwarden" --format "{{.Names}}"
-    docker ps --filter "label=com.docker.compose.service=caddy" --format "{{.Names}}"
+    docker ps --filter "label=com.docker.compose.service=vaultwarden" --format "{{ '{{' }}.Names{{ '}}' }}"
+    docker ps --filter "label=com.docker.compose.service=caddy" --format "{{ '{{' }}.Names{{ '}}' }}"
   register: container_check
-  failed_when: container_check.stdout_lines|length < 2
+  failed_when: container_check.stdout_lines | length < 2
   changed_when: false
