@@ -42,5 +42,8 @@
   metrics
 }
 
-# Optional: snippets injected by other roles (kaneo, future apps)
+# Optional: snippets injected by other roles (kaneo, future apps).
+# Wildcard import on a missing directory makes caddy abort startup;
+# the path is mounted from /opt/vaultwarden/caddy_conf_d (created below).
+# That directory may be empty — caddy treats no matches as OK.
 import /etc/caddy/conf.d/*.conf

@@ -84,6 +84,8 @@
   loop:
     - /opt/vaultwarden
     - /opt/vaultwarden/data
+    # conf.d must exist for caddy's import-glob even if empty.
+    - /opt/vaultwarden/caddy_conf_d
 
 - name: Generate docker-compose.yml from template
   become: true
@@ -166,12 +168,50 @@
   ansible.builtin.debug:
     msg: "Vaultwarden probe status={{ health_result.status | default('no-status') }} url={{ health_result.url | default('?') }}"
 
+- name: Diagnostic — docker ps + container logs (run only if probe failed)
+  when: health_result.status is not defined or health_result.status not in [200, 401]
+  become: true
+  block:
+    - name: docker ps
+      ansible.builtin.command: docker ps -a --format "table {{ '{{' }}.Names{{ '}}' }}\t{{ '{{' }}.Status{{ '}}' }}\t{{ '{{' }}.Ports{{ '}}' }}"
+      register: ps_out
+      changed_when: false
+    - name: show docker ps
+      ansible.builtin.debug:
+        msg: "{{ ps_out.stdout_lines }}"
+
+    - name: caddy logs (last 80 lines)
+      ansible.builtin.command: docker logs --tail 80 vaultwarden-caddy-1
+      register: caddy_logs
+      changed_when: false
+      failed_when: false
+    - name: show caddy logs
+      ansible.builtin.debug:
+        msg: "{{ caddy_logs.stdout_lines + caddy_logs.stderr_lines }}"
+
+    - name: vaultwarden logs (last 50 lines)
+      ansible.builtin.command: docker logs --tail 50 vaultwarden-vaultwarden-1
+      register: vw_logs
+      changed_when: false
+      failed_when: false
+    - name: show vaultwarden logs
+      ansible.builtin.debug:
+        msg: "{{ vw_logs.stdout_lines + vw_logs.stderr_lines }}"
+
+    - name: ss -ltn (what's listening?)
+      ansible.builtin.command: ss -ltn
+      register: ss_out
+      changed_when: false
+      failed_when: false
+    - name: show listening sockets
+      ansible.builtin.debug:
+        msg: "{{ ss_out.stdout_lines }}"
+
 - name: Fail if health probe never reached vaultwarden
   ansible.builtin.fail:
     msg: |
       Vaultwarden health probe failed after 150s.
-      Compose state: docker ps; compose logs: docker compose -f /opt/vaultwarden/docker-compose.yml logs
-      Health result: {{ health_result | to_nice_json }}
+      See preceding debug tasks for docker ps, caddy logs, vaultwarden logs, ss -ltn.
   when: health_result.status is not defined or health_result.status not in [200, 401]
 
 - name: Operator note - register first admin user via web UI

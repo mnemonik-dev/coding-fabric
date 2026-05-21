@@ -39,6 +39,9 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./caddy_data:/data
       - ./caddy_config:/config
+      # conf.d may be empty but the directory MUST exist — Caddy's
+      # `import /etc/caddy/conf.d/*.conf` aborts startup otherwise.
+      - ./caddy_conf_d:/etc/caddy/conf.d:ro
     networks:
       - vaultwarden
     # caddy depends_on vaultwarden with service_started (default), NOT
