@@ -172,9 +172,15 @@
       vars:
         restic_repository: "{{ vault_restic_repository | default('') }}"
         restic_password: "{{ vault_restic_password | default('') }}"
+        # Role's assertion requires telegram_bot_token + telegram_ops_chat_id
+        # for failure notifications. ops topic lives inside the forum
+        # supergroup, so chat_id = forum_chat_id (cast to string — sops emits
+        # the negative number as int).
+        telegram_bot_token: "{{ vault_telegram_bot_token | default('') }}"
+        telegram_ops_chat_id: "{{ vault_telegram_forum_chat_id | string }}"
+        telegram_ops_thread_id: "{{ vault_telegram_ops_thread_id | default('0') }}"
         restic_backup_paths:
           - /opt/vaultwarden
-          - /opt/kaneo
           - /opt/mnemonic-loop
         restic_retention_days: 30
 
