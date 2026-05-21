@@ -18,4 +18,9 @@ molyanov_pk_guard_refs_pattern: ".claude/skills/project-knowledge/references/"
 
 # Telegram bot token source (from sops secrets)
 molyanov_telegram_bot_token_sops_key: "telegram_bot_token"
-molyanov_telegram_ops_topic_id: "{{ molyanov_telegram_ops_topic_id }}"
+# Telegram ops-topic thread id. The prior default was a literal self-
+# reference ("{{ molyanov_telegram_ops_topic_id }}") which produced
+# "Recursive loop detected in template: maximum recursion depth exceeded"
+# at render time (run 26224871492). "0" is the safe placeholder; the
+# playbook overrides with vault_telegram_ops_thread_id when known.
+molyanov_telegram_ops_topic_id: "0"

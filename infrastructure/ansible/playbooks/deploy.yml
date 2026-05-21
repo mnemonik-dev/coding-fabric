@@ -197,8 +197,13 @@
       vars:
         # cloud-init created 'op'; the role's default 'mnemonic-operator'
         # doesn't exist (run 26223696015: "chown failed: failed to look
-        # up user mnemonic-operator").
+        # up user mnemonic-operator"). Also override the matching home dir.
         molyanov_operator_user: op
+        molyanov_operator_home: /home/op
+        # Real ops-topic id from telegram-init (set in topics inventory);
+        # role's default is "0" because the role defaults file used to
+        # self-reference and produced a recursive-template loop.
+        molyanov_telegram_ops_topic_id: "{{ vault_telegram_ops_thread_id | default('0') }}"
         molyanov_skills_path: "/opt/molyanov/skills"
         molyanov_pk_guard_enabled: true
 
