@@ -20,23 +20,21 @@
   register: compose_template
   notify: Restart kaneo
 
-- name: Generate Caddy vhost snippet from template
+- name: Generate Caddy vhost snippet directly into shared conf.d host dir
+  # The vaultwarden role mounts /opt/vaultwarden/caddy_conf_d → caddy's
+  # /etc/caddy/conf.d (read-only). Write the snippet straight to the host
+  # directory; the same file is visible inside the caddy container. The
+  # previous `docker cp` approach failed: "mounted volume is marked
+  # read-only" (run 26210138402).
+  become: true
   ansible.builtin.template:
     src: Caddyfile.snippet.j2
-    dest: /opt/kaneo/Caddyfile.snippet
+    dest: /opt/vaultwarden/caddy_conf_d/kaneo.conf
     owner: op
     group: op
     mode: '0644'
   register: caddyfile_snippet
   notify: Reload caddy for kaneo vhost
-
-- name: Copy Caddy snippet into Caddy container
-  ansible.builtin.shell: |
-    docker cp /opt/kaneo/Caddyfile.snippet {{ vaultwarden_caddy_container_name }}:/etc/caddy/conf.d/kaneo.conf
-  become: true
-  changed_when: caddyfile_snippet.changed
-  when: caddyfile_snippet.changed
-  notify: Reload caddy
 
 - name: Run docker compose to start kaneo stack
   community.docker.docker_compose_v2:
