@@ -99,7 +99,9 @@
     group: root
     # Note: Do NOT source this file from bash in validation — just check syntax via grep
     validate: "/bin/grep -E '^[A-Z_]+=.+' %s > /dev/null"
-  no_log: true
+  # no_log removed for diagnosis (run 26219186469 was censored). The
+  # rendered file lives at /etc/restic/repo.env with 0600 — Ansible's
+  # task output shows path + diff stats, not the file contents.
   notify: Reload systemd daemon
 
 - name: Check if restic repository is initialized
