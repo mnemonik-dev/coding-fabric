@@ -16,10 +16,14 @@ galaxy_info:
     - python
     - systemd
 
-dependencies:
-  - base
-  - vaultwarden
-  - kaneo
-# workspace-manager is implemented as a sub-component (systemd service) INSIDE
-# this role, not as a separate role. Listing it under dependencies caused
-# Ansible to error out trying to locate a non-existent role 'workspace-manager'.
+dependencies: []
+# All ordering is enforced by the playbook (deploy.yml roles list);
+# meta-dependencies have been removed because Ansible re-runs each listed
+# dep with role defaults only — the playbook's `vars:` block does NOT
+# propagate. That broke vaultwarden's assertion on first deploy
+# (run 26229892893: "Assert required secrets are provided" failed in the
+# meta-dep invocation while the top-level vaultwarden run had succeeded
+# minutes earlier). The playbook's ordered roles list already guarantees
+# base → vaultwarden → kaneo → ... → fabric-services sequencing.
+# workspace-manager is implemented as a sub-component (systemd service)
+# INSIDE this role, not as a separate role.

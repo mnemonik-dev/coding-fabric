@@ -12,11 +12,8 @@ galaxy_info:
         - "22.04"
         - "24.04"
 
-dependencies:
-  - role: base
-    description: OS hardening, ufw, base directories
-  - role: tailscale
-    description: Tailscale installation and tailnet membership; provides tailscale_ip fact
+dependencies: []
+# Ordering is enforced by the playbook (deploy.yml roles list).
 
 collections:
   - community.docker

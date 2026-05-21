@@ -10,8 +10,5 @@ galaxy_info:
     - hooks
     - pk_guard
 
-dependencies:
-  - role: base
-    tags: always
-  - role: tailscale
-    tags: always
+dependencies: []
+# Ordering is enforced by the playbook (deploy.yml roles list).

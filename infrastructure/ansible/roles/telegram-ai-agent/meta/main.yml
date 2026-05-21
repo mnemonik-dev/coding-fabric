@@ -9,14 +9,9 @@ galaxy_info:
       versions:
         - "24.04"
 
-dependencies:
-  - role: base
-  - role: telegram-init
-  - role: tailscale
-  - role: fabric-services
-# workspace-manager is a systemd service deployed by the fabric-services role,
-# not an independent role. Declaring it as a role dep failed with "role
-# workspace-manager not found". Depending on fabric-services here both
-# (a) ensures workspace-manager is up before this role configures its
-#     cwd-resolver URL, and
-# (b) avoids the missing-role failure in role meta resolution.
+dependencies: []
+# All ordering is enforced by the playbook (deploy.yml roles list);
+# meta-dependencies have been removed because Ansible re-runs each listed
+# dep with role defaults only — the playbook's `vars:` block does NOT
+# propagate, breaking role assertions that depend on those vars (same
+# bug pattern that affected fabric-services in run 26229892893).

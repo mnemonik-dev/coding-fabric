@@ -12,8 +12,5 @@ galaxy_info:
     - tailscale
     - caddy
 
-dependencies:
-  - role: tailscale
-    tags: always
-  - role: base
-    tags: always
+dependencies: []
+# Ordering is enforced by the playbook (deploy.yml roles list).
