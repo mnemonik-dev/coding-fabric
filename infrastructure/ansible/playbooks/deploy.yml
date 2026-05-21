@@ -126,6 +126,10 @@
       tags: [kaneo, observability]
       vars:
         kaneo_data_dir: "/opt/kaneo"
+        # Required by kaneo role's compose template; mapped from sops field
+        # kaneo_api_token (placeholder OK on first deploy — operator updates
+        # sops with the real token from Kaneo admin UI later).
+        kaneo_api_token: "{{ vault_kaneo_api_token }}"
         kaneo_projects:
           - mnemonic-core
           - mnemonic-mcp
