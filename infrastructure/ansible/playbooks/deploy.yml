@@ -31,6 +31,13 @@
   hosts: all
   become: yes
   gather_facts: yes
+  environment:
+    # apt-listchanges (installed by base role) can pop an interactive prompt
+    # during package install on the VM, which silently hangs the Ansible SSH
+    # session (multiple runs killed at "Install system Python packages").
+    # Force noninteractive globally for every task in the play.
+    DEBIAN_FRONTEND: noninteractive
+    APT_LISTCHANGES_FRONTEND: none
 
   pre_tasks:
     - name: Display deployment info

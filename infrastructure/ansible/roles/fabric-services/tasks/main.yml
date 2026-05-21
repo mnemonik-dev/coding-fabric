@@ -87,7 +87,14 @@
 - name: Install Python dependencies for fabric services
   block:
     - name: Install system Python packages
-      apt:
+      # apt-listchanges (installed by base role) can pop an interactive
+      # prompt during build-essential install; force noninteractive +
+      # avoid hang (run 26242296166 silently died here).
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+        APT_LISTCHANGES_FRONTEND: none
+      become: true
+      ansible.builtin.apt:
         name:
           - python3
           - python3-venv
@@ -95,6 +102,9 @@
           - python3-dev
           - build-essential
         state: present
+        update_cache: false
+      async: 900   # apt may need up to 15min for build-essential on fresh VM
+      poll: 30
 
     - name: Create Python venv for workspace-manager
       command:
