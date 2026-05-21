@@ -1,6 +1,6 @@
-version: '3.8'
-
 services:
+  # 'version' key removed — obsolete in modern compose, was triggering
+  # warnings in run 26187939733 output.
   vaultwarden:
     image: {{ vaultwarden_image }}
     container_name: vaultwarden-vaultwarden-1
@@ -19,17 +19,15 @@ services:
       - ./data:/data
     networks:
       - vaultwarden
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:80/api/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
-    # NOTE: vaultwarden intentionally has NO depends_on.  Caddy is the reverse
-    # proxy in front of vaultwarden — only caddy needs to wait for vaultwarden
-    # to be healthy.  The previous bidirectional `depends_on` produced a
-    # `circular reference: vaultwarden -> caddy -> vaultwarden` error from
-    # docker compose and prevented the stack from starting (audit T20-HIGH).
+    # Healthcheck removed — the vaultwarden image (debian:bookworm-slim
+    # base) ships neither curl nor wget; the original
+    # `curl -f http://localhost:80/api/health` check failed immediately,
+    # Docker marked the container unhealthy, and caddy's `service_healthy`
+    # gate then timed out the whole stack (run 26187939733). The Ansible
+    # role's "Wait for Vaultwarden API to be healthy" task performs an
+    # external probe from the runner — that is the authoritative health
+    # gate; an in-container check would be redundant.
+    # NOTE: vaultwarden intentionally has NO depends_on.
 
   caddy:
     image: {{ vaultwarden_caddy_image }}
@@ -43,15 +41,12 @@ services:
       - ./caddy_config:/config
     networks:
       - vaultwarden
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:2019/config/"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
+    # caddy depends_on vaultwarden with service_started (default), NOT
+    # service_healthy — vaultwarden has no in-container healthcheck (see
+    # note above). caddy will retry upstream connections naturally if
+    # vaultwarden is still booting.
     depends_on:
-      vaultwarden:
-        condition: service_healthy
+      - vaultwarden
 
 networks:
   vaultwarden:
