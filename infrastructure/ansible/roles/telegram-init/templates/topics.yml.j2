@@ -10,8 +10,10 @@ telegram_topics:
 {% endfor %}
 
 # Topic references for downstream roles (mnemonic-tg-bridge, fabric-watchdog)
-# Example usage in playbooks:
-#   message_thread_id: "{{ lookup('file', playbook_dir + '/inventory/telegram-topics.yml') | from_yaml | .telegram_topics.ops }}"
+# Example usage in playbooks (look up the ops thread_id):
+#   message_thread_id: lookup file → from_yaml → .telegram_topics.ops
+# (literal Jinja example removed — it lives in role README to avoid
+# template-time parse errors in this file).
 
 canonical_topics:
   core:
