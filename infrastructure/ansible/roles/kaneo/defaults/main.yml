@@ -2,12 +2,11 @@
 # Kaneo deployment configuration
 # All variables are prefixed with kaneo_
 
-# Docker image tags
-# TODO before first apply: pin to a specific stable release tag from kaneo-app/kaneo
-# Kaneo is an open-source project management tool (see https://github.com/kaneo-app/kaneo/releases)
-# Current :latest is a placeholder; operator MUST override via group_vars or host_vars
-# Add this to your bootstrap-checklist.md operator todos before deploying
-kaneo_image: "kaneo/kaneo:latest"
+# Docker image. The placeholder "kaneo/kaneo:latest" referenced a
+# non-existent Docker Hub repo (run 26211023902: "pull access denied for
+# kaneo/kaneo"). The real project is published to GitHub Container Registry.
+# See https://github.com/usekaneo/kaneo for tag history.
+kaneo_image: "ghcr.io/usekaneo/kaneo:latest"
 
 # Caddy container name (cross-role dependency with vaultwarden role)
 # This must match the container name defined in the vaultwarden role's docker-compose configuration.
