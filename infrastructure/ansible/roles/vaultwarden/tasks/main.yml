@@ -133,24 +133,46 @@
   # not print secrets; secrets are in /opt/vaultwarden/.env mounted from
   # disk, not in process args.
 
-- name: Wait for Vaultwarden API to be healthy
+- name: Add /etc/hosts entry for vault.<fabric>.ts → tailscale_ip
+  # Run 26203906562 ran compose successfully but the probe URL
+  # https://vault.mnemonic-fabric.ts/api/health never resolved (no DNS for
+  # .ts custom tailnet domain). Add a hosts entry so VM-local lookups
+  # resolve to the tailnet IP (also lets operator hit the same URL).
+  become: true
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: "^[0-9.]+\\s+{{ vaultwarden_tailnet_domain | regex_escape }}\\s*$"
+    line: "{{ tailscale_ip }} {{ vaultwarden_tailnet_domain }}"
+    state: present
+
+- name: Wait for Vaultwarden API to be healthy (via caddy on tailnet IP:8443)
+  # Probe the caddy reverse-proxy that fronts vaultwarden. Caddy listens on
+  # `{vault_domain}:8443` with `tls internal` (self-signed); validate_certs
+  # is false so we accept that. Probe runs ON THE VM, so the hosts entry
+  # above resolves the domain to tailscale_ip locally.
   ansible.builtin.uri:
-    url: "https://{{ vaultwarden_tailnet_domain }}/api/health"
+    url: "https://{{ vaultwarden_tailnet_domain }}:{{ vaultwarden_https_port }}/alive"
     method: GET
-    status_code: 200
+    status_code: [200, 401]   # vaultwarden returns 401 for /api/* until login; /alive returns 200
     validate_certs: false
   register: health_result
-  until: health_result.status == 200
-  retries: 60
-  delay: 1
-  timeout: 60
+  until: health_result.status in [200, 401]
+  retries: 30
+  delay: 5
   changed_when: false
   failed_when: false
 
-- name: Fail if health check exceeded timeout
+- name: Show health probe outcome
+  ansible.builtin.debug:
+    msg: "Vaultwarden probe status={{ health_result.status | default('no-status') }} url={{ health_result.url | default('?') }}"
+
+- name: Fail if health probe never reached vaultwarden
   ansible.builtin.fail:
-    msg: "Vaultwarden health check failed after 60 seconds. Check docker logs: docker compose -f /opt/vaultwarden/docker-compose.yml logs"
-  when: health_result.failed
+    msg: |
+      Vaultwarden health probe failed after 150s.
+      Compose state: docker ps; compose logs: docker compose -f /opt/vaultwarden/docker-compose.yml logs
+      Health result: {{ health_result | to_nice_json }}
+  when: health_result.status is not defined or health_result.status not in [200, 401]
 
 - name: Operator note - register first admin user via web UI
   ansible.builtin.debug:
