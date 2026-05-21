@@ -167,8 +167,15 @@
             description: "Operational alerts + safe-mode"
 
     # Phase 4: Persistence (backups)
+    # DESCOPED for happy-path first deploy (run 26222590804):
+    # restic init fails with auth error on Hetzner Storage Box — the user
+    # needs to upload an SSH key to the Storage Box admin UI first
+    # (https://robot.hetzner.com/storage), then mirror the corresponding
+    # private key into /root/.ssh/ on the VM (or use the operator's key).
+    # Re-enable by setting restic_backups_enabled=true.
     - role: restic-backups
       tags: [restic-backups, persistence]
+      when: restic_backups_enabled | default(false) | bool
       vars:
         restic_repository: "{{ vault_restic_repository | default('') }}"
         restic_password: "{{ vault_restic_password | default('') }}"
