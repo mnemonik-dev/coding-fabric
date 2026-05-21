@@ -10,13 +10,17 @@
 
   reverse_proxy vaultwarden:80 {
     header_up X-Real-IP {remote_host}
-    header_up X-Forwarded-For {remote_host}
     header_up X-Forwarded-Proto https
-    header_up X-Forwarded-Host {host}
+    # X-Forwarded-For and X-Forwarded-Host are added by caddy by default —
+    # explicit header_up rules emit "unnecessary" warnings and previously
+    # masked the real config error below.
 
-    # Health check endpoint
-    health http://vaultwarden:80/api/health
-    health_uri /api/health
+    # Active health check. NOTE: Caddy v2 has NO `health <upstream>`
+    # directive — that line caused config parse failure ("unrecognized
+    # subdirective health, at /etc/caddy/Caddyfile:18") and caddy restart-
+    # looped (run 26205334908). The supported directives are health_uri,
+    # health_interval, health_timeout, health_status.
+    health_uri /alive
     health_interval 10s
     health_timeout 5s
   }
