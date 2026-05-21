@@ -87,12 +87,10 @@
 - name: Install Python dependencies for fabric services
   block:
     - name: Install system Python packages
-      # apt-listchanges (installed by base role) can pop an interactive
-      # prompt during build-essential install; force noninteractive +
-      # avoid hang (run 26242296166 silently died here).
-      environment:
-        DEBIAN_FRONTEND: noninteractive
-        APT_LISTCHANGES_FRONTEND: none
+      # async/poll caused SSH session loss between polls in run
+      # 26250385319 (ASYNC OK at +30s, job ended 35s later). Removed
+      # async; rely on the play-level DEBIAN_FRONTEND/APT_LISTCHANGES
+      # env vars (set in deploy.yml) to prevent interactive prompts.
       become: true
       ansible.builtin.apt:
         name:
@@ -103,8 +101,6 @@
           - build-essential
         state: present
         update_cache: false
-      async: 900   # apt may need up to 15min for build-essential on fresh VM
-      poll: 30
 
     - name: Create Python venv for workspace-manager
       command:

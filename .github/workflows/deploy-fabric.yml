@@ -453,7 +453,11 @@ jobs:
                 ansible_host: ${VM_IP}
                 ansible_user: op
                 ansible_ssh_private_key_file: /tmp/ci_deploy_key
-                ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o ServerAliveInterval=30"
+                # ServerAliveInterval 15s + ServerAliveCountMax 60 = 15min
+                # of grace before the runner considers SSH dead. Earlier 30s
+                # interval lost the tunnel during long-running apt installs
+                # of build-essential (run 26250385319).
+                ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=60 -o TCPKeepAlive=yes"
                 ansible_ssh_retries: 5
                 ansible_become: true
                 ansible_become_method: sudo
