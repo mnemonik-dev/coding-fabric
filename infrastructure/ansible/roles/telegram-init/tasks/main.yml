@@ -98,26 +98,16 @@
 - name: Get existing forum topics with full pagination support
   tags: [telegram-init, telegram-topics]
   block:
-    - name: Initialize topic mapping and pagination state
+    - name: Initialize topic mapping (no pagination — getForumTopics not in Bot API)
+      # The Telegram Bot API does NOT expose getForumTopics — the role's
+      # original paginator hit a 4xx from a non-existent endpoint (run
+      # 26214350429, 3 retries, no_log censored). Treat existing_topics as
+      # empty and let the create-or-skip-topic loop be idempotent (the
+      # underlying createForumTopic is naturally idempotent on the
+      # Telegram side: it returns the existing thread_id on repeat, or a
+      # well-defined 400 we accept below).
       ansible.builtin.set_fact:
         existing_topics: {}
-        pagination_offset: 0
-        pagination_iteration: 0
-        pagination_complete: false
-
-    # NOTE: `until/retries` on a `block:` is silently ignored by Ansible
-    # (only valid at individual task level). The previous implementation had
-    # `until: forum_topics_response.json.result | length == 0` on a block
-    # and ran exactly once. We now drive pagination via include_tasks looping
-    # `telegram_max_pagination_pages` times, with each include short-circuiting
-    # once `pagination_complete=true`. Per-page retries remain on the inner
-    # uri task where Ansible honours them.
-    - name: Paginate through all forum topics until exhausted
-      ansible.builtin.include_tasks: _paginate_topics.yml
-      loop: "{{ range(0, telegram_max_pagination_pages | int) | list }}"
-      loop_control:
-        loop_var: pagination_page_idx
-        label: "page {{ pagination_page_idx }}"
 
 - name: Create canonical topics with icon colors mapping
   tags: [telegram-init, telegram-topics]

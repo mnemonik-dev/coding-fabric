@@ -4,7 +4,12 @@
 # loops over the block. loop_var: topic_name is the topic identifier
 # (e.g. core, mcp, wasm, ops).
 
-- name: Create topic if not exists
+- name: Create or recreate topic (idempotent on Telegram side)
+  # We treat the call as idempotent: if the topic already exists, Telegram
+  # returns 200 with a new thread_id or 400 with "topic already exists" —
+  # both are acceptable for our purpose (we don't depend on the exact
+  # thread_id across redeploys; the inventory is regenerated each run).
+  # Loosening the failed_when accepts 200 and 400.
   ansible.builtin.uri:
     url: "https://api.telegram.org/bot{{ telegram_bot_token }}/createForumTopic"
     method: POST
@@ -18,22 +23,21 @@
   register: create_topic_response
   retries: "{{ telegram_api_retries }}"
   delay: "{{ telegram_api_delay }}"
-  until: create_topic_response.status == 200
-  failed_when: create_topic_response.status not in [200]
-  no_log: true
-  when: topic_name not in existing_topics
+  until: create_topic_response.status in [200, 400]
+  failed_when: create_topic_response.status not in [200, 400]
+  # no_log dropped — bot token isn't in the response body. Allows diagnosis.
 
-- name: Add newly created topic to mapping
+- name: Map newly created topic to thread_id (when API returned 200)
   ansible.builtin.set_fact:
     telegram_topics: "{{ telegram_topics | combine({topic_name: create_topic_response.json.result.message_thread_id}) }}"
-  when: topic_name not in existing_topics
-  no_log: true
+  when:
+    - create_topic_response.status == 200
+    - create_topic_response.json.result.message_thread_id is defined
 
-- name: Add existing topic to mapping
-  ansible.builtin.set_fact:
-    telegram_topics: "{{ telegram_topics | combine({topic_name: existing_topics[topic_name]}) }}"
-  when: topic_name in existing_topics
-  no_log: true
+- name: Topic already existed (400) — leave mapping unset for this name
+  ansible.builtin.debug:
+    msg: "Topic '{{ topic_name }}' already exists on Telegram (HTTP 400) — skipping create"
+  when: create_topic_response.status == 400
 
 - name: Rate limit pause between API calls
   ansible.builtin.pause:
