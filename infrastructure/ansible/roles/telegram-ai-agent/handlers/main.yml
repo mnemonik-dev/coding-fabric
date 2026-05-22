@@ -5,18 +5,14 @@
     daemon_reload: yes
   listen: Daemon reload
 
-# On FIRST deploy, the service file was just created but not yet
-# enabled/started — `reloaded` would fail because there's no running
-# unit. Use `restarted` with failed_when=false so a fresh install
-# (where service was never up) is a no-op, and a config-change rerun
-# triggers a real restart. The dedicated start task later in the role
-# brings it up on first deploy.
+# Use shell-with-||-true because the systemd_service module raises an
+# exception (not a soft failure) when the unit was never started, even
+# with failed_when: false. We want the handler to be a complete no-op
+# on first deploy when the service hasn't started yet — the dedicated
+# Enable + start task later brings it up cleanly.
 - name: Reload telegram-ai-agent
   become: true
-  ansible.builtin.systemd_service:
-    name: telegram-ai-agent
-    state: restarted
+  ansible.builtin.shell: |
+    systemctl restart telegram-ai-agent 2>&1 || true
   listen: Reload telegram-ai-agent
-  failed_when: false
-  register: reload_result
-  changed_when: reload_result.changed | default(false)
+  changed_when: false
