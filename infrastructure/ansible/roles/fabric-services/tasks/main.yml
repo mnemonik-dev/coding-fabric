@@ -45,7 +45,6 @@
       tar -czf /tmp/fabric-source.tar.gz
         --exclude=__pycache__
         --exclude='*.pyc'
-        --exclude=logs
         --exclude=.pytest_cache
         --exclude=.git
         -C {{ fabric_repo_checkout }}
@@ -117,12 +116,14 @@
         cmd: python3 -m venv "{{ fabric_target_dir }}/workspace-manager/venv"
         creates: "{{ fabric_target_dir }}/workspace-manager/venv/bin/python"
 
-    - name: Install workspace-manager dependencies
-      pip:
-        requirements: "{{ fabric_target_dir }}/workspace-manager/requirements.txt"
+    - name: Install workspace-manager dependencies (pyproject.toml)
+      # Fabric services use PEP 621 pyproject.toml (no requirements.txt).
+      # pip install . installs the package from the source dir.
+      ansible.builtin.pip:
+        name: "."
+        chdir: "{{ fabric_target_dir }}/workspace-manager"
         virtualenv: "{{ fabric_target_dir }}/workspace-manager/venv"
-      when: fabric_sync.changed | default(false) or
-            (lookup('file', fabric_target_dir + '/workspace-manager/requirements.txt', errors='ignore') | length > 0)
+        state: present
       ignore_errors: yes
 
     - name: Create Python venv for fabric-watchdog
@@ -130,12 +131,12 @@
         cmd: python3 -m venv "{{ fabric_target_dir }}/watchdog/venv"
         creates: "{{ fabric_target_dir }}/watchdog/venv/bin/python"
 
-    - name: Install watchdog dependencies
-      pip:
-        requirements: "{{ fabric_target_dir }}/watchdog/requirements.txt"
+    - name: Install watchdog dependencies (pyproject.toml)
+      ansible.builtin.pip:
+        name: "."
+        chdir: "{{ fabric_target_dir }}/watchdog"
         virtualenv: "{{ fabric_target_dir }}/watchdog/venv"
-      when: fabric_sync.changed | default(false) or
-            (lookup('file', fabric_target_dir + '/watchdog/requirements.txt', errors='ignore') | length > 0)
+        state: present
       ignore_errors: yes
 
     - name: Create venv for sanitizer
@@ -143,12 +144,12 @@
         cmd: python3 -m venv "{{ fabric_target_dir }}/logs/sanitizer/venv"
         creates: "{{ fabric_target_dir }}/logs/sanitizer/venv/bin/python"
 
-    - name: Install sanitizer dependencies
-      pip:
-        requirements: "{{ fabric_target_dir }}/logs/sanitizer/requirements.txt"
+    - name: Install sanitizer dependencies (pyproject.toml)
+      ansible.builtin.pip:
+        name: "."
+        chdir: "{{ fabric_target_dir }}/logs/sanitizer"
         virtualenv: "{{ fabric_target_dir }}/logs/sanitizer/venv"
-      when: fabric_sync.changed | default(false) or
-            (lookup('file', fabric_target_dir + '/logs/sanitizer/requirements.txt', errors='ignore') | length > 0)
+        state: present
       ignore_errors: yes
 
   become: yes
