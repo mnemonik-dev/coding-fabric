@@ -87,18 +87,18 @@
 - name: Install Python dependencies for fabric services
   block:
     - name: Install system Python packages
-      # async/poll caused SSH session loss between polls in run
-      # 26250385319 (ASYNC OK at +30s, job ended 35s later). Removed
-      # async; rely on the play-level DEBIAN_FRONTEND/APT_LISTCHANGES
-      # env vars (set in deploy.yml) to prevent interactive prompts.
+      # python3-dev + build-essential were needed only for C-extensions;
+      # fabric services use pure-Python deps (fastapi, uvicorn[standard],
+      # httpx, pydantic) which all ship Linux x86_64 wheels. Dropping
+      # build-essential cuts apt install from ~3 min to <30s and avoids
+      # the SSH session loss seen on long apt runs (26239860311,
+      # 26242296166, 26251988278 — all timed out here).
       become: true
       ansible.builtin.apt:
         name:
           - python3
           - python3-venv
           - python3-pip
-          - python3-dev
-          - build-essential
         state: present
         update_cache: false
 
