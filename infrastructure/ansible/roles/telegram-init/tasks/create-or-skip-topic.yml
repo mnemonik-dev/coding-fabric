@@ -4,12 +4,16 @@
 # loops over the block. loop_var: topic_name is the topic identifier
 # (e.g. core, mcp, wasm, ops).
 
-- name: Create or recreate topic (idempotent on Telegram side)
-  # We treat the call as idempotent: if the topic already exists, Telegram
-  # returns 200 with a new thread_id or 400 with "topic already exists" —
-  # both are acceptable for our purpose (we don't depend on the exact
-  # thread_id across redeploys; the inventory is regenerated each run).
-  # Loosening the failed_when accepts 200 and 400.
+- name: Skip — topic already exists in persisted state
+  ansible.builtin.set_fact:
+    telegram_topics: "{{ telegram_topics | combine({topic_name: existing_topics[topic_name]}) }}"
+  when: topic_name in existing_topics
+
+- name: Create new topic (only if not in persisted state)
+  # createForumTopic is NOT idempotent on Telegram's side — calling it again
+  # for the same name CREATES A NEW THREAD. Gate this task on the persisted
+  # state (existing_topics, loaded from /etc/fabric/telegram-topics.yml in
+  # main.yml). Without this gate, every redeploy spammed 8 fresh topics.
   ansible.builtin.uri:
     url: "https://api.telegram.org/bot{{ telegram_bot_token }}/createForumTopic"
     method: POST
@@ -25,20 +29,24 @@
   delay: "{{ telegram_api_delay }}"
   until: create_topic_response.status in [200, 400]
   failed_when: create_topic_response.status not in [200, 400]
-  # no_log dropped — bot token isn't in the response body. Allows diagnosis.
+  when: topic_name not in existing_topics
 
 - name: Map newly created topic to thread_id (when API returned 200)
   ansible.builtin.set_fact:
     telegram_topics: "{{ telegram_topics | combine({topic_name: create_topic_response.json.result.message_thread_id}) }}"
   when:
-    - create_topic_response.status == 200
+    - topic_name not in existing_topics
+    - create_topic_response.status | default(0) == 200
     - create_topic_response.json.result.message_thread_id is defined
 
-- name: Topic already existed (400) — leave mapping unset for this name
+- name: Topic already existed on Telegram (400) — left out of state
   ansible.builtin.debug:
-    msg: "Topic '{{ topic_name }}' already exists on Telegram (HTTP 400) — skipping create"
-  when: create_topic_response.status == 400
+    msg: "Topic '{{ topic_name }}' already exists on Telegram (HTTP 400) but not in our VM state — operator must add it manually to /etc/fabric/telegram-topics.yml after looking up the thread_id"
+  when:
+    - topic_name not in existing_topics
+    - create_topic_response.status | default(0) == 400
 
 - name: Rate limit pause between API calls
   ansible.builtin.pause:
     seconds: "{{ telegram_api_rate_limit }}"
+  when: topic_name not in existing_topics
