@@ -59,9 +59,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          # Filter by size_in_bytes > 800: a fresh-state file with no
+          # resources is ~400 bytes (just header/lineage). A populated
+          # state with the fabric infra is ~1.4kB. A previous failed
+          # Apply uploaded a near-empty state — restoring from that
+          # makes Tofu try to CREATE existing Hetzner resources again
+          # and hit uniqueness_error.
           PRIOR_RUN_ID=$(gh api \
             "repos/${{ github.repository }}/actions/artifacts?name=tofu-state&per_page=20" \
-            --jq ".artifacts | map(select(.expired == false and .workflow_run.id != ${{ github.run_id }})) | .[0].workflow_run.id")
+            --jq ".artifacts | map(select(.expired == false and .workflow_run.id != ${{ github.run_id }} and .size_in_bytes > 800)) | .[0].workflow_run.id")
           if [ -n "$PRIOR_RUN_ID" ] && [ "$PRIOR_RUN_ID" != "null" ]; then
             echo "Restoring tofu-state from prior run $PRIOR_RUN_ID"
             mkdir -p infrastructure/tofu/hetzner
@@ -222,9 +228,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          # Filter by size_in_bytes > 800: a fresh-state file with no
+          # resources is ~400 bytes (just header/lineage). A populated
+          # state with the fabric infra is ~1.4kB. A previous failed
+          # Apply uploaded a near-empty state — restoring from that
+          # makes Tofu try to CREATE existing Hetzner resources again
+          # and hit uniqueness_error.
           PRIOR_RUN_ID=$(gh api \
             "repos/${{ github.repository }}/actions/artifacts?name=tofu-state&per_page=20" \
-            --jq ".artifacts | map(select(.expired == false and .workflow_run.id != ${{ github.run_id }})) | .[0].workflow_run.id")
+            --jq ".artifacts | map(select(.expired == false and .workflow_run.id != ${{ github.run_id }} and .size_in_bytes > 800)) | .[0].workflow_run.id")
           if [ -n "$PRIOR_RUN_ID" ] && [ "$PRIOR_RUN_ID" != "null" ]; then
             echo "Restoring tofu-state from prior run $PRIOR_RUN_ID"
             mkdir -p infrastructure/tofu/hetzner
