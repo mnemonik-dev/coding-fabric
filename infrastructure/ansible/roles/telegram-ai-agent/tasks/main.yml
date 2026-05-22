@@ -10,28 +10,55 @@
           FATAL: tailscale_ip not set. This role requires tailscale to be deployed first (T02).
           See: work/mnemonic-tg-bridge/user-spec.md §3 (mnemonic-tg-bridge feature requirements)
 
-    - name: Verify workspace-manager (T08) is reachable on tailnet
+    - name: Wait for workspace-manager (T08) to bind on tailnet IP:8080
       ansible.builtin.uri:
         url: "http://{{ tailscale_ip }}:8080/health"
         method: GET
         status_code: 200
-        timeout: 10
+        timeout: 5
       register: t08_health
-      failed_when: t08_health.status != 200
-      ignore_errors: no
+      retries: 30
+      delay: 5
+      until: t08_health.status | default(-1) == 200
+      failed_when: false
+
+    - name: Diagnose workspace-manager when probe failed
+      when: t08_health.status | default(-1) != 200
+      become: true
+      block:
+        - name: workspace-manager systemd status
+          ansible.builtin.command: systemctl status workspace-manager --no-pager -n 30
+          register: wm_status
+          changed_when: false
+          failed_when: false
+        - name: show systemd status
+          ansible.builtin.debug:
+            msg: "{{ wm_status.stdout_lines + wm_status.stderr_lines }}"
+
+        - name: workspace-manager journalctl
+          ansible.builtin.command: journalctl -u workspace-manager --no-pager -n 50
+          register: wm_journal
+          changed_when: false
+          failed_when: false
+        - name: show journalctl
+          ansible.builtin.debug:
+            msg: "{{ wm_journal.stdout_lines + wm_journal.stderr_lines }}"
+
+        - name: ss listening sockets
+          ansible.builtin.command: ss -ltn
+          register: ss_ports
+          changed_when: false
+          failed_when: false
+        - name: show listening sockets
+          ansible.builtin.debug:
+            msg: "{{ ss_ports.stdout_lines }}"
 
     - name: FAIL if workspace-manager not reachable
       ansible.builtin.fail:
         msg: |
           FATAL: workspace-manager (T08) not reachable at http://{{ tailscale_ip }}:8080/health
-          This role requires T08 to be deployed and running for DYNAMIC cwd resolution.
-
-          Steps to resolve:
-          1. Verify workspace-manager role (T08) is deployed and running
-          2. Verify tailscale IP ({{ tailscale_ip }}) is accessible on fabric tailnet
-          3. Check: journalctl -u workspace-manager -n 20
-          4. Retry after T08 is healthy
-      when: t08_health.status is defined and t08_health.status != 200
+          See diagnostic output above (systemctl status, journalctl, ss).
+      when: t08_health.status | default(-1) != 200
 
 - name: Install uv package manager
   tags: [telegram-ai-agent, uv]
