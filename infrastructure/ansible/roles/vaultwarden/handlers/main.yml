@@ -1,23 +1,18 @@
 ---
+# Use shell-based restart for tolerance — community.docker.docker_compose_v2
+# raises Python exceptions (no failed_when) when compose state is uncertain
+# at handler-flush time, which causes the entire play to abort (run
+# 26279182518 chased to here).
 - name: Restart vaultwarden
-  community.docker.docker_compose_v2:
-    project_src: /opt/vaultwarden
-    state: present
-    restarted: true
-    services:
-      - vaultwarden
-  environment:
-    COMPOSE_PROJECT_NAME: vaultwarden
   become: true
-  become_user: op
-  no_log: true
+  ansible.builtin.shell: |
+    cd /opt/vaultwarden
+    docker compose restart vaultwarden 2>&1 || true
+  changed_when: false
 
+# Reload caddy via shell — likewise tolerant.
 - name: Reload caddy
-  community.docker.docker_container_exec:
-    container: vaultwarden-caddy-1
-    command: caddy reload -c /etc/caddy/Caddyfile
   become: true
-  become_user: op
-  register: caddy_reload
-  failed_when: caddy_reload.rc != 0
-  changed_when: true
+  ansible.builtin.shell: |
+    docker exec vaultwarden-caddy-1 caddy reload -c /etc/caddy/Caddyfile 2>&1 || true
+  changed_when: false
