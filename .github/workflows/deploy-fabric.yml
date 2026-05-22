@@ -48,14 +48,31 @@ jobs:
           tofu_version: ${{ env.TF_VERSION }}
 
       - name: Restore tofu state from previous run (if any)
-        uses: dawidd6/action-download-artifact@v6
+        # dawidd6/action-download-artifact@v6 with workflow_conclusion: ""
+        # matches the CURRENT run first and ignores prior runs entirely, so
+        # state was never restored — every apply tried to CREATE resources
+        # that Hetzner already had from earlier runs (uniqueness_error on
+        # firewall + volume name). Use gh CLI to find the most-recent OTHER
+        # run that uploaded a tofu-state artifact and download from there.
         continue-on-error: true
-        with:
-          name: tofu-state
-          path: infrastructure/tofu/hetzner/
-          workflow: deploy-fabric.yml
-          workflow_conclusion: ""
-          if_no_artifact_found: warn
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          PRIOR_RUN_ID=$(gh api \
+            "repos/${{ github.repository }}/actions/artifacts?name=tofu-state&per_page=20" \
+            --jq ".artifacts | map(select(.expired == false and .workflow_run.id != ${{ github.run_id }})) | .[0].workflow_run.id")
+          if [ -n "$PRIOR_RUN_ID" ] && [ "$PRIOR_RUN_ID" != "null" ]; then
+            echo "Restoring tofu-state from prior run $PRIOR_RUN_ID"
+            mkdir -p infrastructure/tofu/hetzner
+            gh run download "$PRIOR_RUN_ID" \
+              -n tofu-state \
+              -D infrastructure/tofu/hetzner/ \
+              -R ${{ github.repository }}
+            ls -la infrastructure/tofu/hetzner/terraform.tfstate || echo "WARN: tfstate not present after download"
+          else
+            echo "No prior tofu-state artifact found — proceeding with fresh state."
+          fi
 
       - name: Initialize OpenTofu
         working-directory: infrastructure/tofu/hetzner
@@ -194,14 +211,31 @@ jobs:
           tofu_version: ${{ env.TF_VERSION }}
 
       - name: Restore tofu state from previous run (if any)
-        uses: dawidd6/action-download-artifact@v6
+        # dawidd6/action-download-artifact@v6 with workflow_conclusion: ""
+        # matches the CURRENT run first and ignores prior runs entirely, so
+        # state was never restored — every apply tried to CREATE resources
+        # that Hetzner already had from earlier runs (uniqueness_error on
+        # firewall + volume name). Use gh CLI to find the most-recent OTHER
+        # run that uploaded a tofu-state artifact and download from there.
         continue-on-error: true
-        with:
-          name: tofu-state
-          path: infrastructure/tofu/hetzner/
-          workflow: deploy-fabric.yml
-          workflow_conclusion: ""
-          if_no_artifact_found: warn
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          PRIOR_RUN_ID=$(gh api \
+            "repos/${{ github.repository }}/actions/artifacts?name=tofu-state&per_page=20" \
+            --jq ".artifacts | map(select(.expired == false and .workflow_run.id != ${{ github.run_id }})) | .[0].workflow_run.id")
+          if [ -n "$PRIOR_RUN_ID" ] && [ "$PRIOR_RUN_ID" != "null" ]; then
+            echo "Restoring tofu-state from prior run $PRIOR_RUN_ID"
+            mkdir -p infrastructure/tofu/hetzner
+            gh run download "$PRIOR_RUN_ID" \
+              -n tofu-state \
+              -D infrastructure/tofu/hetzner/ \
+              -R ${{ github.repository }}
+            ls -la infrastructure/tofu/hetzner/terraform.tfstate || echo "WARN: tfstate not present after download"
+          else
+            echo "No prior tofu-state artifact found — proceeding with fresh state."
+          fi
 
       - name: Initialize OpenTofu
         working-directory: infrastructure/tofu/hetzner
