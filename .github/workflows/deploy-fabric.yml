@@ -164,7 +164,23 @@ jobs:
           TF_VAR_ci_ssh_pubkey: ${{ env.CI_SSH_PUBKEY }}
         run: |
           set +e
-          tofu plan -out=tfplan -detailed-exitcode
+          # -replace forces hcloud_server.fabric recreation EVERY run so
+          # cloud-init re-runs with this run's freshly generated ephemeral
+          # CI SSH pubkey. Without this, restored state describes a VM
+          # whose authorized_keys still holds last run's now-deleted key,
+          # and Ansible cannot SSH in (run 26284171027). Server replace
+          # only — hcloud_volume.fabric_data persists, so Vaultwarden /
+          # restic / fabric data survives.
+          # Conditional on state actually having the server resource —
+          # otherwise -replace fails with "resource not in state".
+          REPLACE_FLAG=""
+          if [ -f terraform.tfstate ] && tofu state list 2>/dev/null | grep -q '^hcloud_server.fabric$'; then
+            echo "Server present in restored state — forcing replace for fresh cloud-init"
+            REPLACE_FLAG="-replace=hcloud_server.fabric"
+          else
+            echo "Server not in state — plan will CREATE it normally"
+          fi
+          tofu plan -out=tfplan -detailed-exitcode $REPLACE_FLAG
           exit_code=$?
           set -e
           echo "exit_code=${exit_code}" >> $GITHUB_OUTPUT
