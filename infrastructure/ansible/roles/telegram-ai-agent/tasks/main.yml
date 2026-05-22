@@ -226,15 +226,16 @@
   tags: [telegram-ai-agent, config]
   block:
     - name: Slurp telegram-topics.yml from inventory
-      # telegram-init renders the file to playbook_dir/../../inventory/
-      # (i.e. infrastructure/ansible/inventory/telegram-topics.yml), NOT
-      # under playbook_dir/inventory/. Fix path + remove the bogus
-      # stat-check in failed_when (slurp doesn't return .stat).
+      # telegram-init renders to playbook_dir/../../inventory which resolves
+      # to /infrastructure/inventory (NOT /infrastructure/ansible/inventory).
+      # Use dirname chain to compute the absolute path and avoid the slurp
+      # module's path-resolution quirks with literal '../..'.
       ansible.builtin.slurp:
-        src: "{{ playbook_dir }}/../../inventory/telegram-topics.yml"
+        src: "{{ (playbook_dir | dirname | dirname) }}/inventory/telegram-topics.yml"
       register: telegram_topics_file
       delegate_to: localhost
       run_once: true
+      failed_when: false
 
     - name: Parse telegram-topics inventory
       ansible.builtin.set_fact:
