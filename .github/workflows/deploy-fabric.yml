@@ -164,37 +164,6 @@ jobs:
           TF_VAR_ci_ssh_pubkey: ${{ env.CI_SSH_PUBKEY }}
         run: |
           set +e
-          # Each CI run mints a fresh ephemeral SSH pubkey (see "Install age"
-          # step). If restored state describes a VM from a previous run, its
-          # authorized_keys only contains the OLD pubkey — Ansible can't SSH
-          # in. We need the VM recreated so cloud-init re-injects this run's
-          # key.
-          #
-          # `-replace=hcloud_server.fabric` is the natural fit, but main.tf
-          # declares lifecycle { create_before_destroy = true } on the server
-          # (to minimise downtime on operator resize) — which makes -replace
-          # create a SECOND CCX33 alongside the existing one before destroy.
-          # The Hetzner project has a hard 8-dedicated-core quota; two CCX33s
-          # is 16 cores and fails with resource_limit_exceeded (run
-          # 26284456536). For CI we want destroy-then-create, not the other
-          # way round, even though that means brief downtime per run.
-          #
-          # Approach: if the restored state contains the server, explicitly
-          # destroy it (and any dependents like volume_attachment) before
-          # planning. The plan then sees the server missing and plans a
-          # CREATE. Volume itself is a separate resource — it persists.
-          if [ -f terraform.tfstate ] && tofu state list 2>/dev/null | grep -q '^hcloud_server.fabric$'; then
-            echo "Server present in restored state — destroying so plan will recreate with fresh cloud-init"
-            tofu apply -destroy -auto-approve \
-              -target=hcloud_volume_attachment.fabric_data \
-              -target=hcloud_server.fabric
-            destroy_exit=$?
-            if [ $destroy_exit -ne 0 ]; then
-              echo "WARN: targeted destroy exited $destroy_exit — proceeding to plan anyway"
-            fi
-          else
-            echo "Server not in state — plan will CREATE it normally"
-          fi
           tofu plan -out=tfplan -detailed-exitcode
           exit_code=$?
           set -e
@@ -304,9 +273,40 @@ jobs:
           TF_VAR_tailscale_auth_key: ${{ secrets.TAILSCALE_AUTH_KEY }}
           TF_VAR_hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
           TF_VAR_operator_ssh_pubkey: ${{ secrets.OPERATOR_SSH_PUBKEY }}
+          TF_VAR_ci_ssh_pubkey: ${{ env.CI_SSH_PUBKEY }}
         run: |
-          echo "Applying infrastructure..."
-          tofu apply -auto-approve tfplan 2>&1 | tee apply.log
+          # Each CI run mints a fresh ephemeral SSH pubkey (see "Install age"
+          # step in Plan job). If restored state describes a VM from a
+          # previous run, that VM's authorized_keys only has the OLD pubkey —
+          # Ansible can't SSH in (run 26284171027).
+          #
+          # `-replace=hcloud_server.fabric` would force recreation, but main.tf
+          # has lifecycle { create_before_destroy = true } on the server (to
+          # minimise downtime on operator resize). With CBD=true, -replace
+          # creates a SECOND CCX33 alongside the existing one before destroy
+          # — Hetzner project has an 8-dedicated-core quota; two CCX33s = 16
+          # cores fails with resource_limit_exceeded (run 26284456536).
+          #
+          # For CI we explicitly destroy-then-create: tear down the server
+          # (and volume_attachment dependency) so this apply will create a
+          # fresh one. Volume itself persists — it's a separate resource.
+          # We do this in Apply (not Plan) so the destroy mutates the same
+          # state file the apply runs against, avoiding "Saved plan is stale"
+          # (which would happen if Plan job destroyed but Apply job restored
+          # the pre-destroy state from artifact, run 26284713581).
+          if [ -f terraform.tfstate ] && tofu state list 2>/dev/null | grep -q '^hcloud_server.fabric$'; then
+            echo "Server present in restored state — destroying for fresh cloud-init"
+            tofu apply -destroy -auto-approve \
+              -target=hcloud_volume_attachment.fabric_data \
+              -target=hcloud_server.fabric
+          else
+            echo "Server not in state — applying normally to create it"
+          fi
+          # Re-plan against the now-cleaned state so we don't rely on the
+          # stale tfplan artifact (which planned against pre-destroy state).
+          # Cloud-init user_data is re-rendered with this run's fresh CI key.
+          echo "Re-planning and applying with fresh state..."
+          tofu apply -auto-approve 2>&1 | tee apply.log
 
           if [ ${PIPESTATUS[0]} -ne 0 ]; then
             echo "ERROR: tofu apply failed"
