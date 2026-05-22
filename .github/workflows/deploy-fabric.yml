@@ -555,11 +555,26 @@ jobs:
         env:
           VM_HOSTNAME: mnemonic-fabric
         run: |
-          echo "Verifying Tailscale connectivity..."
-          tailscale status
-
-          if ! tailscale ping -c 1 "$VM_HOSTNAME" > /dev/null 2>&1; then
-            echo "ERROR: Cannot ping $VM_HOSTNAME"
+          echo "Verifying Tailscale connectivity to ONLINE peer..."
+          # The tailnet has dozens of mnemonic-fabric-N ghost devices from
+          # prior CI runs. `tailscale ping mnemonic-fabric` may resolve to
+          # one of the offline ghosts. Use status JSON to find the currently
+          # online peer with matching HostName.
+          VM_IP=$(tailscale status --json 2>/dev/null | jq -r --arg name "$VM_HOSTNAME" '
+            [(.Peer // {} | to_entries[].value)
+              | select(.HostName == $name and .Online == true)
+              | (.TailscaleIPs // [])[]
+              | select(test("^100\\."))
+            ] | first // ""
+          ')
+          if [ -z "$VM_IP" ]; then
+            echo "ERROR: No online tailnet peer with HostName=$VM_HOSTNAME"
+            tailscale status
+            exit 1
+          fi
+          echo "Online VM peer at $VM_IP"
+          if ! tailscale ping -c 1 --timeout=10s "$VM_IP" > /dev/null 2>&1; then
+            echo "ERROR: Cannot ping $VM_IP via tailnet"
             exit 1
           fi
           echo "VM connectivity verified"
