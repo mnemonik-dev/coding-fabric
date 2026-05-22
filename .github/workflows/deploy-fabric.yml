@@ -36,6 +36,11 @@ jobs:
     timeout-minutes: 10
     outputs:
       plan_exit_code: ${{ steps.tofu_plan.outputs.exit_code }}
+      # Apply job is a separate runner — $GITHUB_ENV doesn't carry over.
+      # Forward the freshly-generated CI SSH pubkey via a job output so
+      # Apply can stamp the same pubkey into cloud-init user_data and
+      # Ansible can SSH in with the matching privkey artifact.
+      ci_ssh_pubkey: ${{ steps.gen_ci_key.outputs.pubkey }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -96,6 +101,7 @@ jobs:
           tofu validate
 
       - name: Install age + generate ephemeral CI SSH keypair
+        id: gen_ci_key
         env:
           SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
         run: |
@@ -137,6 +143,12 @@ jobs:
             echo "$CI_PUBKEY"
             echo "EOF_PUBKEY"
           } >> "$GITHUB_ENV"
+
+          # Also expose as a job output so the downstream Apply job (which
+          # runs on a separate runner with its own $GITHUB_ENV) can stamp
+          # the same pubkey into cloud-init user_data. Pubkey is single-line
+          # ed25519 — safe for plain-string output.
+          echo "pubkey=$CI_PUBKEY" >> "$GITHUB_OUTPUT"
 
           # Encrypt the private key under SOPS' age recipient.
           mkdir -p /tmp/ci-artifacts
@@ -273,7 +285,11 @@ jobs:
           TF_VAR_tailscale_auth_key: ${{ secrets.TAILSCALE_AUTH_KEY }}
           TF_VAR_hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
           TF_VAR_operator_ssh_pubkey: ${{ secrets.OPERATOR_SSH_PUBKEY }}
-          TF_VAR_ci_ssh_pubkey: ${{ env.CI_SSH_PUBKEY }}
+          # Pubkey forwarded from tofu-plan job's output (separate runner has
+          # no access to that job's $GITHUB_ENV). Cloud-init stamps this into
+          # authorized_keys for op@; the matching privkey is in the
+          # ci-ssh-privkey-age artifact for ansible-deploy to decrypt.
+          TF_VAR_ci_ssh_pubkey: ${{ needs.tofu-plan.outputs.ci_ssh_pubkey }}
         run: |
           # Each CI run mints a fresh ephemeral SSH pubkey (see "Install age"
           # step in Plan job). If restored state describes a VM from a
