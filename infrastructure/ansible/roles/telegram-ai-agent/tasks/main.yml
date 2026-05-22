@@ -293,7 +293,8 @@
       changed_when: false
       # rc=0 (clean exit) or rc=124 (timeout = bot started polling = config valid)
       failed_when: config_validation.rc not in [0, 124, 143]
-      no_log: true
+      # no_log dropped for diagnosis — config-check stdout doesn't include
+      # the bot token itself (passed via env).
 
 - name: Render environment file from sops
   tags: [telegram-ai-agent, secrets]
@@ -301,20 +302,16 @@
     - name: Assert required secrets are present
       ansible.builtin.assert:
         that:
-          - telegram_bot_token is defined and telegram_bot_token | length >= 40
-          - anthropic_api_key is defined and anthropic_api_key | length >= 20
+          - telegram_bot_token is defined and telegram_bot_token | string | length >= 40
+          - anthropic_api_key is defined and anthropic_api_key | string | length >= 20
         fail_msg: |
           FATAL: Required secrets missing. Caller must provide via sops decryption.
 
           Required variables:
           - telegram_bot_token (minimum 40 chars, from BotFather)
           - anthropic_api_key (minimum 20 chars, from Anthropic console)
-
-          Decryption steps:
-          1. Caller playbook must run: community.sops.load_vars
-          2. Load encrypted secrets file before including this role
-          3. See README §With SOPS Integration for example
-      no_log: true
+      # no_log removed for diagnosis. The assert task reveals only var
+      # NAMES on failure, not values.
 
     - name: Template .env file with secrets
       ansible.builtin.template:
