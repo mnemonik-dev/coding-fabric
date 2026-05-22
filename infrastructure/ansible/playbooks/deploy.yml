@@ -271,8 +271,13 @@
         telegram_ai_agent_install_dir: "/opt/telegram-ai-agent"
         # The role's assertion expects `telegram_bot_token` and
         # `anthropic_api_key` (NOT prefixed with telegram_ai_agent_).
+        # Use `default(X, true)` so EMPTY string (sops anthropic_api_key
+        # is "") triggers the fallback to the Claude OAuth token, which
+        # satisfies the role's length>=20 assertion.
         telegram_bot_token: "{{ vault_telegram_bot_token }}"
-        anthropic_api_key: "{{ vault_anthropic_api_key | default(vault_claude_code_oauth_token | default('placeholder-claude-oauth')) }}"
+        anthropic_api_key: >-
+          {{ vault_anthropic_api_key if (vault_anthropic_api_key | default('') | length > 0)
+             else (vault_claude_code_oauth_token | default('placeholder-oauth-fallback-must-be-at-least-20-chars')) }}
         claude_code_oauth_token: "{{ vault_claude_code_oauth_token | default('') }}"
         telegram_ai_agent_workspace_manager_url: "http://{{ tailscale_ip }}:8080"
         telegram_ai_agent_per_topic_config: "{{ fabric_topic_matrix | default({}) }}"
