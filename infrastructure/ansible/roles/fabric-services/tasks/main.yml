@@ -126,6 +126,18 @@
         state: present
       ignore_errors: yes
 
+    - name: Install fabric-logs-sanitizer into workspace-manager venv
+      # workspace-manager imports fabric.logs.sanitizer.handler at startup
+      # and refuses to start if missing (run 26266567327: ImportError ...
+      # refusing to start). Install the sanitizer package into the same
+      # venv as a side-channel dependency.
+      ansible.builtin.pip:
+        name: "."
+        chdir: "{{ fabric_target_dir }}/logs/sanitizer"
+        virtualenv: "{{ fabric_target_dir }}/workspace-manager/venv"
+        state: present
+      ignore_errors: yes
+
     - name: Create Python venv for fabric-watchdog
       command:
         cmd: python3 -m venv "{{ fabric_target_dir }}/watchdog/venv"
