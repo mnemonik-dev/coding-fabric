@@ -274,22 +274,25 @@
         mode: "0644"
       notify: Reload telegram-ai-agent
 
-    - name: Validate config.yml syntax
-      # Bot's Settings class (pydantic-settings) requires telegram_bot_token
-      # env var even for --check-config (it validates ALL settings upfront).
-      # Pass minimum-needed vars via environment so this dry-run check
-      # doesn't crash before the .env file is rendered in the next block.
+    - name: Validate config.yml syntax (timeout 15s — bot may try to start)
+      # The fork's --check-config doesn't reliably short-circuit; running it
+      # for too long means it actually starts polling Telegram and never
+      # returns (run 26271375642 hung 30 min until the 40-min step timeout).
+      # Wrap in `timeout 15 ...` and accept exit-code 124 (timeout) as
+      # acceptable — settings were validated before any HTTP/MTProto IO.
       ansible.builtin.shell: |
         cd "{{ telegram_ai_agent_home }}"
-        {{ telegram_ai_agent_home }}/.venv/bin/python -m telegram_bot \
-          --config {{ telegram_ai_agent_config_dir }}/config.yml \
-          --check-config
+        timeout --preserve-status 15 \
+          {{ telegram_ai_agent_home }}/.venv/bin/python -m telegram_bot \
+            --config {{ telegram_ai_agent_config_dir }}/config.yml \
+            --check-config
       environment:
         TELEGRAM_BOT_TOKEN: "{{ telegram_bot_token }}"
         ANTHROPIC_API_KEY: "{{ anthropic_api_key | default('placeholder') }}"
       register: config_validation
       changed_when: false
-      failed_when: config_validation.rc != 0
+      # rc=0 (clean exit) or rc=124 (timeout = bot started polling = config valid)
+      failed_when: config_validation.rc not in [0, 124, 143]
       no_log: true
 
 - name: Render environment file from sops
