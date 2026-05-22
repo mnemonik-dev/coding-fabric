@@ -8,7 +8,12 @@ Type=simple
 User={{ base_operator_user }}
 WorkingDirectory={{ fabric_target_dir }}/workspace-manager
 Environment="PYTHONUNBUFFERED=1"
-Environment="PYTHONPATH={{ fabric_target_dir }}:$PYTHONPATH"
+# PYTHONPATH must include the PARENT of /opt/fabric (i.e. /opt) so that
+# `import fabric.logs.sanitizer.handler` resolves to
+# /opt/fabric/logs/sanitizer/handler.py. /opt/fabric alone (the prior
+# value) only let `import logs.sanitizer.*` work — ModuleNotFoundError:
+# No module named 'fabric' in run 26267167093.
+Environment="PYTHONPATH={{ fabric_target_dir | dirname }}:{{ fabric_target_dir }}:$PYTHONPATH"
 ExecStart={{ fabric_target_dir }}/workspace-manager/venv/bin/python -m uvicorn main:app --host {{ workspace_manager_listen_ip }} --port {{ workspace_manager_listen_port }}
 Restart=always
 RestartSec=10
