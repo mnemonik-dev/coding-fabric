@@ -269,9 +269,13 @@
         telegram_ai_agent_repo_url: "{{ vault_telegram_ai_agent_repo | default('https://github.com/pavel-molyanov/telegram-ai-agent.git') }}"
         telegram_ai_agent_ref: "{{ vault_telegram_ai_agent_ref | default('main') }}"
         telegram_ai_agent_install_dir: "/opt/telegram-ai-agent"
-        telegram_ai_agent_bot_token: "{{ vault_telegram_bot_token | default('') }}"
-        telegram_ai_agent_workspace_manager_url: "http://127.0.0.1:8080"
-        telegram_ai_agent_per_topic_config: "{{ fabric_topic_matrix }}"
+        # The role's assertion expects `telegram_bot_token` and
+        # `anthropic_api_key` (NOT prefixed with telegram_ai_agent_).
+        telegram_bot_token: "{{ vault_telegram_bot_token }}"
+        anthropic_api_key: "{{ vault_anthropic_api_key | default(vault_claude_code_oauth_token | default('placeholder-claude-oauth')) }}"
+        claude_code_oauth_token: "{{ vault_claude_code_oauth_token | default('') }}"
+        telegram_ai_agent_workspace_manager_url: "http://{{ tailscale_ip }}:8080"
+        telegram_ai_agent_per_topic_config: "{{ fabric_topic_matrix | default({}) }}"
 
   post_tasks:
     - name: Verify all services are running
