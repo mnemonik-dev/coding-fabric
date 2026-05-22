@@ -352,7 +352,7 @@ jobs:
           MERGE_SHA: ${{ inputs.merge_sha }}
         with:
           script: |
-            // Read inputs from process.env (safe) rather than ${{ }} template literals
+            // Read inputs from process.env (safe) rather than GHA template literals
             // to avoid GH Actions JS injection if feature_name contained quotes.
             const feature = process.env.FEATURE_NAME;
             const attestationId = process.env.ATTESTATION_ID || 'unavailable';
