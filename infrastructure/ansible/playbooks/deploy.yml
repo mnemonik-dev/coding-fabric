@@ -246,7 +246,12 @@
         # which depended on the runner's shell cwd.
         fabric_repo_checkout: "{{ playbook_dir | dirname | dirname | dirname }}"
         fabric_target_dir: "/opt/fabric"
-        workspace_manager_listen_ip: "127.0.0.1"
+        # Listen on the tailnet IP so telegram-ai-agent (same VM) and the
+        # Ansible probe can reach workspace-manager on
+        # http://<tailnet_ip>:8080/health (run 26265249454: probe to
+        # 100.x:8080 got connection refused while service bound 127.0.0.1).
+        # tailscale_ip is set by the tailscale role earlier in the play.
+        workspace_manager_listen_ip: "{{ tailscale_ip }}"
         workspace_manager_listen_port: 8080
         workspace_manager_capacity: 10
         workspace_manager_sccache_enabled: true
