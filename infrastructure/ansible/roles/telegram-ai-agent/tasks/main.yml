@@ -237,9 +237,12 @@
       run_once: true
       failed_when: false
 
-    - name: Parse telegram-topics inventory
+    - name: Parse telegram-topics inventory (or fall back to empty)
       ansible.builtin.set_fact:
-        telegram_topics_data: "{{ telegram_topics_file.content | b64decode | from_yaml }}"
+        telegram_topics_data: >-
+          {{ (telegram_topics_file.content | b64decode | from_yaml)
+             if (telegram_topics_file.content is defined)
+             else {'telegram_topics': {}, 'telegram_ai_agent_topics': {}} }}
 
 - name: Render telegram-ai-agent configuration
   tags: [telegram-ai-agent, config]
