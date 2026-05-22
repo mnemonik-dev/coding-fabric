@@ -70,10 +70,18 @@
       changed_when: false
       failed_when: false
 
-    - name: Download and verify uv installer
+    - name: Download and install uv to /usr/local/bin
+      become: true
       ansible.builtin.shell: |
         set -e
         curl -LsSf https://astral.sh/uv/install.sh | sh -s {{ telegram_ai_agent_uv_version }}
+        # Installer puts uv/uvx at $UV_INSTALL_DIR root, not under bin/.
+        # Standard system PATH includes /usr/local/bin, NOT /usr/local
+        # (run 26267738926: 'uv --version' rc=2 because uv landed at
+        # /usr/local/uv). Symlink into /usr/local/bin so all downstream
+        # tasks find it without needing /usr/local in PATH.
+        ln -sf /usr/local/uv /usr/local/bin/uv
+        ln -sf /usr/local/uvx /usr/local/bin/uvx
       environment:
         UV_INSTALL_DIR: "/usr/local"
         UV_VERSION: "{{ telegram_ai_agent_uv_version }}"
@@ -85,7 +93,7 @@
 
     - name: Verify uv installation
       ansible.builtin.command:
-        cmd: uv --version
+        cmd: /usr/local/bin/uv --version
       register: uv_version
       changed_when: false
       failed_when: false
