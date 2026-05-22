@@ -108,9 +108,9 @@
       register: apt_install_python
       changed_when: "'0 upgraded, 0 newly installed' not in apt_install_python.stdout"
 
-    - name: Show apt-install-python result
+    - name: Show apt-install-python result (last 3 lines)
       ansible.builtin.debug:
-        msg: "{{ apt_install_python.stdout_lines | last(3) }}"
+        msg: "{{ apt_install_python.stdout_lines[-3:] }}"
 
     - name: Create Python venv for workspace-manager
       command:
