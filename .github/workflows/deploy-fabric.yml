@@ -17,7 +17,7 @@ on:
 
 permissions:
   contents: read
-  actions: read
+  actions: write   # needed to dispatch e2e-smoke workflow
   statuses: write
 
 concurrency:
