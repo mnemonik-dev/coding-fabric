@@ -324,6 +324,23 @@
       # no_log dropped temporarily — the handler reload error is masked
       # by THIS task's no_log when it fires during flush.
 
+    - name: Symlink .env into project root for MCP bot server
+      # mcp-servers/bot/start.sh resolves $TELEGRAM_BOT_TOKEN by reading
+      # <project_root>/.env (i.e. /opt/telegram-ai-agent/.env). Our actual
+      # secret file lives in /etc/telegram-ai-agent/.env (used as systemd
+      # EnvironmentFile for the bot itself). Without this link the MCP
+      # server can't start, claude spawns it, hangs on the missing
+      # handshake, and every Telegram message piles up in
+      # message_queue.py with "Added to queue (#1)" forever (operator
+      # debug 2026-05-23).
+      ansible.builtin.file:
+        src: "{{ telegram_ai_agent_config_dir }}/.env"
+        dest: "{{ telegram_ai_agent_home }}/.env"
+        state: link
+        force: true
+        owner: "{{ telegram_ai_agent_owner }}"
+        group: "{{ telegram_ai_agent_group }}"
+
 - name: Install and enable systemd unit
   tags: [telegram-ai-agent, systemd]
   block:
