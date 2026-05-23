@@ -14,6 +14,15 @@ Group={{ telegram_ai_agent_group }}
 WorkingDirectory={{ telegram_ai_agent_home }}
 EnvironmentFile={{ telegram_ai_agent_config_dir }}/.env
 
+# Writable HOME for child processes (claude CLI caches config/telemetry
+# under $HOME/.claude). ProtectHome=true below makes the op user's real
+# home inaccessible, and the default unset HOME falls back to /root which
+# is unreadable to uid 1000 — claude then hangs at startup with no output.
+# StateDirectory creates /var/lib/telegram-ai-agent owned by the service
+# user and matches its lifecycle.
+StateDirectory=telegram-ai-agent
+Environment="HOME=/var/lib/telegram-ai-agent"
+
 # Main process: run telegram-ai-agent with config
 ExecStart={{ telegram_ai_agent_home }}/.venv/bin/python -m telegram_bot \
   --config {{ telegram_ai_agent_config_dir }}/config.yml

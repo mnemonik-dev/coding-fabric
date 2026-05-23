@@ -163,6 +163,20 @@
         msg: "Current commit: {{ current_sha.stdout | trim }}"
       when: repo_stat.stat.exists
 
+    # The git module runs under `become: true` so the clone lands as
+    # root:root, which prevents the bot (uid op) from writing session
+    # state files like channel_sessions.json next to the source tree
+    # (PermissionError: [Errno 13] flooded the logs after deploy 26289095629).
+    # Re-own the tree to the service user before any runtime tasks
+    # touch it. Idempotent — file: skips identical owner.
+    - name: Ensure {{ telegram_ai_agent_home }} is owned by service user
+      ansible.builtin.file:
+        path: "{{ telegram_ai_agent_home }}"
+        state: directory
+        owner: "{{ telegram_ai_agent_owner }}"
+        group: "{{ telegram_ai_agent_group }}"
+        recurse: yes
+
 - name: Pre-flight check for DYNAMIC feature
   tags: [telegram-ai-agent, preflight]
   # DYNAMIC feature (mnemonic-tg-bridge) is BACKLOG — upstream fork
@@ -303,13 +317,17 @@
       ansible.builtin.assert:
         that:
           - telegram_bot_token is defined and telegram_bot_token | string | length >= 40
-          - anthropic_api_key is defined and anthropic_api_key | string | length >= 20
+          - (anthropic_api_key | default('') | string | length >= 20)
+            or (claude_code_oauth_token | default('') | string | length >= 20)
         fail_msg: |
           FATAL: Required secrets missing. Caller must provide via sops decryption.
 
           Required variables:
           - telegram_bot_token (minimum 40 chars, from BotFather)
-          - anthropic_api_key (minimum 20 chars, from Anthropic console)
+          - one of:
+            * anthropic_api_key (sk-ant-api03-..., minimum 20 chars), OR
+            * claude_code_oauth_token (sk-ant-oat01-..., minimum 20 chars
+              from `claude setup-token`)
       # no_log removed for diagnosis. The assert task reveals only var
       # NAMES on failure, not values.
 

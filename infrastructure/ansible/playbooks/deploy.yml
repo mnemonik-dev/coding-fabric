@@ -270,15 +270,14 @@
         telegram_ai_agent_repo_url: "{{ vault_telegram_ai_agent_repo | default('https://github.com/pavel-molyanov/telegram-ai-agent.git') }}"
         telegram_ai_agent_ref: "{{ vault_telegram_ai_agent_ref | default('main') }}"
         telegram_ai_agent_install_dir: "/opt/telegram-ai-agent"
-        # The role's assertion expects `telegram_bot_token` and
-        # `anthropic_api_key` (NOT prefixed with telegram_ai_agent_).
-        # Use `default(X, true)` so EMPTY string (sops anthropic_api_key
-        # is "") triggers the fallback to the Claude OAuth token, which
-        # satisfies the role's length>=20 assertion.
+        # Auth: claude CLI (subprocess engine) picks up CLAUDE_CODE_OAUTH_TOKEN
+        # from .env. Do NOT cross-stuff that OAuth token into ANTHROPIC_API_KEY
+        # — claude prefers ANTHROPIC_API_KEY when set and the API endpoint
+        # rejects sk-ant-oat01-... tokens with "Invalid API key", masking the
+        # working OAuth path. Pass anthropic_api_key only when sops actually
+        # carries a real sk-ant-api03-... key (pay-per-token fallback).
         telegram_bot_token: "{{ vault_telegram_bot_token }}"
-        anthropic_api_key: >-
-          {{ vault_anthropic_api_key if (vault_anthropic_api_key | default('') | length > 0)
-             else (vault_claude_code_oauth_token | default('placeholder-oauth-fallback-must-be-at-least-20-chars')) }}
+        anthropic_api_key: "{{ vault_anthropic_api_key | default('') }}"
         claude_code_oauth_token: "{{ vault_claude_code_oauth_token | default('') }}"
         telegram_ai_agent_workspace_manager_url: "http://{{ tailscale_ip }}:8080"
         telegram_ai_agent_per_topic_config: "{{ fabric_topic_matrix | default({}) }}"
