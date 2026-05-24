@@ -3,9 +3,11 @@
 # Source of truth: mnemonik-dev/telegram-ai-agent. Pavel-molyanov upstream is a
 # read-only sync source for periodic bug-fix rebase.
 telegram_ai_agent_repo: "https://github.com/mnemonik-dev/telegram-ai-agent.git"
-# Pinned release tag: v0.1.0+mnemonik.1 includes the cwd:DYNAMIC HTTP resolver
-# feature (5c82583 → 1ceaccb, audit-remediated, 72 tests green).
-telegram_ai_agent_pin: "v0.1.0+mnemonik.1"
+# Pinned commit on main: 819e5c6 adds Kaneo MCP server auto-injection
+# (bot_mcp_runtime injects remote-HTTP "kaneo" entry into runtime config
+# when KANEO_MCP_URL + KANEO_MCP_BEARER are set). Predecessor 1ceaccb /
+# v0.1.0+mnemonik.1 had cwd:DYNAMIC HTTP resolver feature.
+telegram_ai_agent_pin: "819e5c6"
 
 # Installation paths
 telegram_ai_agent_home: "/opt/telegram-ai-agent"

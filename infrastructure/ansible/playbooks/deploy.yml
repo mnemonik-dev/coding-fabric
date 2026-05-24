@@ -86,6 +86,13 @@
         # sops before enabling the role.
         vault_kaneo_auth_secret:            "{{ sops.kaneo_auth_secret | default('') }}"
         vault_kaneo_postgres_password:      "{{ sops.kaneo_postgres_password | default('') }}"
+        # Kaneo MCP bearer — populated after running scripts/pair-kaneo.py
+        # on the VM (one-time device-code flow with Kaneo). Empty default
+        # on first deploy; the bot template just renders empty env vars,
+        # and bot_mcp_runtime keeps the kaneo MCP server unwired until
+        # both vars carry values.
+        vault_kaneo_mcp_url:                "{{ sops.kaneo_mcp_url | default('') }}"
+        vault_kaneo_mcp_bearer:             "{{ sops.kaneo_mcp_bearer | default('') }}"
       no_log: true
 
     - name: Wait for system to stabilize post-boot
@@ -274,6 +281,12 @@
         telegram_bot_token: "{{ vault_telegram_bot_token }}"
         anthropic_api_key: "{{ vault_anthropic_api_key | default('') }}"
         claude_code_oauth_token: "{{ vault_claude_code_oauth_token | default('') }}"
+        # Kaneo MCP wiring — empty on first deploy; operator runs
+        # scripts/pair-kaneo.py on the VM to obtain a 30-day session
+        # bearer, then copies kaneo_mcp_url + kaneo_mcp_bearer into sops
+        # so subsequent redeploys preserve it.
+        kaneo_mcp_url: "{{ vault_kaneo_mcp_url | default('') }}"
+        kaneo_mcp_bearer: "{{ vault_kaneo_mcp_bearer | default('') }}"
         telegram_ai_agent_workspace_manager_url: "http://{{ tailscale_ip }}:8080"
         telegram_ai_agent_per_topic_config: "{{ fabric_topic_matrix | default({}) }}"
         # Operator allowlist. Without this, the bot's auth middleware
