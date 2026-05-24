@@ -40,7 +40,15 @@ services:
       KANEO_CLIENT_URL: "https://{{ kaneo_tailnet_domain }}"
       KANEO_API_URL: "https://{{ kaneo_tailnet_domain }}/api"
     networks:
-      - kaneo
+      # `kaneo` (internal) — for Kaneo ↔ Postgres only.
+      kaneo: {}
+      # `vaultwarden_vaultwarden` (external — created by the vaultwarden
+      # role) — so Caddy can route the tailnet vhost to this container.
+      # Without joining this network, Caddy fails with "kaneo: no such
+      # host" on the reverse-proxy directive.
+      vaultwarden_vaultwarden:
+        aliases:
+          - kaneo
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:{{ kaneo_http_port }}/api/health"]
       interval: 30s
@@ -54,3 +62,5 @@ networks:
   kaneo:
     name: kaneo
     driver: bridge
+  vaultwarden_vaultwarden:
+    external: true
