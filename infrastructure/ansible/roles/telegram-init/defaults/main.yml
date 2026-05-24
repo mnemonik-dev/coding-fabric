@@ -14,16 +14,12 @@ telegram_topic_icon_colors:
   protocol-qa: 128      # Orange
   ops: 255              # Blue
 
-# Canonical topics list
-telegram_canonical_topics:
-  - core
-  - mcp
-  - wasm
-  - demo-client
-  - docs
-  - loop
-  - protocol-qa
-  - ops
+# Canonical topics list. Operator now creates every topic on demand via
+# the bot's /new-task command (see Phase 2 backlog), so this list is
+# empty by default — telegram-init's create-or-skip loop simply has
+# nothing to do. Keep the variable so operators who want a baseline set
+# can override it from a playbook or group_vars.
+telegram_canonical_topics: []
 
 # API timeouts and retries
 telegram_api_timeout: 10

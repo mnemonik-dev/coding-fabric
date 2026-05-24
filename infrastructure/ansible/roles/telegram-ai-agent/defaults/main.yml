@@ -22,67 +22,14 @@ telegram_ai_agent_uv_sync_timeout: 300
 # Pre-flight check: whether to require DYNAMIC feature in pinned commit
 telegram_ai_agent_require_dynamic_feature: true
 
-# Topic configuration matrix (8 topics from tech-spec §2.4)
-# Each topic maps to: engine + upstream-required fields. Per-topic ruflo
-# toggles (autopilot/aidefence/rag_memory/mnemonic_mode) were removed
-# 2026-05-20 alongside the ruflo role drop (see decisions.md Round 3).
-telegram_ai_agent_topics:
-  core:
-    chat_id: ""  # Populated from telegram-topics.yml at runtime
-    thread_id: ""
-    engine: "claude"
-    exec_mode: "subprocess"
-    stream_mode: "live"
-    mode: "default"
-  mcp:
-    chat_id: ""
-    thread_id: ""
-    engine: "claude"
-    exec_mode: "subprocess"
-    stream_mode: "live"
-    mode: "default"
-  wasm:
-    chat_id: ""
-    thread_id: ""
-    engine: "claude"
-    exec_mode: "subprocess"
-    stream_mode: "live"
-    mode: "default"
-  demo-client:
-    chat_id: ""
-    thread_id: ""
-    engine: "codex"
-    exec_mode: "subprocess"
-    stream_mode: "live"
-    mode: "default"
-  docs:
-    chat_id: ""
-    thread_id: ""
-    engine: "claude"
-    exec_mode: "subprocess"
-    stream_mode: "live"
-    mode: "default"
-  loop:
-    chat_id: ""
-    thread_id: ""
-    engine: "claude"
-    exec_mode: "subprocess"
-    stream_mode: "live"
-    mode: "default"
-  protocol-qa:
-    chat_id: ""
-    thread_id: ""
-    engine: "claude"
-    exec_mode: "subprocess"
-    stream_mode: "live"
-    mode: "default"
-  ops:
-    chat_id: ""
-    thread_id: ""
-    engine: "claude"
-    exec_mode: "subprocess"
-    stream_mode: "live"
-    mode: "default"
+# Topic configuration matrix. Empty by default — operator builds the set
+# on demand via the bot's /new-task command (Phase 2 backlog). Override
+# this map from a playbook or group_vars if you want a baseline set
+# materialised at deploy time. The original 8 canonical topics
+# (core/mcp/wasm/demo-client/docs/loop/protocol-qa/ops) lived here until
+# 2026-05-24 — see git log for the previous shape if you want to revive
+# them as a static baseline.
+telegram_ai_agent_topics: {}
 
 # Systemd service parameters
 telegram_ai_agent_restart_policy: "on-failure"
