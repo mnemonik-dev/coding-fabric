@@ -1,0 +1,26 @@
+# Symphony per-repo policy.
+#
+# Read by poll_loop / dispatch / auto-merge timer when Symphony picks
+# up a ticket associated with this repo. Each repo can ship its own
+# policy.yml; absent file = use Symphony service defaults.
+
+merge_policy: auto-with-veto    # auto-with-veto | always-human-merge | full-auto
+veto_window_hours: 24
+veto_topic: ops                 # Telegram topic that hosts the veto notice
+veto_command: /reject           # Operator types this in `veto_topic` to cancel
+
+# Workspace cleanup. The leased per-task worktree under
+# ~/code/symphony-workspaces/<TASK-ID>/ is preserved while the ticket
+# is in any of these statuses; nuked otherwise.
+keep_workspace_while:
+  - to-do
+  - in-progress
+  - review
+  - qa
+  - ready-to-merge
+  - blocked
+
+# How long after the ticket reaches a terminal state to retain the
+# workspace (for log inspection / forensics). Beyond this, the
+# workspace is permanently removed.
+terminal_workspace_grace_hours: 72
