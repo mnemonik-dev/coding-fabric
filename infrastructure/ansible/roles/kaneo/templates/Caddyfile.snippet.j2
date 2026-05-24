@@ -1,4 +1,5 @@
-{{ kaneo_tailnet_domain }} {
+{{ kaneo_tailnet_domain }}:{{ vaultwarden_https_port | default(8443) }} {
+  tls internal
   encode gzip
   # Upstream Kaneo serves both web UI and /api on the same port (5173 by default).
   reverse_proxy http://kaneo:{{ kaneo_http_port }} {

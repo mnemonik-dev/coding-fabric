@@ -59,12 +59,28 @@
   register: compose_result
   tags: [kaneo, kaneo-deploy]
 
-- name: Wait for Kaneo HTTP to be healthy
+- name: Add /etc/hosts entry for kaneo.<fabric>.ts → tailscale_ip
+  # Mirrors the vaultwarden role pattern: the .ts custom tailnet domain
+  # has no public DNS, so the probe URL won't resolve without a hosts
+  # entry. The VM-local entry also lets the operator hit the same URL
+  # over the tailnet.
+  become: true
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: "^[0-9.]+\\s+{{ kaneo_tailnet_domain | regex_escape }}\\s*$"
+    line: "{{ tailscale_ip }} {{ kaneo_tailnet_domain }}"
+    state: present
+
+- name: Wait for Kaneo HTTP to be healthy (via Caddy on tailnet IP:8443)
+  # Probe Caddy reverse-proxy that fronts Kaneo. Caddy listens on
+  # `{kaneo_domain}:8443` with `tls internal` (self-signed); validate_certs
+  # is false so we accept that. Probe runs ON THE VM, so the hosts entry
+  # above resolves the domain to tailscale_ip locally.
   ansible.builtin.uri:
-    url: "https://{{ kaneo_tailnet_domain }}{{ kaneo_health_endpoint }}"
+    url: "https://{{ kaneo_tailnet_domain }}:{{ vaultwarden_https_port | default(8443) }}{{ kaneo_health_endpoint }}"
     method: GET
     status_code: 200
-    validate_certs: false  # Caddy internal CA isn't in system trust store on the controller
+    validate_certs: false
   register: health_result
   until: health_result.status == 200
   retries: 120
