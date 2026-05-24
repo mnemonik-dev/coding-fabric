@@ -74,7 +74,32 @@ async def lifespan(app: FastAPI):
         "workspace-manager starting",
         extra={"bind_ip": settings.bind_ip, "bind_port": settings.bind_port},
     )
+
+    # Symphony poll loop — gated by SYMPHONY_POLL_ENABLED=1. When off, the
+    # service stays a plain workspace lifecycle daemon (legacy mode). When
+    # on, it additionally polls Kaneo for active tickets and dispatches
+    # them to coding agents per .symphony/workflows/<stage>.md. See
+    # poll_loop.py + dispatch.py + agent_runner.py.
+    symphony_loop = None
+    try:
+        from poll_loop import PollLoop, PollLoopConfig
+        from kaneo_client import KaneoClient, KaneoError
+
+        cfg = PollLoopConfig()
+        if cfg.enabled:
+            try:
+                kaneo = KaneoClient()
+                symphony_loop = PollLoop(kaneo, cfg)
+                await symphony_loop.start()
+            except KaneoError as exc:
+                logger.warning("symphony: kaneo client not configured (%s); poll loop disabled", exc)
+    except Exception:
+        logger.exception("symphony: poll loop bootstrap failed; continuing in legacy mode")
+
     yield
+
+    if symphony_loop is not None:
+        await symphony_loop.stop()
     logger.info("workspace-manager shutdown")
 
 
