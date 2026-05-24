@@ -1,2 +1,10 @@
 mnemonik-bridge-workspace/
 infrastructure/secrets/secrets.sops.yml.backup-*
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# claude-flow runtime artifacts
+.claude-flow/
