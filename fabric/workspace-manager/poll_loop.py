@@ -15,6 +15,7 @@ import logging
 import os
 from pathlib import Path
 
+from auto_merge import MergePolicy, policy_from_env_or_default, schedule_or_tick
 from dispatch import dispatch_ticket
 from kaneo_client import KaneoClient, Ticket
 
@@ -44,11 +45,12 @@ class PollLoopConfig:
         self.project_id: str = os.environ.get("SYMPHONY_KANEO_PROJECT_ID", "")
         # Ticket statuses we treat as active (case-insensitive match).
         active_csv = os.environ.get(
-            "SYMPHONY_ACTIVE_STATUSES", "to-do,in-progress,review,qa"
+            "SYMPHONY_ACTIVE_STATUSES", "to-do,in-progress,review,qa,ready-to-merge"
         )
         self.active_statuses: frozenset[str] = frozenset(
             s.strip().lower() for s in active_csv.split(",") if s.strip()
         )
+        self.merge_policy: MergePolicy = policy_from_env_or_default()
 
 
 async def _list_active_tickets(kaneo: KaneoClient, cfg: PollLoopConfig) -> list[Ticket]:
@@ -146,11 +148,24 @@ class PollLoop:
     async def _dispatch_with_semaphore(self, ticket: Ticket) -> None:
         async with self._sem:
             try:
-                await dispatch_ticket(
-                    ticket,
-                    kaneo=self._kaneo,
-                    repo_root=self._cfg.repo_root,
-                    workspace_root=self._cfg.workspace_root,
-                )
+                if ticket.status.lower() == "ready-to-merge":
+                    outcome = await schedule_or_tick(
+                        ticket,
+                        kaneo=self._kaneo,
+                        policy=self._cfg.merge_policy,
+                        repo_root=self._cfg.repo_root,
+                    )
+                    logger.info(
+                        "poll_loop: auto_merge ticket=%s outcome=%s",
+                        ticket.id,
+                        outcome,
+                    )
+                else:
+                    await dispatch_ticket(
+                        ticket,
+                        kaneo=self._kaneo,
+                        repo_root=self._cfg.repo_root,
+                        workspace_root=self._cfg.workspace_root,
+                    )
             finally:
                 self._in_flight.pop(ticket.id, None)

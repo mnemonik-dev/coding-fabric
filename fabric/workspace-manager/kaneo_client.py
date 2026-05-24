@@ -124,6 +124,17 @@ class KaneoClient:
         if r.status_code >= 400:
             raise KaneoError(f"create_comment({task_id}) → HTTP {r.status_code}")
 
+    async def list_comments(self, task_id: str) -> list[dict[str, Any]]:
+        """Return comments on a task ordered oldest → newest."""
+        r = await self._client.get(f"/api/tasks/{task_id}/comments")
+        if r.status_code == 401:
+            raise KaneoUnauthorized("bearer rejected — re-pair via scripts/pair-kaneo.py")
+        if r.status_code >= 400:
+            raise KaneoError(f"list_comments({task_id}) → HTTP {r.status_code}")
+        data = r.json()
+        items = data if isinstance(data, list) else data.get("comments", [])
+        return list(items)
+
 
 def _to_ticket(item: dict[str, Any], project_id: str) -> Ticket:
     raw_labels = item.get("labels") or []
