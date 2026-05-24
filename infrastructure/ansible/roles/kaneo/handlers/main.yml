@@ -1,15 +1,19 @@
 ---
 - name: Restart kaneo
-  community.docker.docker_compose_v2:
-    project_src: /opt/kaneo
-    state: present
-    restarted: true
-    services:
-      - kaneo
+  # community.docker.docker_compose_v2 (current collection on the runner)
+  # does NOT support `restarted: true` — last deploy 26359687467 failed
+  # with "Unsupported parameters … restarted". Shell out to `docker
+  # compose restart` directly; we don't need the module's idempotency
+  # here because the handler only fires when the compose template
+  # actually changed.
+  ansible.builtin.command:
+    cmd: docker compose restart kaneo
+    chdir: /opt/kaneo
   environment:
     COMPOSE_PROJECT_NAME: kaneo
   become: true
   become_user: op
+  changed_when: true
 
 - name: Reload caddy for kaneo vhost
   # `caddy reload` against the admin API has been observed to fail with
