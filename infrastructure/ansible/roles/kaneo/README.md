@@ -36,52 +36,37 @@ See `defaults/main.yml`. Key variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `kaneo_image` | `kaneo/kaneo:latest` | Docker image tag. Operator should override to pin a release (e.g., `kaneo/kaneo:v0.2.0`). See note below. |
+| `kaneo_image` | `ghcr.io/usekaneo/kaneo:latest` | Docker image tag. Override to pin a release. |
 | `kaneo_tailnet_domain` | `kaneo.mnemonic-fabric.ts` | Caddy vhost domain (tailnet only). |
-| `kaneo_http_port` | `3030` | Internal HTTP port. Caddy reverse-proxies TLS on this. |
-| `kaneo_database_type` | `sqlite` | Database backend; currently SQLite only. |
-| `kaneo_database_path` | `/opt/kaneo/data/kaneo.db` | SQLite database file location. |
-| `kaneo_default_projects` | List of 6 dicts | Projects to seed (name + description). |
+| `kaneo_http_port` | `5173` | Internal HTTP port (matches upstream compose.yml). Caddy reverse-proxies TLS to this. |
+| `kaneo_postgres_db` | `kaneo` | Postgres database name. |
+| `kaneo_postgres_user` | `kaneo` | Postgres user. |
+| `kaneo_data_dir` | `/opt/kaneo/data` | Host bind-mount root; postgres data under `{kaneo_data_dir}/postgres`. |
 | `kaneo_health_endpoint` | `/api/health` | Health check path. |
-| `kaneo_projects_endpoint` | `/api/projects` | Projects API path. |
-| `kaneo_project_create_delay` | `0.5` | Seconds between project creates (rate-limit safety). |
 
 ### Encrypted Variables (from sops)
 
-The following variable **must** be passed by the playbook via sops decryption. It is **not** defined in defaults and will cause the role to fail clearly if missing:
+Both **must** be passed by the playbook via sops decryption. Neither is
+defined in defaults, so the role fails loudly if missing:
 
 | Variable | Source | Purpose |
 |----------|--------|---------|
-| `kaneo_api_token` | `infrastructure/secrets/secrets.sops.yml` | Admin API token for project creation. Treated as a secret (`no_log: true` on all HTTP calls). |
-
-Example sops structure:
-```yaml
----
-kaneo:
-  api_token: "sk-kaneo-admin-token-..."
-```
-
-Playbook invocation should decrypt and pass:
-```yaml
-- name: Deploy Kaneo
-  hosts: fabric
-  vars:
-    kaneo_api_token: "{{ sops_kaneo_api_token }}"
-  roles:
-    - kaneo
-```
+| `kaneo_auth_secret` | `infrastructure/secrets/secrets.sops.yml` | JWT signing key, `>=32` chars. Without a stable value, sessions are invalidated on every container restart. Generate: `openssl rand -hex 32`. |
+| `kaneo_postgres_password` | `infrastructure/secrets/secrets.sops.yml` | Postgres password, `>=12` chars. Generate: `openssl rand -base64 24`. |
 
 ## Task Flow
 
-1. **Create directories** (`/opt/kaneo`, `/opt/kaneo/data`) with appropriate ownership
-2. **Template docker-compose.yml** — Kaneo service with SQLite, health check, network isolation
-3. **Template Caddyfile snippet** — `kaneo.mnemonic-fabric.ts` reverse-proxy (Caddy reload handler)
-4. **Copy Caddy snippet into container** — Copies `/opt/kaneo/Caddyfile.snippet` to Caddy container's `/etc/caddy/conf.d/kaneo.conf`
-5. **Compose up** — Pull image (missing only), start Kaneo container
-6. **Wait for health** — Retry `GET /api/health` up to 120 times with 2s delay (4-min budget); fail clearly if timeout
-7. **GET existing projects** — Fetch list of already-created projects (idempotency gate)
-8. **POST missing projects** — For each of six defaults not in the list, POST to `/api/projects` with retry on 429/5xx; include 0.5s delay between requests
-9. **Verify final count** — GET projects again, assert exactly 6 exist
+1. **Assert secrets** — both `kaneo_auth_secret` (>=32) and `kaneo_postgres_password` (>=12) are present
+2. **Create directories** — `/opt/kaneo`, `{kaneo_data_dir}`, `{kaneo_data_dir}/postgres`
+3. **Template docker-compose.yml** — Postgres + Kaneo services, network isolation, healthchecks
+4. **Template Caddy vhost** — write `/opt/vaultwarden/caddy_conf_d/kaneo.conf` (visible to the Caddy container via the vaultwarden role's bind mount), reverse-proxy to `kaneo:5173`
+5. **Compose up** — start Postgres + Kaneo
+6. **Wait for health** — retry `GET https://{tailnet_domain}/api/health` up to 120 times (4-min budget)
+7. **Verify containers** — both `kaneo-postgres-1` and `kaneo-kaneo-1` running
+
+Workspaces, projects, and Bearer tokens are created on demand via Kaneo's
+built-in MCP server (`apps/api/src/mcp/`) — no static-token seeding. The
+first operator who signs in via the UI bootstraps the default workspace.
 10. **Verify container running** — Docker ps check
 
 ## Idempotency

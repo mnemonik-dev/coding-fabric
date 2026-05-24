@@ -1,6 +1,7 @@
 {{ kaneo_tailnet_domain }} {
   encode gzip
-  reverse_proxy http://kaneo:3030 {
+  # Upstream Kaneo serves both web UI and /api on the same port (5173 by default).
+  reverse_proxy http://kaneo:{{ kaneo_http_port }} {
     header_up X-Real-IP {remote_host}
     header_up X-Forwarded-For {remote_host}
     header_up X-Forwarded-Proto {scheme}

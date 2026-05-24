@@ -81,7 +81,11 @@
         vault_github_deploy_pat:            "{{ sops.github_deploy_pat | default('') }}"
         vault_restic_repository:            "{{ sops.restic_repository }}"
         vault_restic_password:              "{{ sops.restic_password }}"
-        vault_kaneo_api_token:              "{{ sops.kaneo_api_token | default('PLACEHOLDER_FILL_AFTER_KANEO_FIRST_DEPLOY') }}"
+        # Kaneo (current upstream uses Postgres + AUTH_SECRET; the old
+        # KANEO_API_TOKEN env var was removed). Both keys MUST be set in
+        # sops before enabling the role.
+        vault_kaneo_auth_secret:            "{{ sops.kaneo_auth_secret | default('') }}"
+        vault_kaneo_postgres_password:      "{{ sops.kaneo_postgres_password | default('') }}"
       no_log: true
 
     - name: Wait for system to stabilize post-boot
@@ -129,27 +133,18 @@
         vaultwarden_admin_token: "{{ vault_vaultwarden_admin_token }}"
         vaultwarden_tailnet_bind_only: true
 
-    # Phase 3: Observability + Telegram (Kaneo + Bot setup)
-    # Kaneo is DESCOPED for first happy-path deploy (run 26212106417):
-    # the upstream ghcr.io/usekaneo/kaneo:latest image's port-binding and
-    # /api/health endpoint don't match what this role assumes — probe got
-    # Connection refused on tailscale_ip:3030 after 10min of retries. The
-    # observability stack is not on the critical path (operator → Telegram
-    # bot → Claude on VM). Re-enable by setting kaneo_enabled=true after
-    # the compose template / env vars are aligned with the real image.
+    # Phase 3: Kaneo (tickets) + Telegram (Bot setup)
+    # Kaneo role rewritten 2026-05-24 to match upstream's current shape
+    # (Postgres + AUTH_SECRET + port 5173). Earlier descope (run
+    # 26212106417) was on the old SQLite + KANEO_API_TOKEN shape. Default
+    # workspace + projects are created on first UI login or via MCP from
+    # the bot — no static-token seeding.
     - role: kaneo
       tags: [kaneo, observability]
-      when: kaneo_enabled | default(false) | bool
+      when: kaneo_enabled | default(true) | bool
       vars:
-        kaneo_data_dir: "/opt/kaneo"
-        kaneo_api_token: "{{ vault_kaneo_api_token }}"
-        kaneo_projects:
-          - mnemonic-core
-          - mnemonic-mcp
-          - mnemonic-wasm
-          - mnemonic-demo-client
-          - mnemonic-docs
-          - mnemonic-loop
+        kaneo_auth_secret: "{{ vault_kaneo_auth_secret }}"
+        kaneo_postgres_password: "{{ vault_kaneo_postgres_password }}"
 
     - role: telegram-init
       tags: [telegram-init, communication]

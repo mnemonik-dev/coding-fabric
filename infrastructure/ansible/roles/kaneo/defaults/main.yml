@@ -1,67 +1,46 @@
 ---
-# Kaneo deployment configuration
-# All variables are prefixed with kaneo_
+# Kaneo deployment configuration. All variables prefixed with kaneo_.
+# Aligned 2026-05-24 with upstream usekaneo/kaneo compose.yml + .env.sample
+# (Postgres-backed, port 5173, AUTH_SECRET for JWT). The previous role
+# shape (SQLite, port 3030, KANEO_API_TOKEN) was for an older Kaneo
+# release and broke on the current image; see git log if you need to
+# resurrect that path.
 
-# Docker image. The placeholder "kaneo/kaneo:latest" referenced a
-# non-existent Docker Hub repo (run 26211023902: "pull access denied for
-# kaneo/kaneo"). The real project is published to GitHub Container Registry.
-# See https://github.com/usekaneo/kaneo for tag history.
+# Docker image (GHCR — Docker Hub repo doesn't exist).
 kaneo_image: "ghcr.io/usekaneo/kaneo:latest"
 
-# Caddy container name (cross-role dependency with vaultwarden role)
-# This must match the container name defined in the vaultwarden role's docker-compose configuration.
-# See README for cross-role contract details.
+# Caddy container name (cross-role dependency with vaultwarden role) —
+# must match the container name defined in the vaultwarden role's
+# docker-compose. See README for cross-role contract details.
 vaultwarden_caddy_container_name: "vaultwarden-caddy-1"
 
-# Network binding (from tailscale role fact)
-# WARNING: Must be bound to {{ tailscale_ip }}, never to 0.0.0.0
-# This variable is expected to be set by the tailscale role
+# Caddy vhost (tailnet-internal, internal-CA TLS).
 kaneo_tailnet_domain: "kaneo.mnemonic-fabric.ts"
 
-# Data directory
+# Data directory (bind-mounted; postgres data lives under kaneo_data_dir/postgres).
 kaneo_data_dir: "/opt/kaneo/data"
 
-# Ports (internal to tailnet only)
-kaneo_http_port: 3030
+# Internal port Kaneo serves on. The image listens on 5173 by default
+# (matches upstream compose.yml). Caddy reverse-proxies the tailnet
+# vhost to this port.
+kaneo_http_port: 5173
 
-# Database configuration
-# Kaneo supports both SQLite and PostgreSQL; defaulting to SQLite for simplicity
-kaneo_database_type: "sqlite"
-kaneo_database_path: "/opt/kaneo/data/kaneo.db"
-
-# CRITICAL: API admin token MUST be provided by the playbook via sops decryption
-# It is NOT defined here; role will fail clearly if missing.
-# Playbook should decrypt from infrastructure/secrets/secrets.sops.yml and pass:
-# - kaneo_api_token
-#
-# Example from sops (encrypted at rest in git):
-#   KANEO_API_TOKEN: "..."
-#
-# The playbook (Task 24 deploy.yml) decrypts these before invoking this role.
-
-# Default projects to seed (idempotent via GET before POST)
-kaneo_default_projects:
-  - name: "mnemonic-core"
-    description: "Core cryptographic protocol implementation"
-  - name: "mnemonic-mcp"
-    description: "Model Context Protocol integration for Mnemonic"
-  - name: "mnemonic-wasm"
-    description: "WebAssembly bindings and WASM-target compilation"
-  - name: "mnemonic-demo-client"
-    description: "Demo client application showcasing Mnemonic Protocol"
-  - name: "mnemonic-docs"
-    description: "Protocol documentation and guides"
-  - name: "mnemonic-loop"
-    description: "Self-hosted coding fabric for Mnemonic Protocol development"
-
-# Health endpoint (used for wait_for checks)
+# Health endpoint (used for wait_for checks).
 kaneo_health_endpoint: "/api/health"
 
-# Projects endpoint (used for idempotent seeding)
-kaneo_projects_endpoint: "/api/projects"
+# Postgres connection settings (Kaneo's only supported DB for current
+# releases — SQLite was removed upstream).
+kaneo_postgres_db: "kaneo"
+kaneo_postgres_user: "kaneo"
 
-# Delay between project creates (rate-limit friendliness)
-kaneo_project_create_delay: 0.5
-
-# Docker Compose settings
-compose_project_name: "kaneo"
+# CRITICAL: Postgres password + AUTH_SECRET MUST be provided by the
+# playbook via sops decryption. Neither is defined here so the role
+# fails loudly if missing.
+#   kaneo_postgres_password  — Postgres user password (any length;
+#                              never reused outside the kaneo network)
+#   kaneo_auth_secret        — JWT signing key, MUST be >= 32 chars
+#                              (upstream-enforced). Without a stable
+#                              value, sessions get invalidated every
+#                              container restart.
+# See deploy.yml task "Expose sops keys as flat vault_* facts" and
+# secrets.sops.yml for sourcing.

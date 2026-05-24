@@ -1,14 +1,27 @@
 ---
+- name: Assert required Kaneo secrets are present
+  ansible.builtin.assert:
+    that:
+      - kaneo_auth_secret is defined and kaneo_auth_secret | string | length >= 32
+      - kaneo_postgres_password is defined and kaneo_postgres_password | string | length >= 12
+    fail_msg: |
+      FATAL: Kaneo secrets missing. Provide via sops decryption (see
+      deploy.yml). Required:
+        kaneo_auth_secret       (JWT signing key, >= 32 chars)
+        kaneo_postgres_password (>= 12 chars)
+  tags: [kaneo, kaneo-secrets]
+
 - name: Create Kaneo directories
   ansible.builtin.file:
     path: "{{ item }}"
     state: directory
     owner: op
     group: op
-    mode: '0700'
+    mode: "0700"
   loop:
     - /opt/kaneo
-    - /opt/kaneo/data
+    - "{{ kaneo_data_dir }}"
+    - "{{ kaneo_data_dir }}/postgres"
 
 - name: Generate docker-compose.yml from template
   ansible.builtin.template:
@@ -16,27 +29,25 @@
     dest: /opt/kaneo/docker-compose.yml
     owner: op
     group: op
-    mode: '0600'
+    mode: "0600"
   register: compose_template
   notify: Restart kaneo
 
 - name: Generate Caddy vhost snippet directly into shared conf.d host dir
   # The vaultwarden role mounts /opt/vaultwarden/caddy_conf_d → caddy's
   # /etc/caddy/conf.d (read-only). Write the snippet straight to the host
-  # directory; the same file is visible inside the caddy container. The
-  # previous `docker cp` approach failed: "mounted volume is marked
-  # read-only" (run 26210138402).
+  # directory; the same file is visible inside the caddy container.
   become: true
   ansible.builtin.template:
     src: Caddyfile.snippet.j2
     dest: /opt/vaultwarden/caddy_conf_d/kaneo.conf
     owner: op
     group: op
-    mode: '0644'
+    mode: "0644"
   register: caddyfile_snippet
   notify: Reload caddy for kaneo vhost
 
-- name: Run docker compose to start kaneo stack
+- name: Run docker compose to start Kaneo stack
   community.docker.docker_compose_v2:
     project_src: /opt/kaneo
     state: present
@@ -48,100 +59,46 @@
   register: compose_result
   tags: [kaneo, kaneo-deploy]
 
-- name: Wait for Kaneo API to be healthy
+- name: Wait for Kaneo HTTP to be healthy
   ansible.builtin.uri:
-    url: "http://{{ tailscale_ip }}:{{ kaneo_http_port }}{{ kaneo_health_endpoint }}"
+    url: "https://{{ kaneo_tailnet_domain }}{{ kaneo_health_endpoint }}"
     method: GET
     status_code: 200
+    validate_certs: false  # Caddy internal CA isn't in system trust store on the controller
   register: health_result
   until: health_result.status == 200
   retries: 120
   delay: 2
-  timeout: 300
   changed_when: false
   tags: [kaneo, kaneo-health]
 
 - name: Fail if health check exceeded timeout
   ansible.builtin.fail:
-    msg: "Kaneo health check failed after 4 minutes. Check docker logs: docker compose -f /opt/kaneo/docker-compose.yml logs"
+    msg: |
+      Kaneo health check failed after 4 minutes. Inspect:
+        docker compose -f /opt/kaneo/docker-compose.yml logs --tail=200
+        docker compose -f /opt/kaneo/docker-compose.yml ps
   when: health_result.status is not defined or health_result.status != 200
   tags: [kaneo, kaneo-health]
 
-- name: Get existing projects from Kaneo API
-  ansible.builtin.uri:
-    url: "http://{{ tailscale_ip }}:{{ kaneo_http_port }}{{ kaneo_projects_endpoint }}"
-    method: GET
-    headers:
-      Authorization: "Bearer {{ kaneo_api_token }}"
-    return_content: true
-    status_code: 200
-  register: existing_projects_response
-  changed_when: false
-  no_log: true
-  tags: [kaneo, kaneo-projects]
-
-- name: Parse existing project names
-  ansible.builtin.set_fact:
-    existing_project_names: "{{ existing_projects_response.json | map(attribute='name') | list }}"
-  when: existing_projects_response.status == 200 and existing_projects_response.json is defined
-
-- name: Create Kaneo default projects (idempotent via prior GET check)
-  ansible.builtin.uri:
-    url: "http://{{ tailscale_ip }}:{{ kaneo_http_port }}{{ kaneo_projects_endpoint }}"
-    method: POST
-    headers:
-      Authorization: "Bearer {{ kaneo_api_token }}"
-      Content-Type: "application/json"
-    body_format: json
-    body:
-      name: "{{ item.name }}"
-      description: "{{ item.description }}"
-    status_code: [200, 201, 409, 429, 500, 502, 503, 504]
-    return_content: true
-  register: project_create_result
-  retries: 5
-  delay: 3
-  until: project_create_result.status in [200, 201, 409]
-  failed_when: project_create_result.status not in [200, 201, 409, 429, 500, 502, 503, 504]
-  when: item.name not in existing_project_names
-  loop: "{{ kaneo_default_projects }}"
-  no_log: true
-  loop_control:
-    pause: "{{ kaneo_project_create_delay }}"
-  tags: [kaneo, kaneo-projects]
-
-- name: Verify all default projects exist
-  ansible.builtin.uri:
-    url: "http://{{ tailscale_ip }}:{{ kaneo_http_port }}{{ kaneo_projects_endpoint }}"
-    method: GET
-    headers:
-      Authorization: "Bearer {{ kaneo_api_token }}"
-    return_content: true
-    status_code: 200
-  register: final_projects_response
-  changed_when: false
-  no_log: true
-  tags: [kaneo, kaneo-projects]
-
-- name: Parse final project names
-  ansible.builtin.set_fact:
-    final_project_names: "{{ final_projects_response.json | map(attribute='name') | list }}"
-  when: final_projects_response.status == 200 and final_projects_response.json is defined
-  tags: [kaneo, kaneo-projects]
-
-- name: Verify exactly 6 default projects exist
-  ansible.builtin.assert:
-    that:
-      - final_project_names | length == 6
-      - kaneo_default_projects | map(attribute='name') | list | difference(final_project_names) | length == 0
-    fail_msg: "Expected 6 projects, found {{ final_project_names | length }}. Missing: {{ kaneo_default_projects | map(attribute='name') | list | difference(final_project_names) }}"
-    success_msg: "All 6 default Kaneo projects verified: {{ final_project_names | sort }}"
-  tags: [kaneo, kaneo-projects]
-
-- name: Verify Kaneo container is running
+- name: Verify both Kaneo containers are running
   ansible.builtin.shell: |
-    docker ps --filter "label=com.docker.compose.service=kaneo" --format "{{ '{{' }}.Names{{ '}}' }}"
+    docker compose -f /opt/kaneo/docker-compose.yml ps --format json
   register: container_check
-  failed_when: container_check.stdout_lines | length < 1
   changed_when: false
   tags: [kaneo, kaneo-health]
+
+- name: Assert both services are up
+  ansible.builtin.assert:
+    that:
+      - "'kaneo-postgres-1' in container_check.stdout"
+      - "'kaneo-kaneo-1' in container_check.stdout"
+    fail_msg: |
+      Expected kaneo-postgres-1 + kaneo-kaneo-1 containers running. Got:
+      {{ container_check.stdout }}
+  tags: [kaneo, kaneo-health]
+
+# Workspaces, projects, and Bearer tokens for the bot/Symphony are
+# created on demand via Kaneo's MCP server (apps/api/src/mcp/) — see
+# task #12. The first operator who signs in via the UI bootstraps the
+# default workspace; no automation here.

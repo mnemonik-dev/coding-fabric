@@ -1,32 +1,56 @@
-version: '3.8'
-
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: kaneo-postgres-1
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: "{{ kaneo_postgres_db }}"
+      POSTGRES_USER: "{{ kaneo_postgres_user }}"
+      POSTGRES_PASSWORD: "{{ kaneo_postgres_password }}"
+    volumes:
+      - {{ kaneo_data_dir }}/postgres:/var/lib/postgresql/data
+    networks:
+      - kaneo
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U {{ kaneo_postgres_user }} -d {{ kaneo_postgres_db }}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   kaneo:
     image: {{ kaneo_image }}
     container_name: kaneo-kaneo-1
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
-      DATABASE_URL: "sqlite:///opt/kaneo/data/kaneo.db"
-      PORT: "3030"
-      KANEO_API_TOKEN: "{{ kaneo_api_token }}"
-      LOG_LEVEL: "info"
-    volumes:
-      - ./data:/opt/kaneo/data
+      # Database (matches upstream compose.yml: derived DATABASE_URL when
+      # POSTGRES_PASSWORD or explicit host/port is set).
+      POSTGRES_DB: "{{ kaneo_postgres_db }}"
+      POSTGRES_USER: "{{ kaneo_postgres_user }}"
+      POSTGRES_PASSWORD: "{{ kaneo_postgres_password }}"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      # JWT signing key for auth sessions (min 32 chars per upstream docs).
+      # Without this a random secret is generated each start and sessions
+      # don't survive container restart.
+      AUTH_SECRET: "{{ kaneo_auth_secret }}"
+      # Client + API URLs (used in OAuth callbacks and CORS).
+      KANEO_CLIENT_URL: "https://{{ kaneo_tailnet_domain }}"
+      KANEO_API_URL: "https://{{ kaneo_tailnet_domain }}/api"
     networks:
       - kaneo
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3030{{ kaneo_health_endpoint }}"]
-      interval: 10s
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:{{ kaneo_http_port }}/api/health"]
+      interval: 30s
       timeout: 5s
+      start_period: 60s
       retries: 3
-      start_period: 30s
     expose:
-      - "3030"
+      - "{{ kaneo_http_port }}"
 
 networks:
   kaneo:
+    name: kaneo
     driver: bridge
-
-volumes:
-  kaneo_data:
-    driver: local
