@@ -12,8 +12,14 @@
   become_user: op
 
 - name: Reload caddy for kaneo vhost
-  ansible.builtin.shell: |
-    docker exec {{ vaultwarden_caddy_container_name }} caddy reload -c /etc/caddy/Caddyfile || true
+  # `caddy reload` against the admin API has been observed to fail with
+  # HTTP 400 / connection reset on this stack (live debug 2026-05-24:
+  # the admin endpoint at 127.0.0.1:2019 dropped the connection mid-POST).
+  # `docker restart` is the heavier but reliable hammer — Caddy re-reads
+  # the Caddyfile + conf.d/*.conf from disk on start, obtains TLS internal
+  # certs for any new vhost during boot. Vaultwarden's vhost survives the
+  # restart since its cert is on the persisted /data volume.
   become: true
-  changed_when: false
-  ignore_errors: true
+  ansible.builtin.command:
+    cmd: "docker restart {{ vaultwarden_caddy_container_name }}"
+  changed_when: true

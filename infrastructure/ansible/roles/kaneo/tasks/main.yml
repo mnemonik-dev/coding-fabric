@@ -71,6 +71,13 @@
     line: "{{ tailscale_ip }} {{ kaneo_tailnet_domain }}"
     state: present
 
+- name: Flush handlers so Caddy reload runs before the health probe
+  # Without this, the "Reload caddy for kaneo vhost" handler queued by
+  # the snippet-template task only fires at end-of-play, so the probe
+  # below would race the cert acquisition and fail with TLSV1_ALERT
+  # _INTERNAL_ERROR (CI run 26357811752 demonstrated this).
+  ansible.builtin.meta: flush_handlers
+
 - name: Wait for Kaneo HTTP to be healthy (via Caddy on tailnet IP:8443)
   # Probe Caddy reverse-proxy that fronts Kaneo. Caddy listens on
   # `{kaneo_domain}:8443` with `tls internal` (self-signed); validate_certs
