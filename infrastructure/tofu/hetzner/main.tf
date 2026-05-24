@@ -33,6 +33,20 @@ resource "hcloud_firewall" "fabric" {
     description = "Tailscale direct peer-to-peer and DERP handshake"
   }
 
+  # TEMPORARY operator debug access: SSH from operator's current public IP.
+  # Added 2026-05-23 because Tailscale GUI app on operator macOS wasn't
+  # bringing the tailnet up, and the VM was otherwise unreachable for
+  # debugging telegram-ai-agent (not responding). REMOVE this rule once
+  # Tailscale is restored — public SSH erodes the tailnet-only invariant
+  # documented in the FIREWALL NOTE below.
+  rule {
+    direction   = "in"
+    protocol    = "tcp"
+    port        = "22"
+    source_ips  = ["194.87.227.58/32"]
+    description = "TEMP debug SSH from operator IP — REMOVE after Tailscale restored"
+  }
+
   # Outbound: allow all. The VM must reach package mirrors, Tailscale DERP
   # servers, Hetzner metadata, GitHub, and other external services.
   # Egress is intentionally open at the cloud-firewall layer (L3 between
