@@ -24,6 +24,14 @@ telegram_ai_agent_uv_sync_timeout: 300
 # Pre-flight check: whether to require DYNAMIC feature in pinned commit
 telegram_ai_agent_require_dynamic_feature: true
 
+# Default working directory for bot-spawned claude sessions when the
+# topic has no specific cwd binding. Bot's pydantic-settings reads this
+# as `Settings.default_cwd` from the DEFAULT_CWD env var (rendered into
+# .env). The bot install dir (/opt/telegram-ai-agent) is wrong for
+# real work because it points back into the bot's source tree;
+# /home/op/work is a clean, op-owned, dedicated scratch area.
+telegram_ai_agent_default_cwd: "/home/op/work"
+
 # Topic configuration matrix. Empty by default — operator builds the set
 # on demand via the bot's /new-task command (Phase 2 backlog). Override
 # this map from a playbook or group_vars if you want a baseline set

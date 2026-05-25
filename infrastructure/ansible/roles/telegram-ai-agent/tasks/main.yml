@@ -258,6 +258,14 @@
         mode: "0755"
         recurse: yes
 
+    - name: Ensure DEFAULT_CWD path exists and is op-owned
+      ansible.builtin.file:
+        path: "{{ telegram_ai_agent_default_cwd }}"
+        state: directory
+        owner: "{{ telegram_ai_agent_owner }}"
+        group: "{{ telegram_ai_agent_group }}"
+        mode: "0755"
+
 - name: Pre-flight check for DYNAMIC feature
   tags: [telegram-ai-agent, preflight]
   # DYNAMIC feature (mnemonic-tg-bridge) is BACKLOG — upstream fork

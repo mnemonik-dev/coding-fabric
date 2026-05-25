@@ -42,6 +42,15 @@ _TASK_ID_RE = re.compile(r"^[A-Z0-9\-]{3,40}$")
 _REPO_DIRECTIVE_RE = re.compile(
     r"^\s*repo:\s*(?P<repo>\S+)\s*$", re.MULTILINE | re.IGNORECASE
 )
+# `pat: <name>` in the description selects a named PAT from the
+# GITHUB_PATS registry (a JSON env var like {"work":"ghp_…","personal":"ghp_…"}).
+# When the project has a `repo:` binding, `pat:` is REQUIRED — Symphony
+# fails the dispatch loudly otherwise. This is the explicit policy
+# operator picked (2026-05-25) over "fall back to a default token":
+# the high-privilege default token shouldn't be used by accident.
+_PAT_DIRECTIVE_RE = re.compile(
+    r"^\s*pat:\s*(?P<pat>\S+)\s*$", re.MULTILINE | re.IGNORECASE
+)
 
 
 def parse_repo_from_description(description: str | None) -> str | None:
@@ -61,6 +70,51 @@ def parse_repo_from_description(description: str | None) -> str | None:
     if "/" in raw and len(raw.split("/")) == 2:
         return f"https://github.com/{raw}.git"
     return None  # invalid shape — operator should fix the description
+
+
+def parse_pat_name_from_description(description: str | None) -> str | None:
+    """Pull a `pat: <name>` line from the description; return the name."""
+    if not description:
+        return None
+    m = _PAT_DIRECTIVE_RE.search(description)
+    if not m:
+        return None
+    name = m.group("pat").strip()
+    return name or None
+
+
+def resolve_pat(name: str | None, registry: dict[str, str]) -> str | None:
+    """Resolve a PAT name against the GITHUB_PATS registry.
+
+    Returns the token string, or None when not found / not requested.
+    Caller decides whether None is acceptable (e.g. workflows that need
+    no push access can run without a PAT).
+    """
+    if not name:
+        return None
+    return registry.get(name)
+
+
+def load_pat_registry() -> dict[str, str]:
+    """Parse GITHUB_PATS env var (JSON) into a {name: token} dict.
+
+    Returns {} when unset or unparseable. The caller decides how to react
+    to an empty registry — Symphony's policy is to fail loudly when a
+    repo-bound dispatch can't resolve its `pat:` name.
+    """
+    raw = os.environ.get("GITHUB_PATS", "").strip()
+    if not raw:
+        return {}
+    try:
+        import json
+
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.exception("load_pat_registry: GITHUB_PATS is not valid JSON")
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): str(v) for k, v in data.items() if isinstance(v, str) and v}
 
 
 @dataclass(frozen=True)
@@ -138,12 +192,48 @@ async def dispatch_ticket(
     except Exception:
         logger.exception("dispatch: get_project(%s) failed", ticket.project_id)
         project = {}
-    repo_url = parse_repo_from_description(
-        project.get("description") if isinstance(project, dict) else None
-    )
+    description = project.get("description") if isinstance(project, dict) else None
+    repo_url = parse_repo_from_description(description)
+    pat_name = parse_pat_name_from_description(description)
+
+    # Multi-PAT policy: when a repo is bound, `pat:` is required. Resolve
+    # the named token from the GITHUB_PATS env registry; if absent or
+    # unknown, fail the dispatch with a clear Kaneo comment so the
+    # operator notices and fixes the project description.
+    pat_token: str | None = None
+    if repo_url is not None:
+        if not pat_name:
+            await _safe_comment(
+                kaneo,
+                ticket.id,
+                "symphony: project description binds a `repo:` but no `pat:` name. "
+                "Add `pat: <name>` (one of the names in GITHUB_PATS) to the project "
+                "description so Symphony knows which token to give the agent.",
+            )
+            return DispatchOutcome(
+                ticket_id=ticket.id, stage=stage, engine=workflow.engine,
+                workspace_path=None, result=None,
+                error="missing pat: directive",
+            )
+        registry = load_pat_registry()
+        pat_token = resolve_pat(pat_name, registry)
+        if pat_token is None:
+            known = ", ".join(sorted(registry.keys())) or "(empty)"
+            await _safe_comment(
+                kaneo,
+                ticket.id,
+                f"symphony: `pat: {pat_name}` not found in GITHUB_PATS registry. "
+                f"Known names: {known}. Add the PAT to sops `github_pats` "
+                f"and redeploy, or change the project description to a known name.",
+            )
+            return DispatchOutcome(
+                ticket_id=ticket.id, stage=stage, engine=workflow.engine,
+                workspace_path=None, result=None,
+                error=f"pat name not in registry: {pat_name!r}",
+            )
 
     try:
-        await _prepare_workspace(workspace_path, repo_url)
+        await _prepare_workspace(workspace_path, repo_url, pat_token)
     except Exception as exc:
         logger.exception("dispatch: workspace prep failed for ticket=%s", ticket.id)
         await _safe_comment(
@@ -163,10 +253,12 @@ async def dispatch_ticket(
     rendered_prompt = _render_prompt(workflow, ticket)
 
     # GitHub auth for claude (so it can `gh pr create`/`git push`).
-    # Sourced from the service env (set by the workspace-manager systemd
-    # drop-in / Ansible role). When unset, claude can still commit locally
-    # but won't be able to open a PR; that's a soft fail, not a hard one.
-    gh_token = os.environ.get("GITHUB_TOKEN", "").strip()
+    # Priority:
+    #   1. Per-project PAT resolved above (from `pat:` in Kaneo description)
+    #   2. GITHUB_TOKEN from the service env (legacy / smoke-test fallback)
+    # The per-project PAT path is the production one — single shared
+    # GITHUB_TOKEN is only useful before the registry has anything in it.
+    gh_token = pat_token or os.environ.get("GITHUB_TOKEN", "").strip()
     extra_env: dict[str, str] = {}
     if gh_token:
         extra_env["GITHUB_TOKEN"] = gh_token
@@ -249,7 +341,9 @@ def _summarize_result(result: AgentRunResult) -> str:
     return tail or "(no output)"
 
 
-async def _prepare_workspace(workspace_path: Path, repo_url: str | None) -> None:
+async def _prepare_workspace(
+    workspace_path: Path, repo_url: str | None, pat_token: str | None = None
+) -> None:
     """Bring the workspace to a clean state for the agent run.
 
     Three cases:
@@ -260,10 +354,10 @@ async def _prepare_workspace(workspace_path: Path, repo_url: str | None) -> None
       `git reset --hard origin/<HEAD>` to drop any stale state from a
       previous dispatch.
 
-    Auth: if GITHUB_TOKEN is in the service env, git clone/fetch over
-    HTTPS picks it up automatically via the credential helper installed
-    in the Ansible role. Without it, public repos still work; private
-    ones fail loudly.
+    Auth: when ``pat_token`` is provided (the per-project PAT resolved
+    from the Kaneo project description), we hand it to git via
+    GIT_ASKPASS-style env in the subprocess. Falls back to ambient
+    GITHUB_TOKEN otherwise; public repos work without either.
     """
     workspace_path.mkdir(parents=True, exist_ok=True)
     git_dir = workspace_path / ".git"
@@ -296,11 +390,16 @@ async def _prepare_workspace(workspace_path: Path, repo_url: str | None) -> None
         await _run_git(
             workspace_path.parent,
             ["clone", "--depth", "1", repo_url, workspace_path.name],
+            env_overrides=_git_env_with_pat(pat_token),
         )
         return
 
     # Existing clone of the right repo — refresh.
-    await _run_git(workspace_path, ["fetch", "--all", "--prune", "--quiet"])
+    await _run_git(
+        workspace_path,
+        ["fetch", "--all", "--prune", "--quiet"],
+        env_overrides=_git_env_with_pat(pat_token),
+    )
     # Reset to the remote default branch. `git symbolic-ref` follows
     # origin/HEAD → origin/<default>.
     head = await _run_git(
@@ -314,12 +413,31 @@ async def _prepare_workspace(workspace_path: Path, repo_url: str | None) -> None
     await _run_git(workspace_path, ["clean", "-fdx"])
 
 
-async def _run_git(cwd: Path, args: list[str]) -> str:
+def _git_env_with_pat(pat_token: str | None) -> dict[str, str] | None:
+    """Build env overrides for git ops that need PAT auth on HTTPS clones.
+
+    HTTPS GitHub URLs read the credential helper; the credential helper
+    installed by the Ansible role echoes ``password=$GITHUB_TOKEN``. So
+    we just need GITHUB_TOKEN in the subprocess env. Returns None when
+    no token is in play.
+    """
+    if not pat_token:
+        return None
+    return {"GITHUB_TOKEN": pat_token, "GH_TOKEN": pat_token}
+
+
+async def _run_git(
+    cwd: Path, args: list[str], env_overrides: dict[str, str] | None = None
+) -> str:
     """Run `git <args>` in cwd. Returns stdout. Raises on non-zero exit."""
+    env = os.environ.copy()
+    if env_overrides:
+        env.update(env_overrides)
     proc = await asyncio.create_subprocess_exec(
         "git",
         *args,
         cwd=str(cwd),
+        env=env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )

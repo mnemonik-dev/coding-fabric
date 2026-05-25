@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from dispatch import parse_repo_from_description, stage_for, task_id_for
+from dispatch import (
+    load_pat_registry,
+    parse_pat_name_from_description,
+    parse_repo_from_description,
+    resolve_pat,
+    stage_for,
+    task_id_for,
+)
 from kaneo_client import Ticket
 
 
@@ -110,3 +117,48 @@ def test_task_id_truncates_to_40() -> None:
 
 def test_task_id_pads_too_short() -> None:
     assert task_id_for(_ticket(id="x")) == "X--"
+
+
+# ----- pat resolution -----
+
+
+def test_parse_pat_name() -> None:
+    assert parse_pat_name_from_description("repo: foo/bar\npat: work") == "work"
+    assert (
+        parse_pat_name_from_description("Pat: personal") == "personal"
+    )  # case-insensitive directive
+
+
+def test_parse_pat_name_absent() -> None:
+    assert parse_pat_name_from_description("repo: foo/bar") is None
+    assert parse_pat_name_from_description("") is None
+    assert parse_pat_name_from_description(None) is None
+
+
+def test_resolve_pat() -> None:
+    registry = {"work": "ghp_aaa", "personal": "ghp_bbb"}
+    assert resolve_pat("work", registry) == "ghp_aaa"
+    assert resolve_pat("unknown", registry) is None
+    assert resolve_pat(None, registry) is None
+    assert resolve_pat("work", {}) is None
+
+
+def test_load_pat_registry_from_env(monkeypatch) -> None:
+    monkeypatch.setenv("GITHUB_PATS", '{"work": "ghp_aaa", "personal": "ghp_bbb"}')
+    got = load_pat_registry()
+    assert got == {"work": "ghp_aaa", "personal": "ghp_bbb"}
+
+
+def test_load_pat_registry_empty_when_unset(monkeypatch) -> None:
+    monkeypatch.delenv("GITHUB_PATS", raising=False)
+    assert load_pat_registry() == {}
+
+
+def test_load_pat_registry_handles_invalid_json(monkeypatch) -> None:
+    monkeypatch.setenv("GITHUB_PATS", "not json")
+    assert load_pat_registry() == {}
+
+
+def test_load_pat_registry_filters_non_string_values(monkeypatch) -> None:
+    monkeypatch.setenv("GITHUB_PATS", '{"a": "ghp_x", "b": 123, "c": null, "d": ""}')
+    assert load_pat_registry() == {"a": "ghp_x"}
