@@ -8,6 +8,7 @@ from dispatch import (
     load_pat_registry,
     parse_pat_name_from_description,
     parse_repo_from_description,
+    parse_topic_from_description,
     resolve_pat,
     stage_for,
     task_id_for,
@@ -162,3 +163,24 @@ def test_load_pat_registry_handles_invalid_json(monkeypatch) -> None:
 def test_load_pat_registry_filters_non_string_values(monkeypatch) -> None:
     monkeypatch.setenv("GITHUB_PATS", '{"a": "ghp_x", "b": 123, "c": null, "d": ""}')
     assert load_pat_registry() == {"a": "ghp_x"}
+
+
+# ----- topic directive -----
+
+
+def test_parse_topic_positive() -> None:
+    assert parse_topic_from_description("repo: x/y\ntopic: 42") == 42
+
+
+def test_parse_topic_with_negative_chat() -> None:
+    # message_thread_id is always positive but parser tolerates any int form
+    assert parse_topic_from_description("topic: 1234567890") == 1234567890
+
+
+def test_parse_topic_absent() -> None:
+    assert parse_topic_from_description("repo: x/y") is None
+    assert parse_topic_from_description(None) is None
+
+
+def test_parse_topic_non_numeric() -> None:
+    assert parse_topic_from_description("topic: not-a-number") is None

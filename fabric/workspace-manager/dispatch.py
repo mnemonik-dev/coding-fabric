@@ -51,6 +51,13 @@ _REPO_DIRECTIVE_RE = re.compile(
 _PAT_DIRECTIVE_RE = re.compile(
     r"^\s*pat:\s*(?P<pat>\S+)\s*$", re.MULTILINE | re.IGNORECASE
 )
+# `topic: <thread_id>` pins a Kaneo project to a specific Telegram
+# forum topic. Symphony posts dispatch progress there alongside Kaneo
+# comments so the operator sees per-task activity in Telegram without
+# opening the Kaneo UI.
+_TOPIC_DIRECTIVE_RE = re.compile(
+    r"^\s*topic:\s*(?P<topic>-?\d+)\s*$", re.MULTILINE | re.IGNORECASE
+)
 
 
 def parse_repo_from_description(description: str | None) -> str | None:
@@ -81,6 +88,50 @@ def parse_pat_name_from_description(description: str | None) -> str | None:
         return None
     name = m.group("pat").strip()
     return name or None
+
+
+def parse_topic_from_description(description: str | None) -> int | None:
+    """Pull a `topic: <thread_id>` line; return the message_thread_id."""
+    if not description:
+        return None
+    m = _TOPIC_DIRECTIVE_RE.search(description)
+    if not m:
+        return None
+    try:
+        return int(m.group("topic"))
+    except ValueError:
+        return None
+
+
+async def _notify_topic(message: str, thread_id: int | None) -> None:
+    """Best-effort send to the Telegram topic. Logs errors; never raises."""
+    if thread_id is None:
+        return
+    bot_token = os.environ.get("BOT_TOKEN", "").strip() or os.environ.get(
+        "TELEGRAM_BOT_TOKEN", ""
+    ).strip()
+    chat_id = os.environ.get("TELEGRAM_FORUM_CHAT_ID", "").strip()
+    if not bot_token or not chat_id:
+        logger.debug(
+            "_notify_topic: missing BOT_TOKEN or TELEGRAM_FORUM_CHAT_ID; skipping"
+        )
+        return
+    import httpx
+
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(
+                url,
+                json={
+                    "chat_id": chat_id,
+                    "message_thread_id": thread_id,
+                    "text": message[:4000],   # Telegram cap
+                    "disable_web_page_preview": True,
+                },
+            )
+    except Exception:
+        logger.exception("_notify_topic: send failed for thread_id=%s", thread_id)
 
 
 def resolve_pat(name: str | None, registry: dict[str, str]) -> str | None:
@@ -195,6 +246,7 @@ async def dispatch_ticket(
     description = project.get("description") if isinstance(project, dict) else None
     repo_url = parse_repo_from_description(description)
     pat_name = parse_pat_name_from_description(description)
+    topic_id = parse_topic_from_description(description)
 
     # Multi-PAT policy: when a repo is bound, `pat:` is required. Resolve
     # the named token from the GITHUB_PATS env registry; if absent or
@@ -252,6 +304,14 @@ async def dispatch_ticket(
 
     rendered_prompt = _render_prompt(workflow, ticket)
 
+    # Telegram-side "now starting" mirror — only when a topic is bound.
+    # Operator sees the dispatch begin in the per-task topic; full prompt
+    # body stays in Kaneo (no need to leak the system prompt to chat).
+    await _notify_topic(
+        f"symphony: starting {workflow.engine}/{stage} for ticket {ticket.id}",
+        topic_id,
+    )
+
     # GitHub auth for claude (so it can `gh pr create`/`git push`).
     # Priority:
     #   1. Per-project PAT resolved above (from `pat:` in Kaneo description)
@@ -304,12 +364,13 @@ async def dispatch_ticket(
     # Surface the run to Kaneo (truncated body — full transcript stays on
     # the VM filesystem under workspace_path).
     summary = _summarize_result(result)
-    await _safe_comment(
-        kaneo,
-        ticket.id,
+    completion_msg = (
         f"symphony: {workflow.engine}/{stage} run complete (exit={result.exit_code}, "
-        f"{result.duration_seconds:.1f}s)\n\n{summary}",
+        f"{result.duration_seconds:.1f}s)\n\n{summary}"
     )
+    await _safe_comment(kaneo, ticket.id, completion_msg)
+    # Telegram-side mirror so operator sees per-task progress live.
+    await _notify_topic(completion_msg, topic_id)
 
     return DispatchOutcome(
         ticket_id=ticket.id,
