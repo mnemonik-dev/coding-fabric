@@ -89,7 +89,17 @@ def poll_for_token(base_url: str, device_code: str, interval: int, expires_in: i
             if body.get("error") == "slow_down":
                 interval += 5
             continue
-        # 400 with expired_token, access_denied, or anything else → abort
+        # Kaneo doesn't follow RFC 8628's `slow_down` reply for rate
+        # limiting — it returns a generic HTTP 429 instead. Treat that
+        # as "back off, keep trying" rather than fatal.
+        if status == 429:
+            interval = min(interval + 10, 60)
+            print(
+                f"  rate-limited; backing off to {interval}s",
+                file=sys.stderr,
+            )
+            continue
+        # expired_token, access_denied, or anything else → abort
         sys.exit(f"device flow ended (HTTP {status}): {body}")
     sys.exit("device flow timed out before operator approved")
 
@@ -118,6 +128,12 @@ def upsert_env(env_file: Path, mcp_url: str, bearer: str) -> None:
     tmp_path = env_file.with_suffix(env_file.suffix + ".tmp")
     tmp_path.write_text("\n".join(new_lines) + "\n")
     os.chmod(tmp_path, 0o600)
+    # Preserve original ownership — pair-kaneo runs via sudo so a naive
+    # write would land as root:root, then the bot service (uid op) can't
+    # read its EnvironmentFile and systemd loops the unit forever.
+    if env_file.exists():
+        original_stat = env_file.stat()
+        os.chown(tmp_path, original_stat.st_uid, original_stat.st_gid)
     os.replace(tmp_path, env_file)
 
 

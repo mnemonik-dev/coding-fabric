@@ -60,6 +60,57 @@
           See diagnostic output above (systemctl status, journalctl, ss).
       when: t08_health.status | default(-1) != 200
 
+- name: Install Node.js + Claude Code CLI
+  # The bot spawns `claude` as a subprocess for every coding turn — without
+  # it, the bot is "active" in systemd but every Telegram message piles up
+  # in "Added to queue (#1)" forever (live debug 2026-05-25: VM recreate
+  # wiped the previous manual operator install).
+  tags: [telegram-ai-agent, claude-cli]
+  become: true
+  block:
+    - name: Check if Node.js is already installed
+      ansible.builtin.command: node --version
+      register: node_version_check
+      changed_when: false
+      failed_when: false
+
+    - name: Add NodeSource APT repository
+      ansible.builtin.shell: |
+        curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+      when: node_version_check.rc != 0
+      changed_when: true
+
+    - name: Install Node.js (provides node + npm)
+      ansible.builtin.apt:
+        name: nodejs
+        state: present
+        update_cache: yes
+      when: node_version_check.rc != 0
+
+    - name: Check if Claude Code CLI is installed
+      ansible.builtin.command: claude --version
+      register: claude_version_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install @anthropic-ai/claude-code globally
+      community.general.npm:
+        name: "@anthropic-ai/claude-code"
+        global: true
+        state: present
+      when: claude_version_check.rc != 0
+
+    - name: Verify claude is on PATH
+      ansible.builtin.command: claude --version
+      register: claude_version_final
+      changed_when: false
+
+    - name: Assert claude installed
+      ansible.builtin.assert:
+        that:
+          - claude_version_final.rc == 0
+        fail_msg: "claude CLI install failed; bot will hang on every message"
+
 - name: Install uv package manager
   tags: [telegram-ai-agent, uv]
   block:
