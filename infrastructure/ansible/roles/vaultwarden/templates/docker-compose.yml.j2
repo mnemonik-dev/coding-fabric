@@ -34,7 +34,17 @@ services:
     container_name: vaultwarden-caddy-1
     restart: unless-stopped
     ports:
+      # Tailnet-only vhosts (vault.mnemonic-fabric.ts, kaneo.mnemonic-fabric.ts).
+      # Bound explicitly to tailscale_ip so the public NIC never accepts
+      # these vhosts.
       - "{{ tailscale_ip }}:{{ vaultwarden_https_port }}:8443/tcp"
+      # Public ingress for non-secret apps that opted in (e.g. Kaneo at
+      # kaneo.mnemonik.xyz). Bound to 0.0.0.0:443 + :80 (Hetzner firewall
+      # only opens these when the corresponding rules exist in tofu).
+      # Caddy's vhost matching gates which backend each request reaches —
+      # vault.mnemonic-fabric.ts:8443 won't match any public request.
+      - "0.0.0.0:443:443/tcp"
+      - "0.0.0.0:80:80/tcp"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./caddy_data:/data

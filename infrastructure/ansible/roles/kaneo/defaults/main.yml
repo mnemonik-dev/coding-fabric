@@ -17,6 +17,14 @@ vaultwarden_caddy_container_name: "vaultwarden-caddy-1"
 # Caddy vhost (tailnet-internal, internal-CA TLS).
 kaneo_tailnet_domain: "kaneo.mnemonic-fabric.ts"
 
+# Optional public domain. When set, Caddy also serves Kaneo at this
+# hostname on port 443 with a real Let's Encrypt cert. Requires:
+#   - Public DNS A record pointing the domain at the VM's public IP
+#   - Hetzner firewall opens 80 + 443 (see infrastructure/tofu/hetzner/main.tf)
+#   - caddy_acme_email set so Let's Encrypt can issue
+# Leave empty to keep Kaneo tailnet-only.
+kaneo_public_domain: ""
+
 # Data directory (bind-mounted; postgres data lives under kaneo_data_dir/postgres).
 kaneo_data_dir: "/opt/kaneo/data"
 

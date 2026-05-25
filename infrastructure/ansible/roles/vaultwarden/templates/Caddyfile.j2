@@ -3,6 +3,13 @@
     level {{ vaultwarden_caddy_log_level }}
   }
   storage file_system /data/caddy
+{% if caddy_acme_email is defined and caddy_acme_email | length > 0 %}
+  # ACME contact email — used by Let's Encrypt for cert expiry notices on
+  # public vhosts. Internal-CA vhosts (vault.mnemonic-fabric.ts:8443,
+  # kaneo.mnemonic-fabric.ts:8443) don't go through LE; only public
+  # vhosts loaded from conf.d/ do.
+  email {{ caddy_acme_email }}
+{% endif %}
 }
 
 {{ vaultwarden_tailnet_domain }}:8443 {

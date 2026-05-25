@@ -139,6 +139,9 @@
         # admin password was being passed. Map the second sops field too.
         vaultwarden_admin_token: "{{ vault_vaultwarden_admin_token }}"
         vaultwarden_tailnet_bind_only: true
+        # Shared with kaneo role — Caddy serves both vhosts from the same
+        # container. ACME email is required when a public vhost is enabled.
+        caddy_acme_email: "{{ sops.caddy_acme_email | default('bogdan.sivochkin@gmail.com') }}"
 
     # Phase 3: Kaneo (tickets) + Telegram (Bot setup)
     # Kaneo role rewritten 2026-05-24 to match upstream's current shape
@@ -152,6 +155,9 @@
       vars:
         kaneo_auth_secret: "{{ vault_kaneo_auth_secret }}"
         kaneo_postgres_password: "{{ vault_kaneo_postgres_password }}"
+        # Public ingress — set to a domain whose DNS A record points
+        # at the VM's public IPv4. Empty = tailnet-only (default).
+        kaneo_public_domain: "{{ sops.kaneo_public_domain | default('kaneo.mnemonik.xyz') }}"
 
     - role: telegram-init
       tags: [telegram-init, communication]

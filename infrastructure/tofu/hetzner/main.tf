@@ -47,6 +47,29 @@ resource "hcloud_firewall" "fabric" {
     description = "TEMP debug SSH from operator IP — REMOVE after Tailscale restored"
   }
 
+  # Public HTTPS for Kaneo (kaneo.mnemonik.xyz). Caddy on the VM handles
+  # TLS termination via Let's Encrypt; vhost matching prevents any other
+  # backend from being reachable on this port. Vaultwarden's tailnet
+  # vhost stays bound to tailscale_ip:8443 — unaffected by these rules.
+  rule {
+    direction   = "in"
+    protocol    = "tcp"
+    port        = "443"
+    source_ips  = ["0.0.0.0/0", "::/0"]
+    description = "Public HTTPS for Kaneo (kaneo.mnemonik.xyz)"
+  }
+
+  # HTTP only used for the Let's Encrypt HTTP-01 challenge + the 308
+  # redirect Caddy issues to upgrade callers to HTTPS. No app data flows
+  # on :80.
+  rule {
+    direction   = "in"
+    protocol    = "tcp"
+    port        = "80"
+    source_ips  = ["0.0.0.0/0", "::/0"]
+    description = "Public HTTP for Caddy ACME challenge + HTTPS redirect"
+  }
+
   # Outbound: allow all. The VM must reach package mirrors, Tailscale DERP
   # servers, Hetzner metadata, GitHub, and other external services.
   # Egress is intentionally open at the cloud-firewall layer (L3 between

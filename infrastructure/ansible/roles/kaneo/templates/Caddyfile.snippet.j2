@@ -8,3 +8,28 @@
     header_up X-Forwarded-Proto {scheme}
   }
 }
+
+{% if kaneo_public_domain is defined and kaneo_public_domain | length > 0 %}
+# Public ingress for Kaneo. Real Let's Encrypt cert obtained
+# automatically via Caddy's ACME on first request. Requires:
+#   - DNS A record {{ kaneo_public_domain }} → VM public IPv4
+#   - Hetzner firewall opens TCP 80 + 443 from 0.0.0.0/0 (see
+#     infrastructure/tofu/hetzner/main.tf)
+#   - caddy_acme_email role var set (Let's Encrypt contact)
+# Vaultwarden's tailnet vhost stays private — its site block matches a
+# different hostname.
+{{ kaneo_public_domain }} {
+  encode gzip
+  reverse_proxy http://kaneo:{{ kaneo_http_port }} {
+    header_up X-Real-IP {remote_host}
+    header_up X-Forwarded-For {remote_host}
+    header_up X-Forwarded-Proto {scheme}
+  }
+
+  header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+  header X-Content-Type-Options "nosniff"
+  header X-Frame-Options "SAMEORIGIN"
+  header X-XSS-Protection "1; mode=block"
+  header Referrer-Policy "same-origin"
+}
+{% endif %}
