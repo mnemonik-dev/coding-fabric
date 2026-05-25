@@ -98,14 +98,23 @@ class KaneoClient:
 
     async def list_tasks_for_project(self, project_id: str) -> list[Ticket]:
         """Fetch tasks for one project."""
+        data = await self.get_project(project_id)
+        tasks = data.get("tasks", []) if isinstance(data, dict) else []
+        return [_to_ticket(item, project_id) for item in tasks]
+
+    async def get_project(self, project_id: str) -> dict[str, Any]:
+        """Fetch a single Kaneo project (incl. description + tasks[]).
+
+        Symphony reads ``description`` to bind a GitHub repo to the
+        project via a `repo: org/name` line (see
+        ``dispatch.parse_repo_from_description``).
+        """
         r = await self._client.get(f"/api/project/{project_id}")
         if r.status_code == 401:
             raise KaneoUnauthorized("bearer rejected — re-pair via scripts/pair-kaneo.py")
         r.raise_for_status()
         data = r.json()
-        # /api/project/<id> returns a single project object with tasks[] inline.
-        tasks = data.get("tasks", []) if isinstance(data, dict) else []
-        return [_to_ticket(item, project_id) for item in tasks]
+        return data if isinstance(data, dict) else {}
 
     async def list_workspaces(self) -> list[dict[str, Any]]:
         """Kaneo calls workspaces 'organizations' under the hood."""
