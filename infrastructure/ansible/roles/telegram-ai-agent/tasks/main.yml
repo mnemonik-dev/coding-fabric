@@ -228,6 +228,36 @@
         group: "{{ telegram_ai_agent_group }}"
         recurse: yes
 
+    # Defensive belt-and-braces: explicitly chown the runtime state
+    # files the bot writes to. The recurse above SHOULD cover these,
+    # but live debug 2026-05-25 found channel_sessions.json + topic_config.json
+    # + tmux_sessions/state.json still root:root after deploy — the bot
+    # then silently dropped every session/topic_config write
+    # ("PermissionError: ... channel_sessions.json"), context was lost
+    # across each /clear, /new behaved as reset-instead-of-new-chat.
+    # Pinning each file individually makes the symptom impossible.
+    - name: Ensure bot runtime-state files are op-owned
+      ansible.builtin.file:
+        path: "{{ telegram_ai_agent_home }}/{{ item }}"
+        state: touch
+        owner: "{{ telegram_ai_agent_owner }}"
+        group: "{{ telegram_ai_agent_group }}"
+        mode: "0644"
+      loop:
+        - channel_sessions.json
+        - session_mapping.json
+        - topic_config.json
+      changed_when: false   # touch always reports changed; we don't care
+
+    - name: Ensure tmux_sessions dir + state.json are op-owned
+      ansible.builtin.file:
+        path: "{{ telegram_ai_agent_home }}/tmux_sessions"
+        state: directory
+        owner: "{{ telegram_ai_agent_owner }}"
+        group: "{{ telegram_ai_agent_group }}"
+        mode: "0755"
+        recurse: yes
+
 - name: Pre-flight check for DYNAMIC feature
   tags: [telegram-ai-agent, preflight]
   # DYNAMIC feature (mnemonic-tg-bridge) is BACKLOG — upstream fork
