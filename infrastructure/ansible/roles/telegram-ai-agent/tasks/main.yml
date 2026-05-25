@@ -410,52 +410,68 @@
         owner: "{{ telegram_ai_agent_owner }}"
         group: "{{ telegram_ai_agent_group }}"
 
-- name: Ship Molyanov skill bundle to bot's HOME
+- name: Ship Molyanov skill bundle to every HOME claude might use
   # claude reads ~/.claude/{skills,commands} for slash-commands like
-  # /tech-spec-planning, /do-task, /code-writing, etc. The bot service
-  # runs with HOME=/var/lib/telegram-ai-agent (set in the unit), so
-  # placing the bundle there makes every claude session spawned by the
-  # bot — in any topic — pick them up via the Skill tool, with zero
-  # per-topic configuration.
+  # /tech-spec-planning, /do-task, /code-writing, etc. THREE claude
+  # spawn sites need this bundle:
+  #
+  #   1. Bot's runtime — HOME=/var/lib/telegram-ai-agent (set in unit)
+  #   2. Symphony-spawned agents — HOME=/home/op (workspace-manager user)
+  #   3. Operator's interactive SSH session — HOME=/home/op (same)
+  #
+  # 2 + 3 overlap. Without the bundle in op's home, Symphony's claude
+  # ignores the code.md workflow's '/user-spec-planning then …'
+  # directives because the slash-commands resolve to nothing — agent
+  # just implements directly (live debug 2026-05-25).
   tags: [telegram-ai-agent, skills]
   block:
-    - name: Ensure {{ telegram_ai_agent_home_dir }}/.claude exists
-      vars:
-        telegram_ai_agent_home_dir: /var/lib/telegram-ai-agent
+    - name: Ensure target dirs exist
       ansible.builtin.file:
-        path: "{{ telegram_ai_agent_home_dir }}/.claude"
+        path: "{{ item.path }}"
         state: directory
-        owner: "{{ telegram_ai_agent_owner }}"
-        group: "{{ telegram_ai_agent_group }}"
+        owner: "{{ item.owner }}"
+        group: "{{ item.owner }}"
         mode: "0755"
+      loop:
+        - {path: /var/lib/telegram-ai-agent/.claude, owner: "{{ telegram_ai_agent_owner }}"}
+        - {path: /home/op/.claude, owner: op}
 
-    - name: Sync skills/ into HOME/.claude/skills/
+    - name: Sync skills/ into each target HOME
       ansible.posix.synchronize:
         src: "{{ role_path }}/../../files/claude-skills/skills/"
-        dest: /var/lib/telegram-ai-agent/.claude/skills/
-        delete: yes
+        dest: "{{ item }}/skills/"
+        delete: no   # additive — preserve any out-of-band skills present
         owner: no
         group: no
         rsync_opts:
           - "--chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r"
+      loop:
+        - /var/lib/telegram-ai-agent/.claude
+        - /home/op/.claude
 
-    - name: Sync commands/ into HOME/.claude/commands/
+    - name: Sync commands/ into each target HOME
       ansible.posix.synchronize:
         src: "{{ role_path }}/../../files/claude-skills/commands/"
-        dest: /var/lib/telegram-ai-agent/.claude/commands/
-        delete: yes
+        dest: "{{ item }}/commands/"
+        delete: no
         owner: no
         group: no
         rsync_opts:
           - "--chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r"
+      loop:
+        - /var/lib/telegram-ai-agent/.claude
+        - /home/op/.claude
 
-    - name: Re-own .claude tree to service user (synchronize runs as root)
+    - name: Re-own .claude trees (synchronize ran as root)
       ansible.builtin.file:
-        path: /var/lib/telegram-ai-agent/.claude
+        path: "{{ item.path }}"
         state: directory
-        owner: "{{ telegram_ai_agent_owner }}"
-        group: "{{ telegram_ai_agent_group }}"
+        owner: "{{ item.owner }}"
+        group: "{{ item.owner }}"
         recurse: yes
+      loop:
+        - {path: /var/lib/telegram-ai-agent/.claude, owner: "{{ telegram_ai_agent_owner }}"}
+        - {path: /home/op/.claude, owner: op}
 
 - name: Install Kaneo MCP pairing helper
   # One-time operator script for the device-code flow with Kaneo. Lives
