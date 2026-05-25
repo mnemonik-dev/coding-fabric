@@ -406,6 +406,29 @@
         group: "{{ telegram_ai_agent_group }}"
         recurse: yes
 
+- name: Install Kaneo MCP pairing helper
+  # One-time operator script for the device-code flow with Kaneo. Lives
+  # next to the bot install so the operator can run it via SSH without
+  # any extra setup. Repeatable: re-run every ~30 days when the session
+  # bearer expires.
+  tags: [telegram-ai-agent, kaneo-pairing]
+  block:
+    - name: Ensure {{ telegram_ai_agent_home }}/scripts exists
+      ansible.builtin.file:
+        path: "{{ telegram_ai_agent_home }}/scripts"
+        state: directory
+        owner: "{{ telegram_ai_agent_owner }}"
+        group: "{{ telegram_ai_agent_group }}"
+        mode: "0755"
+
+    - name: Copy pair-kaneo.py
+      ansible.builtin.copy:
+        src: pair-kaneo.py
+        dest: "{{ telegram_ai_agent_home }}/scripts/pair-kaneo.py"
+        owner: "{{ telegram_ai_agent_owner }}"
+        group: "{{ telegram_ai_agent_group }}"
+        mode: "0755"
+
 - name: Install and enable systemd unit
   tags: [telegram-ai-agent, systemd]
   block:
