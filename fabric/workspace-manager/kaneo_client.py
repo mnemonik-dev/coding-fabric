@@ -82,26 +82,42 @@ class KaneoClient:
         await self._client.aclose()
 
     # ----- Reads -----
+    #
+    # Kaneo's REST routes (verified against usekaneo/kaneo apps/api):
+    #   GET  /api/auth/organization/list             — workspaces ("orgs")
+    #   GET  /api/project?workspaceId=<id>           — projects in workspace,
+    #                                                  RESPONSE INCLUDES INLINE tasks[]
+    #   GET  /api/project/<id>                       — one project (with tasks[])
+    #   GET  /api/task/<id>                          — one task
+    #   POST /api/task                               — create
+    #   PATCH /api/task/<id>                         — update full body
+    #   PATCH /api/task/status/<id>                  — update status only
+    #   POST /api/task/move/<id>                     — move between columns
+    #   GET  /api/comment/<taskId>                   — list comments
+    #   POST /api/comment/<taskId>                   — create comment
 
     async def list_tasks_for_project(self, project_id: str) -> list[Ticket]:
-        """Fetch tasks for one project. Filter to non-terminal upstream."""
-        r = await self._client.get(f"/api/projects/{project_id}/tasks")
-        if r.status_code == 401:
-            raise KaneoUnauthorized("bearer rejected — re-pair via scripts/pair-kaneo.py")
-        r.raise_for_status()
-        items = r.json() if isinstance(r.json(), list) else r.json().get("tasks", [])
-        return [_to_ticket(item, project_id) for item in items]
-
-    async def list_workspaces(self) -> list[dict[str, Any]]:
-        r = await self._client.get("/api/workspaces")
+        """Fetch tasks for one project."""
+        r = await self._client.get(f"/api/project/{project_id}")
         if r.status_code == 401:
             raise KaneoUnauthorized("bearer rejected — re-pair via scripts/pair-kaneo.py")
         r.raise_for_status()
         data = r.json()
-        return data if isinstance(data, list) else data.get("workspaces", [])
+        # /api/project/<id> returns a single project object with tasks[] inline.
+        tasks = data.get("tasks", []) if isinstance(data, dict) else []
+        return [_to_ticket(item, project_id) for item in tasks]
+
+    async def list_workspaces(self) -> list[dict[str, Any]]:
+        """Kaneo calls workspaces 'organizations' under the hood."""
+        r = await self._client.get("/api/auth/organization/list")
+        if r.status_code == 401:
+            raise KaneoUnauthorized("bearer rejected — re-pair via scripts/pair-kaneo.py")
+        r.raise_for_status()
+        data = r.json()
+        return data if isinstance(data, list) else data.get("organizations", [])
 
     async def list_projects(self, workspace_id: str) -> list[dict[str, Any]]:
-        r = await self._client.get(f"/api/workspaces/{workspace_id}/projects")
+        r = await self._client.get(f"/api/project?workspaceId={workspace_id}")
         r.raise_for_status()
         data = r.json()
         return data if isinstance(data, list) else data.get("projects", [])
@@ -110,7 +126,7 @@ class KaneoClient:
 
     async def update_task_status(self, task_id: str, status: str) -> None:
         r = await self._client.patch(
-            f"/api/tasks/{task_id}",
+            f"/api/task/status/{task_id}",
             json={"status": status},
         )
         if r.status_code >= 400:
@@ -118,15 +134,15 @@ class KaneoClient:
 
     async def create_comment(self, task_id: str, body: str) -> None:
         r = await self._client.post(
-            f"/api/tasks/{task_id}/comments",
-            json={"body": body},
+            f"/api/comment/{task_id}",
+            json={"content": body},
         )
         if r.status_code >= 400:
             raise KaneoError(f"create_comment({task_id}) → HTTP {r.status_code}")
 
     async def list_comments(self, task_id: str) -> list[dict[str, Any]]:
         """Return comments on a task ordered oldest → newest."""
-        r = await self._client.get(f"/api/tasks/{task_id}/comments")
+        r = await self._client.get(f"/api/comment/{task_id}")
         if r.status_code == 401:
             raise KaneoUnauthorized("bearer rejected — re-pair via scripts/pair-kaneo.py")
         if r.status_code >= 400:
