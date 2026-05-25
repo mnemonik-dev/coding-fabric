@@ -36,9 +36,13 @@ services:
       # Without this a random secret is generated each start and sessions
       # don't survive container restart.
       AUTH_SECRET: "{{ kaneo_auth_secret }}"
-      # Client + API URLs (used in OAuth callbacks and CORS).
-      KANEO_CLIENT_URL: "https://{{ kaneo_tailnet_domain }}"
-      KANEO_API_URL: "https://{{ kaneo_tailnet_domain }}/api"
+      # Client + API URLs (used in OAuth redirect URIs and CORS). The
+      # explicit :8443 matches the Caddy vhost binding — without it the
+      # device-code verification_uri Kaneo prints to operators omits
+      # the port, the browser hits the bare https:// (port 443) which
+      # Caddy doesn't listen on, and the page fails to load.
+      KANEO_CLIENT_URL: "https://{{ kaneo_tailnet_domain }}:{{ vaultwarden_https_port | default(8443) }}"
+      KANEO_API_URL: "https://{{ kaneo_tailnet_domain }}:{{ vaultwarden_https_port | default(8443) }}/api"
     networks:
       # `kaneo` (internal) — for Kaneo ↔ Postgres only.
       kaneo: {}
