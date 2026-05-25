@@ -73,7 +73,13 @@
         vault_telegram_bot_token:           "{{ sops.telegram_bot_token }}"
         vault_telegram_forum_chat_id:       "{{ sops.telegram_forum_chat_id }}"
         vault_telegram_ops_thread_id:       "{{ sops.telegram_ops_thread_id | default('0') }}"
-        vault_telegram_allowed_user_ids:    "{{ sops.telegram_allowed_user_ids | default([]) }}"
+        # `sops set` doesn't accept bare JSON arrays via CLI so the
+        # stored value is a JSON-array-as-string ("[206475911]"). Parse
+        # it back to a real list defensively; tolerate either shape so
+        # operators editing sops by hand can use real YAML lists too.
+        vault_telegram_allowed_user_ids: >-
+          {%- set raw = sops.telegram_allowed_user_ids | default('[]') -%}
+          {{ (raw | from_json) if (raw is string) else raw }}
         vault_claude_code_oauth_token:      "{{ sops.claude_code_oauth_token | default('') }}"
         vault_anthropic_api_key:            "{{ sops.anthropic_api_key | default('') }}"
         vault_openai_api_key:               "{{ sops.openai_api_key | default('') }}"
