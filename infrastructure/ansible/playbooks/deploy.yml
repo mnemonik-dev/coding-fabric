@@ -299,6 +299,10 @@
         # so subsequent redeploys preserve it.
         kaneo_mcp_url: "{{ vault_kaneo_mcp_url | default('') }}"
         kaneo_mcp_bearer: "{{ vault_kaneo_mcp_bearer | default('') }}"
+        # GitHub MCP — reuses the existing github_deploy_pat sops key
+        # (must have at least 'repo' scope for create_repository).
+        # Empty value = MCP server not injected, bot stays GitHub-free.
+        github_personal_access_token: "{{ vault_github_deploy_pat | default('') }}"
         telegram_ai_agent_workspace_manager_url: "http://{{ tailscale_ip }}:8080"
         telegram_ai_agent_per_topic_config: "{{ fabric_topic_matrix | default({}) }}"
         # Operator allowlist. Without this, the bot's auth middleware
