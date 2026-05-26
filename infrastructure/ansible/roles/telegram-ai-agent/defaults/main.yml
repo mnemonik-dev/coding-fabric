@@ -7,7 +7,7 @@ telegram_ai_agent_repo: "https://github.com/mnemonik-dev/telegram-ai-agent.git"
 # Kaneo MCP (819e5c6) — bot's claude session can call mcp__github__*
 # for repo/PR/issue ops AND mcp__kaneo__* for ticketing in one turn.
 # Predecessor 1ceaccb / v0.1.0+mnemonik.1 had cwd:DYNAMIC HTTP resolver.
-telegram_ai_agent_pin: "4b3ffc2"
+telegram_ai_agent_pin: "873751b"
 
 # Installation paths
 telegram_ai_agent_home: "/opt/telegram-ai-agent"
