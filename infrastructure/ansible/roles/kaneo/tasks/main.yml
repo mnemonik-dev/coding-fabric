@@ -20,8 +20,56 @@
     mode: "0700"
   loop:
     - /opt/kaneo
-    - "{{ kaneo_data_dir }}"
-    - "{{ kaneo_data_dir }}/postgres"
+
+- name: Find Hetzner data volume mountpoint (block device /dev/sdb)
+  # The volume's /mnt/HC_Volume_<id> path varies by volume ID — discover
+  # at runtime instead of hardcoding. /dev/sdb is the canonical name
+  # Hetzner gives the data volume (see tofu/hetzner/main.tf:312).
+  ansible.builtin.set_fact:
+    kaneo_volume_mount: >-
+      {{ ansible_facts.mounts
+         | selectattr('device', 'equalto', '/dev/sdb')
+         | map(attribute='mount')
+         | first | default('') }}
+
+- name: Assert the data volume is mounted
+  ansible.builtin.assert:
+    that:
+      - kaneo_volume_mount | length > 0
+    fail_msg: |
+      /dev/sdb (Hetzner data volume) is not mounted. Kaneo's Postgres
+      data must live on the persistent volume so it survives VM
+      recreates. Check the hcloud_volume_attachment resource in
+      infrastructure/tofu/hetzner/main.tf and the automount setting.
+
+- name: Ensure Kaneo data dir exists on the persistent volume
+  ansible.builtin.file:
+    path: "{{ kaneo_volume_mount }}/kaneo"
+    state: directory
+    owner: op
+    group: op
+    mode: "0700"
+
+- name: Symlink /opt/kaneo/data → persistent-volume Kaneo dir
+  # Docker compose binds /opt/kaneo/data/postgres into the postgres
+  # container. The symlink makes that path resolve to the persistent
+  # volume so a VM recreate doesn't wipe the DB. Idempotent: file:
+  # leaves the link alone if already correct.
+  ansible.builtin.file:
+    path: "{{ kaneo_data_dir }}"
+    src: "{{ kaneo_volume_mount }}/kaneo"
+    state: link
+    force: yes
+    owner: op
+    group: op
+
+- name: Ensure postgres data subdir exists under the persisted root
+  ansible.builtin.file:
+    path: "{{ kaneo_volume_mount }}/kaneo/postgres"
+    state: directory
+    owner: op
+    group: op
+    mode: "0700"
 
 - name: Generate docker-compose.yml from template
   ansible.builtin.template:
