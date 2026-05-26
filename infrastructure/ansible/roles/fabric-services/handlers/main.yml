@@ -4,3 +4,16 @@
   ansible.builtin.systemd_service:
     daemon_reload: true
   listen: reload systemd
+
+- name: restart workspace-manager
+  # Fires when /etc/symphony.env (or the unit) changes so the new
+  # GITHUB_PATS / KANEO_MCP_BEARER land in the process env without a
+  # manual `systemctl restart`. failed_when:false because on a first
+  # deploy the service unit doesn't exist yet at handler-flush time —
+  # the unit's own "Enable workspace-manager service" task brings it up.
+  become: true
+  ansible.builtin.systemd_service:
+    name: workspace-manager
+    state: restarted
+  listen: restart workspace-manager
+  failed_when: false

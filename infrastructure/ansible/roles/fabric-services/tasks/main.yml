@@ -168,6 +168,23 @@
 
 - name: Install systemd units for fabric services
   block:
+    - name: Render Symphony env-file from sops
+      # workspace-manager.service loads /etc/symphony.env via
+      # EnvironmentFile=. Keeps GITHUB_PATS + KANEO_MCP_BEARER + BOT_TOKEN
+      # out of the systemd unit text and out of `ps`, while staying
+      # idempotent across redeploys.
+      become: true
+      template:
+        src: symphony.env.j2
+        dest: /etc/symphony.env
+        owner: root
+        group: root
+        mode: '0640'
+      vars:
+        # Compact JSON map of {pat_name: token} from sops github_pats.
+        github_pats_json: "{{ (github_pats | default({})) | to_json }}"
+      notify: restart workspace-manager
+
     - name: Create workspace-manager systemd unit
       template:
         src: workspace-manager.service.j2

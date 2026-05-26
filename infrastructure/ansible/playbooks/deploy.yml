@@ -268,6 +268,15 @@
         # tailscale_ip is set by the tailscale role earlier in the play.
         workspace_manager_listen_ip: "{{ tailscale_ip }}"
         workspace_manager_listen_port: 8080
+        # Symphony orchestrator config — secrets pass through to
+        # /etc/symphony.env via the role's templates/symphony.env.j2.
+        # github_pats is the named-token registry; bearer + chat_id +
+        # bot token power the Telegram-mirror notifications. Empty
+        # defaults are accepted: Symphony falls back to legacy mode.
+        github_pats: "{{ sops.github_pats | default({}) }}"
+        kaneo_mcp_bearer: "{{ sops.kaneo_mcp_bearer | default('') }}"
+        telegram_forum_chat_id: "{{ sops.telegram_forum_chat_id | default('') }}"
+        telegram_bot_token: "{{ sops.telegram_bot_token | default('') }}"
         workspace_manager_capacity: 10
         workspace_manager_sccache_enabled: true
         fabric_services:

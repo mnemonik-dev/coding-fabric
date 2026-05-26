@@ -14,6 +14,20 @@ Environment="PYTHONUNBUFFERED=1"
 # value) only let `import logs.sanitizer.*` work — ModuleNotFoundError:
 # No module named 'fabric' in run 26267167093.
 Environment="PYTHONPATH={{ fabric_target_dir | dirname }}:{{ fabric_target_dir }}:$PYTHONPATH"
+
+# Symphony orchestrator config — secrets via /etc/symphony.env (rendered
+# from sops by an Ansible task), non-secret knobs inline. The leading `-`
+# on EnvironmentFile makes it optional: if the file is missing,
+# workspace-manager still starts in legacy mode (the Symphony bootstrap
+# in main.py.lifespan silently no-ops without KANEO_MCP_BEARER).
+EnvironmentFile=-/etc/symphony.env
+Environment="SYMPHONY_POLL_ENABLED={{ symphony_poll_enabled | default('1') }}"
+Environment="SYMPHONY_POLL_INTERVAL_SECONDS={{ symphony_poll_interval_seconds | default('30') }}"
+Environment="SYMPHONY_MAX_CONCURRENT={{ symphony_max_concurrent | default('2') }}"
+Environment="SYMPHONY_REPO_ROOT={{ symphony_repo_root | default('/opt/code/coding-fabric') }}"
+Environment="SYMPHONY_WORKSPACE_ROOT={{ symphony_workspace_root | default('/home/op/code/symphony-workspaces') }}"
+Environment="KANEO_BASE_URL={{ kaneo_base_url | default('https://kaneo.mnemonik.xyz') }}"
+
 ExecStart={{ fabric_target_dir }}/workspace-manager/venv/bin/python -m uvicorn main:app --host {{ workspace_manager_listen_ip }} --port {{ workspace_manager_listen_port }}
 Restart=always
 RestartSec=10
