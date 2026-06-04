@@ -38,7 +38,13 @@ TimeoutStopSec=30
 # Security hardening
 NoNewPrivileges=true
 ProtectSystem=strict
-ProtectHome=true
+# Bot spawns claude with cwd=/home/op/work for actual coding work.
+# ProtectHome=true masks /home (tmpfs over it) and BindPaths=/home/op/work
+# did NOT win against the mask in our setup — asyncio.create_subprocess_exec
+# kept failing with EACCES at chdir. Disable ProtectHome entirely;
+# ProtectSystem=strict + the ReadWritePaths whitelist below still confine
+# writes to the listed paths only. (Live drop-in proved this works.)
+ProtectHome=no
 PrivateTmp=true
 ProtectDevices=true
 ProtectClock=true
@@ -46,8 +52,9 @@ ProtectHostname=true
 ProtectKernelLogs=true
 ProtectKernelTunables=true
 
-# Allow read-only access to /etc and /opt
-ReadWritePaths={{ telegram_ai_agent_home }} {{ telegram_ai_agent_config_dir }}
+# Whitelist of writable locations under ProtectSystem=strict.
+# /home/op/work is the operator's worktree root where claude is spawned.
+ReadWritePaths={{ telegram_ai_agent_home }} {{ telegram_ai_agent_config_dir }} /home/op/work
 
 # Standard output / error logging
 StandardOutput=journal
