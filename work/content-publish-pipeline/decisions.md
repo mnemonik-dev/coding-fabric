@@ -79,3 +79,28 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - `ansible-lint infrastructure/ansible/roles/content-publisher/` → Passed (production profile)
 - `ansible-playbook infrastructure/ansible/playbooks/deploy.yml --syntax-check` → exit 0
 - Smoke verification (real test deploy — `systemctl is-enabled/active`, file modes, grep `RequiresMountsFor=` for concrete path, import-test exit 0) deferred to Task 7 / 13 when the unit actually starts.
+
+## Task 2: Rewrite Mnemonik MCP role for npm scoped-package install + binary-name discovery
+
+**Status:** Done
+**Commits:** 44011b0 (impl), 7057e43 (review-fix round 1), 6ba3140 (reports)
+**Agent:** task-2-mnemonik-mcp
+**Summary:** Replaced the dead binary-download distribution channel in `infrastructure/ansible/roles/mnemonic-mcp/` with the upstream-supported npm scoped package `@mnemonik-xyz/mcp@0.2.4`. Single-step install via `npm ci` against the checked-in `files/package-lock.json` (lockfileVersion 3, root strict-pinned, every transitive integrity hash fixed) is the sole audited supply-chain anchor — the binary is exposed system-wide via a `/usr/local/bin/mnemonik-mcp` symlink into `node_modules/.bin/`, so the byte sequence on PATH is exactly what the lockfile installed (no second registry resolution). Binary-name discovery cascade (`which mnemonik-mcp || which mnemonic-mcp`) writes Ansible fact `mnemonic_mcp_binary`, consumed by the systemd unit (`ExecStart={{ mnemonic_mcp_binary }} mcp-stdio`, `Type=simple`) and downstream by Task 3's `/etc/blogger.mcp.json`. Post-install smoke runs an MCP JSON-RPC `initialize` handshake over `mcp-stdio` — payload via stdin, nothing of substance in argv. Vaultwarden `LoadCredential` flow, `config.yml`, `protocol-qa.env`, `molyanov-mnemonic-hooks.yml.j2`, and the 5 hook scripts removed (descoped-era artefacts; new role is long-running-stdio-server-shaped). Eight pytest contract tests under `tests/test_role_contract.py` enforce: npm pin, discovery cascade with `failed_when rc != 0`, systemd unit consumes the fact + no `LoadCredential`, lockfile valid + contains `@mnemonik-xyz/mcp`, descoped artefacts gone, no `sign-memory` substring anywhere, `ansible-lint .` rc=0, `ansible-playbook --syntax-check` rc=0. Role-local `.ansible-lint` skips `role-name` (pre-existing kebab-case convention across the repo's nine roles) and excludes `molecule/default/converge.yml` (molecule injects `ANSIBLE_ROLES_PATH` at runtime; not in CI as of 2026-06).
+**Deviations:** None. The skeptic-round-3 hint that the binary was `mnemonik-mcp` (with K) on `@mnemonik-xyz/mcp@0.2.4` was confirmed offline before commit (`npm ci` + `--help` listing `install / mcp-stdio / doctor`). The two-step install originally drafted (local `npm ci` + `community.general.npm` global) was collapsed to single-step + symlink during round 1 review per security-auditor T2-SEC-002 — the original two-step would have resolved transitives twice (once from the lockfile, once fresh from the registry), defeating the supply-chain pin. Molecule scenario kept as local-only with a README TODO note since it isn't wired into CI.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approved_with_minor — 3 minor (T2-1 binary fact undefined when role disabled; T2-2 `npm ci` always marked changed; T2-3 stale descoped binary may shadow discovery cascade) → [logs/working/task-2/code-reviewer-1.json](logs/working/task-2/code-reviewer-1.json)
+- security-auditor: APPROVED — 2 LOW (T2-SEC-001 `--no-audit` suppresses CVE info; T2-SEC-002 two-step install creates lockfile/binary divergence), 6 PASS/INFO → [logs/working/task-2/security-auditor-1.json](logs/working/task-2/security-auditor-1.json)
+
+*Round 2 (after fixes):*
+- code-reviewer: approved — all 3 findings resolved; one informational note (test coverage of new symlink/single-step structure) deferred → [logs/working/task-2/code-reviewer-2.json](logs/working/task-2/code-reviewer-2.json)
+- security-auditor: APPROVED — CLOSED, no new findings → [logs/working/task-2/security-auditor-2.json](logs/working/task-2/security-auditor-2.json)
+
+**Verification:**
+- `pytest infrastructure/ansible/roles/mnemonic-mcp/tests/ -v` → 8/8 pass
+- `ansible-lint .` (in role dir, picks up role-local config) → 0 failures
+- `ansible-playbook --syntax-check infrastructure/ansible/playbooks/deploy.yml` (via test wrapper) → rc=0
+- Offline-verified upstream surface: `npm ci` from generated lockfile installs cleanly; `node_modules/.bin/mnemonik-mcp --help` lists `install / mcp-stdio / doctor` — NO `sign-memory` subcommand on the npm-shipped binary (tech-spec Decision 3 anchor preserved)
+- Live VM smoke (post-deploy `systemctl is-active mnemonic-mcp`, real `mcp-stdio` handshake, lockfile sha drift check) deferred to Task 13 / 14
