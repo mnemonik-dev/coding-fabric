@@ -1,0 +1,66 @@
+{
+  "status": "approved",
+  "round": 2,
+  "round_1_resolutions": [
+    {
+      "round_1_issue": "Sizing: M understates real scope",
+      "resolved": true,
+      "evidence": "frontmatter `size: L`; 15 ACs cover queue persistence, crash recovery, race conditions, volume mount, auto-mode, preview parity; matches actual surface (role + service + worker + bot handlers + MCP tool + dual-bot + sops). User's explicit decision to scope all-together as L is retained and now correctly declared."
+    },
+    {
+      "round_1_issue": "Overengineering: auto self-rewrite loop",
+      "resolved": true,
+      "evidence": "Section `Ограничения` states 'No auto-rewrite на низком score'. Решения section: 'НЕ делать auto-rewrite'. AC4 shows score+issues+[🔄 Перегенерировать] button only; no automatic loop. Step 8 of flow describes operator-driven retry creating new job_id with same prompt+feedback. Risk R4 of the original review (credit burn / 3-retry edges) eliminated."
+    },
+    {
+      "round_1_issue": "Underengineering: preview parity (AC5) underspecified",
+      "resolved": true,
+      "evidence": "Step 5 of flow specifies single-renderer mechanism: worker returns output of `mnemonik-blogger render --platform telegram --from-file article.md --stdout` (or imported render function). AC5 promotes byte-equality to a pytest contract: 'pytest читает test-article.md, вызывает render-функцию blogger'а, и сравнивает байтово'. Решения section reiterates. Tech-spec will pin exact mechanism."
+    },
+    {
+      "round_1_issue": "Underengineering: approval timeout persistence",
+      "resolved": true,
+      "evidence": "Step 2 of scheduled scenario: 'approval_deadline=<fire_at+5min> также записывается в queue запись, чтобы timeout-логика переживала рестарт worker'a'. Решения section: 'persistent approval-deadline в queue.jsonl'. Crash-recovery scan reads approval_deadline on startup."
+    },
+    {
+      "round_1_issue": "Underengineering: inline-button race (click vs timeout)",
+      "resolved": true,
+      "evidence": "Step 7 describes atomic CAS: 'Бот проверяет статус job атомарно ... CAS-style через переписывание queue.jsonl'. AC13 explicitly tests race click-vs-timeout for exactly-one publish. Risk R5 mitigates. Решения section: 'атомарный CAS на status'."
+    },
+    {
+      "round_1_issue": "Underengineering: crash recovery for in-flight jobs",
+      "resolved": true,
+      "evidence": "New section 'Восстановление после рестарта worker'а' details per-status recovery (writing/scoring → restart; preview-sent → check deadline; publishing → verify via blogger CLI). AC14 tests both writing-crash and publishing-crash scenarios. Risk R6 covers double-post via tentative_post_id check."
+    },
+    {
+      "round_1_issue": "Feasibility: persistent volume / mount semantics",
+      "resolved": true,
+      "evidence": "Ограничения: 'RequiresMountsFor=/mnt/HC_Volume_*/content-publisher and ConditionPathIsMountPoint=/mnt/HC_Volume_*'. AC15 tests systemd-unit-blocks-when-unmounted. Risk R9 mitigates silent-write-to-root-disk."
+    },
+    {
+      "round_1_issue": "Feasibility: blogger CLI surface unverified",
+      "resolved": true,
+      "evidence": "Ограничения: 'До commit'a tech-spec'a — обязательная верификация CLI surface (blogger post --from-file --platforms telegram --live and blogger render --platform telegram --stdout) прямой проверкой в склонированном репо'. Made a pre-tech-spec gating step."
+    }
+  ],
+  "user_retained_decisions": [
+    {
+      "decision": "PUBLISH_MODE=auto stays in MVP (AC11)",
+      "rationale_present": "Решения section: 'PUBLISH_MODE=auto в MVP, потому что это env-flag + 3 строки кода, архитектурно поддерживает long-term vision Q11, цена низкая'. Acceptable — user product call.",
+      "adequacy_view": "Round 1 minor concern (YAGNI / extra test surface) is acknowledged; given the explicit Q11 long-term vision and the cheap implementation cost, deferral is a reasonable design call. Not re-flagging."
+    },
+    {
+      "decision": "Scope all-together as L (not split MVP-1/MVP-2)",
+      "rationale_present": "Implicit in current spec — single L delivery with full surface. User explicit.",
+      "adequacy_view": "L is correctly sized and decomposable. Acceptable."
+    },
+    {
+      "decision": "Separate publisher bot (Q17=B)",
+      "rationale_present": "Решения section: 'разные threat models, разные scope привилегий. Изоляция = бесплатная'. Risk R8 covers token leak isolation.",
+      "adequacy_view": "Round 1 raised this as 'major' but accepted user override. Operational cost is real but bounded (one-time @BotFather + one extra sops entry). Not re-flagging."
+    }
+  ],
+  "findings": [],
+  "worst_category": null,
+  "summary": "All critical and major round 1 findings resolved: size correctly declared L, self-rewrite loop dropped in favour of operator-driven [🔄 Перегенерировать], preview parity via single-renderer with byte-equality pytest, approval_deadline persisted in queue.jsonl, AC14+R6 for crash-recovery double-post protection, AC15+R9 for volume-mount enforcement, blogger CLI surface verification mandated pre-tech-spec. User explicit overrides (PUBLISH_MODE=auto in MVP, single L scope, dual-bot) carry documented rationale and are accepted. Ready for tech-spec."
+}

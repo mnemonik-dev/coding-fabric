@@ -1,0 +1,55 @@
+{
+  "status": "approved",
+  "checks": {
+    "completeness": "pass",
+    "edge_cases": "pass",
+    "acceptance_criteria": "pass",
+    "contradictions": "pass",
+    "template_compliance": "pass",
+    "size_check": "pass"
+  },
+  "findings": [
+    {
+      "check": "acceptance_criteria",
+      "severity": "minor",
+      "issue": "AC5 описывает 'byte-equality' между preview и финальным постом, но pytest проверяет вызов render-функции, а не фактический пост в @mnemonik (пост создаётся blogger CLI, а не напрямую render-функцией). Тест подтверждает консистентность источника, но не сквозной byte-match с реальным TG API вызовом.",
+      "location": "Критерии приёмки — AC5",
+      "fix": "Уточнить формулировку: 'pytest проверяет что preview и publish используют один и тот же render-путь (один источник → один output); визуальное byte-equal с реальным каналом — в Пользователь проверяет (уже есть)'. Сам критерий остаётся корректным и тестируемым."
+    }
+  ],
+  "interview_coverage": {
+    "covered": [
+      "trigger = explicit slash-command /publish_content",
+      "article writer = claude с claude-blog skill suite",
+      "MVP platform = Telegram @mnemonik только",
+      "approval+timeout как default mode (5 мин, конфигурируемый)",
+      "auto-mode как опциональный env-flag (PUBLISH_MODE=auto)",
+      "Kaneo и Symphony исключены из pipeline — явное архитектурное решение",
+      "webapp blog adapter отложен в work/blogger-site-connector/",
+      "separate content-publisher.service systemd unit",
+      "scheduled publish --at <ISO> one-shot",
+      "queue на persistent volume JSONL с атомарными state-transitions",
+      "Mnemonik MCP attestation (mnemonic_sign_memory / mnemonic_recall) — eating own dogfood",
+      "quality gate показывает score+feedback, НЕ делает auto-rewrite (решение оставить кнопку [Перегенерировать] оператору)",
+      "no staging channel — approval+preview = safety net",
+      "separate publisher bot (@mnemonik_publisher_bot) vs operator bot — разные threat models",
+      "spawn failure = hard fail + notify, no retry (структурные ошибки не ретраятся)",
+      "blogger upstream pinned to commit ref",
+      "claude-blog upstream pinned to commit ref",
+      "LinkedIn в списке deferred-платформ (work/blogger-extra-platforms/)",
+      "race condition click-vs-timeout — Риск 5 + AC13 с CAS-митигацией",
+      "TG API failure during publish — Риск 4 с retry+backoff+notify",
+      "volume not mounted at startup — Риск 9 + Ограничения + AC15 через RequiresMountsFor",
+      "past-date rejection (AC9)",
+      "crash recovery при старте worker'а (AC14, описание в 'Как должно работать')",
+      "bot down at scheduled fire time — poller catchup при рестарте",
+      "operator clicks Reject after timeout fired — атомарный CAS отвечает 'too late'",
+      "multiple /publish_content stacked — serial queue FIFO",
+      "attestation retry-очередь при недоступном MCP (Риск 1)",
+      "inline-кнопки 64-байтовый лимит на callback_data — явное решение в Ограничениях",
+      "concurrent jobs serial (один за раз)"
+    ],
+    "missing": []
+  },
+  "summary": "Все критические и major находки раунда 1 устранены: LinkedIn добавлен в Ограничения, race click-vs-timeout закрыт Риском 5 и AC13, TG API failure — Риском 4, volume mount — Риском 9 плюс AC15 плюс Ограничением. Размер переведён в L, что соответствует 15 ACs и 4+ новым компонентам. Спецификация одобрена."
+}
