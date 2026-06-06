@@ -100,26 +100,25 @@ jobs:
         run: |
           tofu validate
 
-      - name: Install age + generate ephemeral CI SSH keypair
+      - name: Install age + restore stable CI SSH keypair from secret
         id: gen_ci_key
         env:
           SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+          CI_SSH_PRIVATE_KEY: ${{ secrets.CI_SSH_PRIVATE_KEY }}
         run: |
-          # Headless Ansible needs a private key to SSH to the VM (run
-          # 26170050584 demonstrated that cloud-init's --ssh Tailscale path
-          # requires interactive web auth — incompatible with CI). Instead:
-          # generate an ephemeral SSH keypair for THIS workflow run, bake the
-          # pubkey into cloud-init via TF_VAR_ci_ssh_pubkey, and ship the
-          # privkey to ansible-deploy as an AGE-ENCRYPTED artifact.
+          # Stable CI keypair: private key lives in CI_SSH_PRIVATE_KEY secret;
+          # matching pubkey is already in op@VM's authorized_keys. This replaces
+          # the old per-run ephemeral keygen so the same VM survives across CI
+          # deploys (tasks #24/#25). The destroy block in the Apply job was
+          # also removed as part of this change.
           #
-          # AGE encryption is mandatory because this is a PUBLIC repo —
-          # artifacts are downloadable by anyone with read access. Encrypting
-          # under the same age public key as sops means only the holder of
-          # SOPS_AGE_KEY (operator + GH Actions) can decrypt.
+          # Privkey is still shipped to ansible-deploy as an age-encrypted
+          # artifact: this is a PUBLIC repo, artifacts are downloadable by
+          # anyone with read access; age encryption under SOPS_AGE_KEY limits
+          # decrypt to operator + GH Actions.
           sudo apt-get update -qq
           sudo apt-get install -y age
 
-          # Write age private key (also contains public key as a header line).
           mkdir -p ~/.config/sops/age
           echo "$SOPS_AGE_KEY" > ~/.config/sops/age/keys.txt
           chmod 600 ~/.config/sops/age/keys.txt
@@ -129,33 +128,28 @@ jobs:
             exit 1
           fi
 
-          # Generate keypair (no passphrase; mode 600 enforced by ssh-keygen).
-          ssh-keygen -t ed25519 -N "" -C "ci-deploy-${{ github.run_id }}" -f /tmp/ci_deploy_key -q
-          # Strip trailing newline noise from pubkey so the regex in
-          # variables.tf accepts it.
-          CI_PUBKEY=$(cat /tmp/ci_deploy_key.pub)
-          echo "Generated CI keypair (pubkey fp $(ssh-keygen -lf /tmp/ci_deploy_key.pub | awk '{print $2}'))"
+          if [ -z "$CI_SSH_PRIVATE_KEY" ]; then
+            echo "ERROR: CI_SSH_PRIVATE_KEY secret is empty — set it with: gh secret set CI_SSH_PRIVATE_KEY < /path/to/ed25519_privkey"
+            exit 1
+          fi
 
-          # Persist pubkey to env file so subsequent steps in this job see it
-          # without re-running ssh-keygen. Set as TF_VAR_ci_ssh_pubkey.
+          # Write privkey from secret, derive pubkey via ssh-keygen -y.
+          printf '%s\n' "$CI_SSH_PRIVATE_KEY" > /tmp/ci_deploy_key
+          chmod 600 /tmp/ci_deploy_key
+          CI_PUBKEY=$(ssh-keygen -y -f /tmp/ci_deploy_key)
+          echo "Restored CI keypair (pubkey fp $(ssh-keygen -lf /tmp/ci_deploy_key | awk '{print $2}'))"
+
           {
             echo "CI_SSH_PUBKEY<<EOF_PUBKEY"
             echo "$CI_PUBKEY"
             echo "EOF_PUBKEY"
           } >> "$GITHUB_ENV"
-
-          # Also expose as a job output so the downstream Apply job (which
-          # runs on a separate runner with its own $GITHUB_ENV) can stamp
-          # the same pubkey into cloud-init user_data. Pubkey is single-line
-          # ed25519 — safe for plain-string output.
           echo "pubkey=$CI_PUBKEY" >> "$GITHUB_OUTPUT"
 
-          # Encrypt the private key under SOPS' age recipient.
           mkdir -p /tmp/ci-artifacts
           age -r "$AGE_PUBKEY" -o /tmp/ci-artifacts/ci_deploy_key.age /tmp/ci_deploy_key
           echo "Encrypted privkey: $(ls -la /tmp/ci-artifacts/ci_deploy_key.age)"
 
-          # Defensive: wipe plaintext privkey from runner FS.
           shred -u /tmp/ci_deploy_key
 
       - name: Upload age-encrypted CI privkey
@@ -291,37 +285,18 @@ jobs:
           # ci-ssh-privkey-age artifact for ansible-deploy to decrypt.
           TF_VAR_ci_ssh_pubkey: ${{ needs.tofu-plan.outputs.ci_ssh_pubkey }}
         run: |
-          # Each CI run mints a fresh ephemeral SSH pubkey (see "Install age"
-          # step in Plan job). If restored state describes a VM from a
-          # previous run, that VM's authorized_keys only has the OLD pubkey —
-          # Ansible can't SSH in (run 26284171027).
+          # Persistent VM mode (#24/#25): NO destroy-recreate. Stable CI key
+          # was installed once into op@VM's authorized_keys (privkey lives in
+          # CI_SSH_PRIVATE_KEY secret) so a fresh ephemeral pubkey is no longer
+          # injected per run. lifecycle.ignore_changes = [user_data, labels]
+          # on hcloud_server.fabric means user_data drift doesn't trigger
+          # replace either.
           #
-          # `-replace=hcloud_server.fabric` would force recreation, but main.tf
-          # has lifecycle { create_before_destroy = true } on the server (to
-          # minimise downtime on operator resize). With CBD=true, -replace
-          # creates a SECOND CCX33 alongside the existing one before destroy
-          # — Hetzner project has an 8-dedicated-core quota; two CCX33s = 16
-          # cores fails with resource_limit_exceeded (run 26284456536).
-          #
-          # For CI we explicitly destroy-then-create: tear down the server
-          # (and volume_attachment dependency) so this apply will create a
-          # fresh one. Volume itself persists — it's a separate resource.
-          # We do this in Apply (not Plan) so the destroy mutates the same
-          # state file the apply runs against, avoiding "Saved plan is stale"
-          # (which would happen if Plan job destroyed but Apply job restored
-          # the pre-destroy state from artifact, run 26284713581).
-          if [ -f terraform.tfstate ] && tofu state list 2>/dev/null | grep -q '^hcloud_server.fabric$'; then
-            echo "Server present in restored state — destroying for fresh cloud-init"
-            tofu apply -destroy -auto-approve \
-              -target=hcloud_volume_attachment.fabric_data \
-              -target=hcloud_server.fabric
-          else
-            echo "Server not in state — applying normally to create it"
-          fi
-          # Re-plan against the now-cleaned state so we don't rely on the
-          # stale tfplan artifact (which planned against pre-destroy state).
-          # Cloud-init user_data is re-rendered with this run's fresh CI key.
-          echo "Re-planning and applying with fresh state..."
+          # If state shows the server is missing (first deploy / accidental
+          # delete), apply will create it; cloud-init user_data will include
+          # the stable pubkey via TF_VAR_ci_ssh_pubkey, so the new VM is
+          # reachable on the next deploy too.
+          echo "Applying without destroy (persistent VM)..."
           tofu apply -auto-approve 2>&1 | tee apply.log
 
           if [ ${PIPESTATUS[0]} -ne 0 ]; then
