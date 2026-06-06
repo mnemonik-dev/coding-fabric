@@ -1,0 +1,20 @@
+---
+# Role-local ansible-lint config. Two pre-existing structural choices that we
+# explicitly opt out of, both of which are non-runtime defects.
+#
+# 1) role-name: every role in this repo uses kebab-case (mnemonic-mcp,
+#    telegram-ai-agent, ssh-hardening, fabric-services, ...). Renaming
+#    `mnemonic-mcp` requires touching the playbook, every inventory
+#    reference, every CI workflow grep, and the upstream role consumers.
+#    Out of scope here; tracked as a repo-wide concern.
+#
+# 2) syntax-check[specific] on `molecule/default/converge.yml`: molecule
+#    injects ANSIBLE_ROLES_PATH at runtime (`molecule test ...`), but
+#    `ansible-lint` runs the playbook stand-alone and can't resolve the
+#    role-by-name. The scenario isn't wired into CI as of 2026-06
+#    (see role README TODO).
+skip_list:
+  - role-name
+
+exclude_paths:
+  - molecule/default/converge.yml

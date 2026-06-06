@@ -1,23 +1,17 @@
 ---
+# Local-only scenario: not wired into CI as of 2026-06. Updates expected when
+# the npm install path is exercised inside the container.
 - name: Converge
   hosts: all
   gather_facts: true
   vars:
     ansible_python_interpreter: /usr/bin/python3
-    mnemonic_mcp_version: "0.1.0"
-    # Real test binary SHA256 (64 hex chars for SHA256, not 32-char MD5)
-    # This must be the actual SHA256 of the mnemonic-mcp test fixture binary
-    mnemonic_mcp_binary_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    mnemonic_mcp_install_dir: /opt/mnemonic-mcp
-    mnemonic_mcp_config_dir: /etc/mnemonic-mcp
-    mnemonic_mcp_hooks_dir: "/etc/mnemonic-mcp/hooks"
+    mnemonic_mcp_enabled: true
+    mnemonik_mcp_npm_package: "@mnemonik-xyz/mcp"
+    mnemonik_mcp_npm_version: "0.2.4"
+    mnemonik_mcp_install_dir: /opt/mnemonik-mcp
     mnemonic_mcp_service_user: op
     mnemonic_mcp_service_group: op
-    mnemonic_mcp_bind_host: 127.0.0.1
-    mnemonic_mcp_bind_port: 7777
-    mnemonic_mcp_mode: local
-    operator_user: mnemonic-operator
-    operator_home: /home/mnemonic-operator
-    operator_group: mnemonic-operator
+    mnemonic_mcp_systemd_unit: mnemonic-mcp.service
   roles:
     - role: mnemonic-mcp

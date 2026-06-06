@@ -1,127 +1,182 @@
 # Role: mnemonic-mcp
 
-> **STATUS: DISABLED BY DEFAULT (descoped 2026-05).**
-> The local Mnemonic MCP server is not yet production-ready. coding-fabric
-> deploys cleanly without it. To re-enable, set `mnemonic_mcp_enabled: true`
-> in inventory once the MCP server reaches v1.0+ and a signing-key generation
-> procedure is in place. Re-introduction work is tracked in the backlog
-> feature `work/mnemonic-attestation-integration/`.
->
-> When disabled, the role installs no-op stub hooks (5 scripts under
-> `/etc/mnemonic-mcp/hooks/`) that exit 0 silently and log `attestation
-> skipped (mnemonic-mcp disabled — see backlog)` to journald so downstream
-> code paths invoking the hooks do not fail.
+Installs the **Mnemonik MCP server** from the upstream-supported npm
+distribution channel (`@mnemonik-xyz/mcp`), discovers the actual binary
+name shipped by the pinned version, and runs the server under systemd
+as a `mcp-stdio` daemon. The discovered binary name is exposed as the
+Ansible fact `mnemonic_mcp_binary` and consumed downstream by the
+`content-publisher` role (`/etc/blogger.mcp.json` template) and by the
+content-publisher worker for attestation calls.
 
-Installs and configures the local Mnemonic MCP server with 5 trigger-point hook scripts that produce the per-feature DAG attestation lineage. Anchors user-spec AC11-AC16 and tech-spec §2.3 role 9, §2.6 D14.
+Anchored to `work/content-publish-pipeline/tech-spec.md` Decision 3 +
+Architecture step 4.
 
-## Responsibilities
+## Install path
 
-1. **Binary Installation**: Downloads and verifies mnemonic-mcp server binary from GitHub releases (pinned version, SHA256 verified).
-2. **systemd Unit**: Renders `/etc/systemd/system/mnemonic-mcp.service` with `LoadCredential` mechanism to load signing key from Vaultwarden vault (never writes key to disk).
-3. **Configuration**: Renders `/etc/mnemonic-mcp/config.yml` binding to `127.0.0.1:7777` in local mode.
-4. **Protocol QA**: Renders `/etc/mnemonic-mcp/protocol-qa.env` with `MNEMONIC_MODE=full` and Solana devnet + Arweave testnet credentials (mode 0600, owner `op`).
-5. **Hook Scripts**: Installs 5 trigger-point hook scripts under `/etc/mnemonic-mcp/hooks/`:
-   - `user-spec.sh` (root node)
-   - `tech-spec.sh` (parent: user-spec)
-   - `task-complete.sh` (parent: tech-spec)
-   - `pre-deploy.sh` (parent: task-complete)
-   - `post-deploy.sh` (parent: pre-deploy, final node)
-6. **molyanov Integration**: Configures molyanov success paths to invoke hooks at phase completion.
-7. **Healthcheck**: Smoke test via stub invocation of all 5 hooks; verifies DAG construction via `mnemonic_recall`.
+1. **Node.js prerequisite**: NodeSource setup_20.x → `apt install nodejs`
+   (pattern shared with the `telegram-ai-agent` role).
+2. **Local lockfile install** (supply-chain pin for the full tree,
+   per security R2-8): `npm ci` consumes the checked-in
+   `files/package-lock.json` in `{{ mnemonik_mcp_install_dir }}` (default
+   `/opt/mnemonik-mcp/`). Every transitive integrity hash is fixed.
+3. **Global install for PATH**: `community.general.npm` installs
+   `@mnemonik-xyz/mcp@{{ mnemonik_mcp_npm_version }}` globally, which
+   drops the bin at the npm global prefix (`/usr/local/bin/` on the
+   target VM).
+4. **Binary discovery**: `which mnemonik-mcp || which mnemonic-mcp`.
+   Upstream has shipped the bin under both spellings (current
+   `@mnemonik-xyz/mcp@0.2.4` ships `mnemonik-mcp` with K; older builds
+   shipped `mnemonic-mcp` without K). The cascade resolves whichever
+   spelling the pinned version actually shipped; the result lands in the
+   `mnemonic_mcp_binary` fact.
+5. **systemd unit**: `templates/mnemonic-mcp.service.j2` renders
+   `ExecStart={{ mnemonic_mcp_binary }} mcp-stdio` and inherits the
+   hardening block (`NoNewPrivileges`, `ProtectSystem=strict`,
+   `ProtectHome`, etc.).
+6. **Post-install smoke**: spawn `<mnemonic_mcp_binary> mcp-stdio`, feed
+   a JSON-RPC `initialize` envelope on stdin, assert `protocolVersion`
+   in the response. Replaces the bogus `--selftest` probe; this is the
+   real surface (see tech-spec Decision 3).
+
+## What it does *not* install
+
+- No Vaultwarden signing-key materialisation. The previous flow pulled
+  a key out of `bw`, mode-0600'd it under `/run/credentials/`, then
+  systemd `LoadCredential=`'d it. The new npm distribution channel
+  doesn't use the same on-disk signing-key contract; signing flows
+  through MCP JSON-RPC tools, not a bound-at-startup credential. The
+  `LoadCredential=` directive is gone from the unit.
+- No `--selftest` probe and no one-shot signing CLI subcommand.
+  Neither exists on the npm-shipped binary; both are bygone artefacts of
+  the descoped binary-download era. The npm-shipped binary only exposes
+  `install`, `mcp-stdio`, `doctor`; signing flows are reached via
+  JSON-RPC `tools/call`, not a one-shot CLI verb. The role asserts via
+  real MCP-stdio handshake instead.
+- No molyanov hook scripts, no `config.yml`, no `protocol-qa.env`. The
+  old role was attestation-DAG-hooks-shaped; this role is
+  long-running-stdio-server-shaped.
 
 ## Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `mnemonic_mcp_enabled` | `false` | Master switch (descoped 2026-05). When false, only no-op stub hooks are installed. |
-| `mnemonic_mcp_version` | `0.1.0` | Binary version tag |
-| `mnemonic_mcp_binary_sha256` | `changeme...` | SHA256 checksum for binary verification |
-| `mnemonic_mcp_install_dir` | `/opt/mnemonic-mcp` | Installation directory |
-| `mnemonic_mcp_config_dir` | `/etc/mnemonic-mcp` | Configuration directory |
-| `mnemonic_mcp_service_user` | `op` | systemd service user |
-| `mnemonic_mcp_mode` | `local` | Operation mode: `local` or `full` |
-| `solana_devnet_rpc_url` | `https://api.devnet.solana.com` | Solana RPC endpoint (protocol-qa only) |
-| `arweave_testnet_url` | `https://testnet.arweave.net` | Arweave testnet URL (protocol-qa only) |
+| `mnemonic_mcp_enabled` | `true` | Master switch (re-enabled after descope cleanup). |
+| `mnemonik_mcp_npm_package` | `@mnemonik-xyz/mcp` | Scoped package name. |
+| `mnemonik_mcp_npm_version` | `0.2.4` | Pinned root version. Bumping requires re-generating `files/package-lock.json`. |
+| `mnemonik_mcp_install_dir` | `/opt/mnemonik-mcp` | Where `package.json` + lockfile live; not the binary path. |
+| `mnemonic_mcp_systemd_unit` | `mnemonic-mcp.service` | systemd unit filename. |
+| `mnemonic_mcp_service_user` | `op` | User runs the daemon. |
+| `mnemonic_mcp_service_group` | `op` | Group. |
 
-## Dependencies
+## Facts exposed to downstream roles
 
-- `base` (OS user management)
-- `vaultwarden` (signing key source via systemd vault:// URI)
-- `molyanov` (skill success path integration)
+- `mnemonic_mcp_binary` (str): absolute path to the resolved binary
+  (e.g. `/usr/local/bin/mnemonik-mcp`). Set via `set_fact` without
+  `cacheable:`; lives for the rest of the same play on the same host —
+  no `hostvars[…]` lookup needed in downstream Jinja templates.
 
-## Security
+## Runbooks
 
-- Signing key never written to disk; loaded by systemd `LoadCredential` at unit startup
-- protocol-qa.env mode 0600, owner `op`
-- Service runs with `NoNewPrivileges=yes`, `ProtectSystem=strict`
-- All hook scripts: `set -euo pipefail`, proper error handling
+### A. Bump `mnemonik-mcp` to a new version
 
-## Hook Trigger Points & DAG Construction
+1. **Off-host: regenerate the lockfile.** In a clean throwaway dir on
+   your dev machine (so the lockfile inherits no host noise):
+   ```bash
+   mkdir /tmp/mnemonik-mcp-bump && cd /tmp/mnemonik-mcp-bump
+   npm init -y >/dev/null
+   npm install @mnemonik-xyz/mcp@<NEW_VERSION> \
+       --package-lock-only --no-audit --no-fund
+   ```
+2. **Strict-pin the root dep** in the new lockfile (replace `^X.Y.Z`
+   with `X.Y.Z` in `packages[""].dependencies`).
+3. **Copy** the new `package-lock.json` over
+   `infrastructure/ansible/roles/mnemonic-mcp/files/package-lock.json`.
+4. **Edit defaults**: bump `mnemonik_mcp_npm_version` in
+   `defaults/main.yml`.
+5. **Commit + deploy.**
+6. **Post-deploy sanity** (no edit needed even if upstream renamed the
+   binary; the discovery cascade handles `mnemonik-mcp` and
+   `mnemonic-mcp`):
+   ```bash
+   ssh root@<vm> journalctl -u mnemonic-mcp --since '5 minutes ago'
+   ssh root@<vm> "$mnemonic_mcp_binary doctor"
+   ```
+7. **If upstream introduces a THIRD binary spelling** (e.g.
+   `mnemonik-mcp-server`): extend the cascade in
+   `tasks/main.yml` → "Discover installed Mnemonik MCP binary name".
+   Alternative future-proofing: parse
+   `npm list -g @mnemonik-xyz/mcp --json` for the `bin` field.
 
-Each hook is invoked by molyanov at phase completion:
+### B. Rotate the publisher-bot Telegram token
 
-| Hook | Phase | Parent | Output |
-|------|-------|--------|--------|
-| user-spec.sh | user-spec approved | none (root) | `work/<feature>/attestations.yml` |
-| tech-spec.sh | tech-spec approved | user-spec attestation_id | appends to attestations.yml |
-| task-complete.sh | all tasks passing | tech-spec attestation_id | appends (with optional Solana/Arweave txids in full mode) |
-| pre-deploy.sh | pre-deploy QA pass | task-complete attestation_id | appends to attestations.yml |
-| post-deploy.sh | deploy + verify | pre-deploy attestation_id | appends (DAG complete) |
+Operator-side procedure; the content-publisher role consumes the token
+from sops. This runbook is reproduced here so it's discoverable from
+the role most directly responsible for the publishing path's runtime
+(content-publisher's README links back here).
 
-In `MNEMONIC_MODE=full` (protocol-qa topic only), task-complete and post-deploy hooks record Solana devnet + Arweave testnet transaction IDs.
+1. In `@BotFather` (Telegram): `/mybots` → `@mnemonik_publisher_bot`
+   → `API Token` → `Revoke current token`.
+2. `@BotFather` returns a fresh token. Copy it.
+3. On your dev machine:
+   ```bash
+   sops edit infrastructure/secrets/secrets.sops.yml
+   # bump the value of `blogger_telegram_bot_token`
+   ```
+4. Commit + deploy.
+5. `@BotFather` again: delete any orphan tokens still listed.
 
-## Full Mode vs Local Mode
+A rotation does **not** affect `mnemonic_mcp_binary` or the MCP server —
+those are independent.
 
-- **Local** (default): Signs in-process, no network calls. All hooks work offline.
-- **Full** (protocol-qa topic only): Anchors attestations to Solana devnet and Arweave testnet. If RPC outage, hook queues for retry; molyanov skill success is blocked until receipt.
-
-## Key Rotation
-
-To rotate the signing key:
-
-1. Update the secret in Vaultwarden at path `mnemonic/mcp-signing-key`
-2. Reload systemd: `systemctl daemon-reload`
-3. Restart service: `systemctl restart mnemonic-mcp`
-4. Verify: `systemctl is-active mnemonic-mcp`
-
-No ansible re-run needed; systemd will load the new credential on next startup.
-
-## Healthcheck
-
-Post-deployment, the role runs:
-
-1. `systemctl is-active mnemonic-mcp` → must be `active`
-2. Synthetic invocation of all 5 hooks with stubbed parents
-3. `mnemonic_recall --feature=stub` → must return 5-node DAG
-
-If any check fails, task exits non-zero; ansible halt prevents broken deployments.
-
-## Testing (Molecule)
+## Smoke (manual, post-deploy)
 
 ```bash
-molecule test -s mnemonic-mcp
+ssh root@<vm> systemctl is-active mnemonic-mcp           # active
+ssh root@<vm> "$mnemonic_mcp_binary --help"              # lists mcp-stdio
+ssh root@<vm> 'printf "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"manual\",\"version\":\"0.1\"}}}\n" | "$mnemonic_mcp_binary" mcp-stdio | head -1 | python3 -c "import json,sys; r=json.loads(sys.stdin.read()); assert \"protocolVersion\" in r.get(\"result\",{}), r"'
 ```
 
-Molecule scenario mocks the Mnemonic MCP server and validates:
-- All hooks installed and executable
-- Configuration templates rendered correctly
-- systemd unit loads
-- DAG construction smoke test
+Lockfile drift check:
+
+```bash
+sha256sum /opt/mnemonik-mcp/package-lock.json
+# Compare to local files/package-lock.json sha256.
+```
+
+## Testing
+
+Unit-style contract tests (no live VM, no docker):
+
+```bash
+pytest infrastructure/ansible/roles/mnemonic-mcp/tests/ -v
+```
+
+These assert: npm package + version pinned; binary discovery cascade
+present with `failed_when rc != 0`; systemd unit uses the fact;
+`files/package-lock.json` is valid JSON with `lockfileVersion >= 2` and
+contains `@mnemonik-xyz/mcp`; descoped artefacts removed; no
+the descoped one-shot signing subcommand string anywhere; `ansible-lint` + playbook
+`--syntax-check` exit 0.
+
+Molecule (local-only, not wired into CI as of 2026-06):
+
+```bash
+cd infrastructure/ansible/roles/mnemonic-mcp
+molecule test -s default
+```
+
+**TODO** (follow-up, non-blocking): wire molecule into the
+`deploy-fabric.yml` workflow's pre-deploy stage. Tracked under the
+content-publish-pipeline feature dir.
 
 ## Files
 
-- `tasks/main.yml` — Installation, configuration, healthcheck
-- `defaults/main.yml` — Variable defaults
-- `handlers/main.yml` — systemd reload/restart handlers
-- `templates/`:
-  - `mnemonic-mcp.service.j2` — systemd unit
-  - `config.yml.j2` — Server config
-  - `protocol-qa.env.j2` — Full-mode env vars
-  - `molyanov-mnemonic-hooks.yml.j2` — molyanov integration
-  - `hooks/{user-spec,tech-spec,task-complete,pre-deploy,post-deploy}.sh.j2` — 5 hook scripts
-
-## Cross-Role Notes
-
-- molyanov role: Installs molyanov skills; this role registers hooks with success paths under `~/.fabric/molyanov/hooks.d/`
-- vaultwarden role: Provides secret store; this role only references vault URI (never requests the key)
-- (ruflo role removed 2026-05-20; hook wiring now flows directly through molyanov when this role is re-enabled.)
+- `tasks/main.yml` — install, discover binary, render unit, smoke.
+- `defaults/main.yml` — variable defaults.
+- `handlers/main.yml` — `reload mnemonic-mcp systemd`, `restart
+  mnemonic-mcp service`.
+- `templates/mnemonic-mcp.service.j2` — systemd unit.
+- `files/package-lock.json` — supply-chain pin for the npm transitive
+  tree (consumed by `npm ci`).
+- `tests/test_role_contract.py` — pytest contract tests.
+- `molecule/default/` — local-only docker scenario.

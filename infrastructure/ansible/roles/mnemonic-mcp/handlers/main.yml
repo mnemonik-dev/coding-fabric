@@ -1,12 +1,12 @@
 ---
-- name: reload mnemonic-mcp systemd
-  systemd:
-    daemon_reload: yes
-  listen: "reload mnemonic-mcp systemd"
+- name: Reload mnemonic-mcp systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+  listen: reload mnemonic-mcp systemd
 
-- name: restart mnemonic-mcp service
-  systemd:
+- name: Restart mnemonic-mcp service
+  ansible.builtin.systemd:
     name: "{{ mnemonic_mcp_systemd_unit }}"
     state: restarted
-    enabled: yes
-  listen: "restart mnemonic-mcp service"
+    enabled: true
+  listen: restart mnemonic-mcp service

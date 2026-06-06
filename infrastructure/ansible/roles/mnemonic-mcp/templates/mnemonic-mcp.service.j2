@@ -1,23 +1,18 @@
 [Unit]
-Description=Mnemonic MCP Local Server
-Documentation=https://github.com/mnemonic-ai/mnemonic-mcp
+Description=Mnemonik MCP Local Server (stdio transport)
+Documentation=https://github.com/mnemonik-xyz/mcp
 Wants=network-online.target
 After=network-online.target
 PartOf=multi-user.target
 
 [Service]
-Type=notify
+Type=simple
 User={{ mnemonic_mcp_service_user }}
 Group={{ mnemonic_mcp_service_group }}
-WorkingDirectory={{ mnemonic_mcp_install_dir }}
-ExecStart={{ mnemonic_mcp_install_dir }}/bin/mnemonic-mcp serve --config {{ mnemonic_mcp_config_dir }}/config.yml
+WorkingDirectory={{ mnemonik_mcp_install_dir }}
+ExecStart={{ mnemonic_mcp_binary }} mcp-stdio
 
-# systemd LoadCredential= requires an on-disk path, not a URI scheme.
-# {{ mnemonic_mcp_credential_file }} is materialised in /run (tmpfs, mode 0600 root)
-# by the role's pre-task by decrypting from Vaultwarden via the bw CLI.
-LoadCredential=mnemonic-signing-key:{{ mnemonic_mcp_credential_file }}
-
-Environment="PATH=/opt/mnemonic-mcp/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
 Environment="HOME=/var/lib/mnemonic-mcp"
 
 Restart=on-failure
@@ -29,7 +24,7 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-ReadWritePaths={{ mnemonic_mcp_install_dir }} {{ mnemonic_mcp_config_dir }} /var/lib/mnemonic-mcp
+ReadWritePaths={{ mnemonik_mcp_install_dir }} /var/lib/mnemonic-mcp
 
 CapabilityBoundingSet=
 AmbientCapabilities=

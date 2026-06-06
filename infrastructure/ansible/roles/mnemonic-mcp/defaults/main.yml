@@ -1,44 +1,26 @@
 ---
-# DESCOPED (Round 2, 2026-05). The Mnemonic MCP server is not yet
-# production-ready, so this role is disabled by default. coding-fabric deploys
-# cleanly without it; attestation integration moves to backlog feature
-# `mnemonic-attestation-integration` (see work/mnemonic-attestation-integration/).
-# To re-enable, set `mnemonic_mcp_enabled: true` once the MCP server reaches
-# the v1.0+ release milestone and a real signing-key generation procedure is in
-# place.
-mnemonic_mcp_enabled: false
+# Mnemonik MCP server install + run. Distribution channel: scoped npm package
+# `@mnemonik-xyz/mcp`; the binary ships inside the package and is templated
+# everywhere via the discovered fact `mnemonic_mcp_binary` (see tasks/main.yml).
+#
+# The binary spelling has drifted across versions (`mnemonik-mcp` with K on
+# 0.2.4 — current upstream — vs `mnemonic-mcp` without K on older builds).
+# Don't hardcode it; the discovery cascade `which mnemonik-mcp || which
+# mnemonic-mcp` resolves whichever name the pinned version actually shipped.
+mnemonic_mcp_enabled: true
 
-operator_user: mnemonic-operator
-operator_home: /home/mnemonic-operator
-operator_group: "{{ operator_user }}"
+# npm distribution channel — pinned to a specific version so the root package
+# is reproducible. Transitive dependencies are pinned via the checked-in
+# files/package-lock.json (consumed by `npm ci`).
+mnemonik_mcp_npm_package: "@mnemonik-xyz/mcp"
+mnemonik_mcp_npm_version: "0.2.4"
 
-mnemonic_mcp_version: "0.1.0"
-mnemonic_mcp_binary_url: "https://github.com/mnemonic-ai/mnemonic-mcp/releases/download/v{{ mnemonic_mcp_version }}/mnemonic-mcp-linux-x86_64"
-mnemonic_mcp_binary_sha256: "REPLACE_WITH_REAL_SHA256_BEFORE_DEPLOY"
+# Where the role drops package.json + package-lock.json for the `npm ci` step.
+# The binary itself lands on PATH (npm global prefix, typically /usr/local/bin)
+# regardless of this path.
+mnemonik_mcp_install_dir: /opt/mnemonik-mcp
 
-mnemonic_mcp_install_dir: /opt/mnemonic-mcp
-mnemonic_mcp_config_dir: /etc/mnemonic-mcp
-mnemonic_mcp_hooks_dir: "{{ mnemonic_mcp_config_dir }}/hooks"
-
-mnemonic_mcp_bind_host: 127.0.0.1
-mnemonic_mcp_bind_port: 7777
-mnemonic_mcp_mode: "local"
-
+# systemd identity
 mnemonic_mcp_systemd_unit: mnemonic-mcp.service
 mnemonic_mcp_service_user: op
 mnemonic_mcp_service_group: op
-
-# Vaultwarden item that holds the mnemonic-mcp signing key (decrypted via bw at deploy time)
-mnemonic_mcp_vault_item: "mnemonic/mcp-signing-key"
-
-# On-disk path where the Ansible pre-task materialises the signing key (mode 0600 root).
-# systemd LoadCredential= expects a real file path on disk, NOT a custom vault:// URI scheme
-# (Finding F-001 in T21 security-audit).  The file is placed under /run/credentials/...
-# (tmpfs, ephemeral) and removed in an `always:` cleanup task after the service is started.
-mnemonic_mcp_credential_dir: "/run/credentials/mnemonic-mcp.service"
-mnemonic_mcp_credential_file: "{{ mnemonic_mcp_credential_dir }}/mnemonic-signing-key"
-
-solana_devnet_rpc_url: "https://api.devnet.solana.com"
-arweave_testnet_url: "https://testnet.arweave.net"
-
-mnemonic_mcp_healthcheck_timeout: 10

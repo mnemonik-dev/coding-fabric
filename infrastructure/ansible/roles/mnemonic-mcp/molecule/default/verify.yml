@@ -1,188 +1,73 @@
 ---
+# Local-only assertions. Not wired into CI — see role README TODO.
 - name: Verify
   hosts: all
   gather_facts: true
   vars:
-    mnemonic_mcp_config_dir: /etc/mnemonic-mcp
-    mnemonic_mcp_hooks_dir: "/etc/mnemonic-mcp/hooks"
-    mnemonic_mcp_install_dir: /opt/mnemonic-mcp
+    mnemonik_mcp_install_dir: /opt/mnemonik-mcp
     mnemonic_mcp_service_user: op
   tasks:
     - name: Verify op user exists
-      user:
+      ansible.builtin.user:
         name: "{{ mnemonic_mcp_service_user }}"
         state: present
-      check_mode: yes
+      check_mode: true
       register: op_user_check
 
     - name: Assert op user exists
-      assert:
+      ansible.builtin.assert:
         that:
-          - op_user_check.changed == false
-        fail_msg: "op user does not exist"
+          - not op_user_check.changed
+        fail_msg: op user does not exist
 
-    - name: Verify mnemonic-mcp binary exists and is executable
-      stat:
-        path: "{{ mnemonic_mcp_install_dir }}/bin/mnemonic-mcp"
-      register: binary_stat
+    - name: Verify pinned package-lock.json present in install dir
+      ansible.builtin.stat:
+        path: "{{ mnemonik_mcp_install_dir }}/package-lock.json"
+      register: lockfile_stat
 
-    - name: Assert binary is executable
-      assert:
+    - name: Assert lockfile present
+      ansible.builtin.assert:
         that:
-          - binary_stat.stat.exists
-          - binary_stat.stat.executable
-          - binary_stat.stat.pw_name == mnemonic_mcp_service_user
-        fail_msg: "Binary check failed"
+          - lockfile_stat.stat.exists
+        fail_msg: package-lock.json missing in install dir
 
-    - name: Verify config directory exists
-      stat:
-        path: "{{ mnemonic_mcp_config_dir }}"
-      register: config_dir_stat
+    - name: Verify Mnemonik MCP binary on PATH (cascade)
+      ansible.builtin.shell: |
+        set -euo pipefail
+        which mnemonik-mcp || which mnemonic-mcp
+      args:
+        executable: /bin/bash
+      register: which_check
+      changed_when: false
 
-    - name: Assert config directory exists
-      assert:
+    - name: Assert binary discoverable
+      ansible.builtin.assert:
         that:
-          - config_dir_stat.stat.exists
-          - config_dir_stat.stat.isdir
-        fail_msg: "Config directory check failed"
-
-    - name: Verify config.yml exists
-      stat:
-        path: "{{ mnemonic_mcp_config_dir }}/config.yml"
-      register: config_yml_stat
-
-    - name: Assert config.yml exists
-      assert:
-        that:
-          - config_yml_stat.stat.exists
-        fail_msg: "config.yml check failed"
-
-    - name: Verify hooks directory exists
-      stat:
-        path: "{{ mnemonic_mcp_hooks_dir }}"
-      register: hooks_dir_stat
-
-    - name: Assert hooks directory exists
-      assert:
-        that:
-          - hooks_dir_stat.stat.exists
-          - hooks_dir_stat.stat.isdir
-        fail_msg: "Hooks directory check failed"
-
-    - name: Verify all 5 hooks exist and are executable
-      stat:
-        path: "{{ mnemonic_mcp_hooks_dir }}/{{ item }}.sh"
-      loop:
-        - user-spec
-        - tech-spec
-        - task-complete
-        - pre-deploy
-        - post-deploy
-      register: hook_stat
-
-    - name: Assert all hooks are executable
-      assert:
-        that:
-          - item.stat.exists
-          - item.stat.executable
-          - item.stat.pw_name == mnemonic_mcp_service_user
-        fail_msg: "Hook {{ item.invocation.module_args.path }} check failed"
-      loop: "{{ hook_stat.results }}"
+          - which_check.rc == 0
+          - (which_check.stdout | trim) | length > 0
+        fail_msg: neither mnemonik-mcp nor mnemonic-mcp on PATH
 
     - name: Verify systemd unit exists
-      stat:
+      ansible.builtin.stat:
         path: /etc/systemd/system/mnemonic-mcp.service
       register: service_stat
 
     - name: Assert systemd unit exists
-      assert:
+      ansible.builtin.assert:
         that:
           - service_stat.stat.exists
-        fail_msg: "systemd unit check failed"
+        fail_msg: systemd unit check failed
 
-    - name: Verify molyanov hooks config was rendered
-      stat:
-        path: /home/mnemonic-operator/.fabric/molyanov/hooks.d/mnemonic-hooks.yml
-      register: molyanov_config_stat
+    - name: Verify systemd unit ExecStart references discovered binary
+      ansible.builtin.lineinfile:
+        path: /etc/systemd/system/mnemonic-mcp.service
+        line: "ExecStart={{ which_check.stdout | trim }} mcp-stdio"
+        state: present
+      check_mode: true
+      register: execstart_check
 
-    - name: Assert molyanov config exists (may not exist in test env, skip if missing)
-      debug:
-        msg: "molyanov config check: exists={{ molyanov_config_stat.stat.exists }}"
-
-    # ------------------------------------------------------------------
-    # Behavioural hook exercise (audit-fixer-reliability T22 remediation)
-    # ------------------------------------------------------------------
-    # Previously verify.yml only asserted file existence + executable bit.
-    # The audit (test-audit.json suite_issues→mnemonic-mcp) noted that this
-    # leaves AC11-AC16 covered only by the e2e DAG poll. We add a stub
-    # mnemonic_sign_memory (returns a fixed attestation_id) on PATH and
-    # invoke each hook with --feature/--artefact, asserting exit-code 0.
-
-    - name: Create stub mnemonic_sign_memory on PATH
-      copy:
-        dest: /usr/local/bin/mnemonic_sign_memory
-        mode: "0755"
-        content: |
-          #!/bin/bash
-          # Test stub used by Molecule verify.yml. Returns a deterministic
-          # attestation_id in the format expected by hook scripts.
-          echo "attestation_id=00000000-0000-0000-0000-000000000001"
-          exit 0
-
-    - name: Create stub artefact file for hook tests
-      copy:
-        dest: /tmp/test-artefact.md
-        mode: "0644"
-        content: "stub artefact for hook behavioural test\n"
-
-    - name: Ensure mnemonic-mcp state dir exists for hook writes
-      file:
-        path: /var/lib/mnemonic-mcp
-        state: directory
-        owner: "{{ mnemonic_mcp_service_user }}"
-        group: "{{ mnemonic_mcp_service_user }}"
-        mode: "0750"
-
-    - name: Ensure mnemonic-mcp log dir exists for hook writes
-      file:
-        path: /var/log/mnemonic-mcp
-        state: directory
-        owner: "{{ mnemonic_mcp_service_user }}"
-        group: "{{ mnemonic_mcp_service_user }}"
-        mode: "0750"
-
-    - name: Invoke each hook with stub args
-      shell: |
-        export REPO_ROOT=/tmp
-        export PATH=/usr/local/bin:/usr/bin:/bin
-        "{{ mnemonic_mcp_hooks_dir }}/{{ item }}.sh" \
-          --feature test-feature \
-          --artefact /tmp/test-artefact.md
-      args:
-        executable: /bin/bash
-      register: hook_exec
-      loop:
-        - user-spec
-        - tech-spec
-        - task-complete
-        - pre-deploy
-        - post-deploy
-      changed_when: false
-      # Hooks legitimately fail on subsequent invocations once the
-      # attestations.yml entry already exists; capture the rc for the
-      # assertion below rather than aborting on non-zero exit.
-      failed_when: false
-
-    - name: Assert each hook either succeeded or reported a recoverable error
-      assert:
+    - name: Assert ExecStart matches discovered binary
+      ansible.builtin.assert:
         that:
-          # Either rc 0 (success) OR the captured stdout contains an
-          # attestation_id (proving the hook reached the signing step).
-          - item.rc == 0 or 'attestation_id=' in (item.stdout | default(''))
-        fail_msg: >-
-          Hook {{ item.item }} did not invoke mnemonic_sign_memory.
-          rc={{ item.rc }} stdout={{ item.stdout | default('') }}
-          stderr={{ item.stderr | default('') }}
-      loop: "{{ hook_exec.results }}"
-      loop_control:
-        label: "{{ item.item }}"
+          - not execstart_check.changed
+        fail_msg: ExecStart in unit does not reference the discovered binary
