@@ -99,6 +99,20 @@
         # both vars carry values.
         vault_kaneo_mcp_url:                "{{ sops.kaneo_mcp_url | default('') }}"
         vault_kaneo_mcp_bearer:             "{{ sops.kaneo_mcp_bearer | default('') }}"
+        # Content publisher (work/content-publish-pipeline/). All defaults
+        # empty/safe so first deploy with placeholder sops doesn't fail —
+        # content-publisher role is gated on a non-empty bot token and
+        # falls inert when unconfigured (see Task 3).
+        vault_blogger_telegram_bot_token:    "{{ sops.blogger_telegram_bot_token | default('') }}"
+        vault_blogger_telegram_channel:      "{{ sops.blogger_telegram_channel | default('@mnemonik') }}"
+        vault_blogger_prompts_topic_id:      "{{ sops.blogger_prompts_topic_id | default('0') }}"
+        vault_publish_min_score:             "{{ sops.publish_min_score | default(80) }}"
+        vault_publish_approval_timeout_min:  "{{ sops.publish_approval_timeout_min | default(5) }}"
+        vault_publish_mode:                  "{{ sops.publish_mode | default('approval') }}"
+        vault_publish_auto_mode_token:       "{{ sops.publish_auto_mode_token | default('') }}"
+        vault_blogger_repo_ref:              "{{ sops.blogger_repo_ref | default('') }}"
+        vault_claude_blog_repo_ref:          "{{ sops.claude_blog_repo_ref | default('') }}"
+        vault_publish_callback_hmac_secrets: "{{ sops.publish_callback_hmac_secrets | default('') }}"
       no_log: true
 
     - name: Wait for system to stabilize post-boot
