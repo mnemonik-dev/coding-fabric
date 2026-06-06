@@ -1,0 +1,105 @@
+{
+  "task": 1,
+  "round": 1,
+  "commit": "2bdef02",
+  "auditor": "security-auditor",
+  "date": "2026-06-06",
+  "verdict": "APPROVED",
+  "summary": "Task 1 implements secrets scaffolding correctly. No real credentials committed. Encryption hygiene is sound. Two minor issues found: one unencrypted string value that should be encrypted, and a subtle missing validation note for HMAC secret format. Both are low severity and do not block merge.",
+  "findings": [
+    {
+      "id": "T1-SEC-001",
+      "severity": "LOW",
+      "title": "blogger_telegram_bot_token stored as unencrypted empty string",
+      "description": "In secrets.sops.yml, `blogger_telegram_bot_token: \"\"` is left as a literal unencrypted plaintext empty string. This matches the existing pattern for `anthropic_api_key: \"\"` and `openai_api_key: \"\"` in the file, so it is consistent with the project convention. However, it creates a subtle risk: sops's `unencrypted_suffix: _unencrypted` feature is NOT active here (the suffix is set but there is no `_unencrypted` suffix on the key name). This means the key is stored in plaintext because its value is an empty string — sops skips AES-GCM encryption for empty-string values. When an operator fills in the real token value via `sops edit`, they MUST save and let sops re-encrypt. If an operator mistakenly edits the raw YAML file directly (not via `sops edit`), the token would be committed in plaintext. The template comment does not warn about this risk specifically for this key.",
+      "file": "infrastructure/secrets/secrets.sops.yml",
+      "line": "blogger_telegram_bot_token: \"\"",
+      "owasp": "A02:2021 Cryptographic Failures",
+      "recommendation": "Add a warning comment in secrets.sops.yml.template above blogger_telegram_bot_token explicitly stating: 'Always edit via `sops <path>` — never edit the encrypted file directly. Sops leaves empty strings unencrypted; filling in the real token via sops edit will encrypt it automatically.' The existing template comment is good but does not call out this edge case. Also consider whether the existing anthropic_api_key/openai_api_key unencrypted-empty pattern should be flagged in a separate issue; that is out of scope for Task 1.",
+      "risk_if_unfixed": "Operator unfamiliar with sops could commit a real bot token in plaintext if they edit secrets.sops.yml directly instead of via `sops edit`.",
+      "blocks_merge": false
+    },
+    {
+      "id": "T1-SEC-002",
+      "severity": "LOW",
+      "title": "publish_callback_hmac_secrets: no deploy-time format validation documented",
+      "description": "The template comment correctly documents the `current,previous` rotation format and the 6-step rotation procedure. However, the sops value is a free-form string — if an operator accidentally sets it to a short key (e.g. 8 chars instead of 64 hex chars from `openssl rand -hex 32`), there is no deploy-time assertion that would catch the weak key. The spec says validation is on the worker side, but if the worker only splits on comma and uses the resulting strings as HMAC keys without a length/entropy check, a short key would silently weaken HMAC security. Task 6 (worker implementation) should enforce a minimum key length, but that is out of scope for Task 1. The risk here is that the template comment implies `openssl rand -hex 32` but does not make the 64-char requirement explicit.",
+      "file": "infrastructure/secrets/secrets.sops.yml.template",
+      "line": "publish_callback_hmac_secrets: \"\"",
+      "owasp": "A07:2021 Identification and Authentication Failures",
+      "recommendation": "Update the template comment to explicitly state: 'Each key segment must be at least 32 bytes of cryptographic randomness (64 hex chars from `openssl rand -hex 32`). The worker rejects keys shorter than 32 bytes at startup.' This pre-empts the human-error path. The actual validation must be implemented in Task 6.",
+      "risk_if_unfixed": "Operator could supply a weak HMAC key and the worker would accept it silently, weakening callback forgery protection.",
+      "blocks_merge": false
+    },
+    {
+      "id": "T1-SEC-003",
+      "severity": "INFO",
+      "title": "publish_auto_mode_token: two-location binding is well-documented",
+      "description": "The template comment correctly explains the two-location integrity binding mechanism (Decision 7): sops value vs /etc/blogger.env PUBLISH_AUTO_MODE_TOKEN; mismatch causes loud abort at worker startup. The placeholder empty string is appropriate for the approval-mode default. Generation command (openssl rand -hex 32) is provided. No issues found.",
+      "file": "infrastructure/secrets/secrets.sops.yml.template",
+      "line": "publish_auto_mode_token: \"\"",
+      "owasp": "N/A",
+      "recommendation": "None. Implementation is correct per spec.",
+      "blocks_merge": false
+    },
+    {
+      "id": "T1-SEC-004",
+      "severity": "INFO",
+      "title": "no_log: true correctly preserved on the set_fact task",
+      "description": "The new vault_* mappings are added inside the existing set_fact block that carries `no_log: true` at the task level (deploy.yml line 116). All 10 new vault_* values are covered by this no_log scope. Verified by reading the full block context: no_log appears immediately after the last vault_* mapping in the set_fact dict, which is the correct YAML placement for task-level no_log. No leakage path via Ansible logging for these values.",
+      "file": "infrastructure/ansible/playbooks/deploy.yml",
+      "line": "116",
+      "owasp": "N/A",
+      "recommendation": "None. Correct.",
+      "blocks_merge": false
+    },
+    {
+      "id": "T1-SEC-005",
+      "severity": "INFO",
+      "title": "Encrypted values use per-value unique IVs",
+      "description": "Inspected the sops diff: each ENC[AES256_GCM,...] entry has a distinct iv: value (e.g. `1Rz64AUC7KVU...`, `4kcqGHUtErP6...`, `gMZdITzSQJNm...`, `4FqJVFfHc927...`, `9AivfCMb/plp...`). AES-256-GCM requires unique IVs per encryption — reuse would allow nonce collision attacks. Sops generates per-value IVs correctly. MAC field was also updated (`mac: ENC[...]`) meaning the file-level integrity tag was re-computed over all values, including the new ones. No IV reuse detected.",
+      "file": "infrastructure/secrets/secrets.sops.yml",
+      "line": "all new ENC[] entries",
+      "owasp": "A02:2021 Cryptographic Failures",
+      "recommendation": "None. Correct.",
+      "blocks_merge": false
+    },
+    {
+      "id": "T1-SEC-006",
+      "severity": "INFO",
+      "title": "blogger_prompts_topic_id stored as string '0' — safe default",
+      "description": "The topic_id placeholder '0' (as string, per telegram_ops_thread_id convention) means the bot handler's filter `F.message_thread_id == BLOGGER_PROMPTS_TOPIC_ID` will match thread_id==0 in approval-mode, which corresponds to non-threaded messages (messages not in any forum topic). This could theoretically match direct messages or messages in the main chat of a forum. However, the handler also checks `F.chat.id == TELEGRAM_FORUM_CHAT_ID AND F.from_user.id == OPERATOR_USER_ID`, so the impact is limited to: if the operator sends a message directly in the main forum chat (not in a topic), it could be treated as a publish brief. This is a low risk given the other two guard conditions. The implementation of that filtering logic is in Task 8 (bot handler) — the security of the default is acceptable here.",
+      "file": "infrastructure/secrets/secrets.sops.yml",
+      "line": "blogger_prompts_topic_id",
+      "owasp": "A01:2021 Broken Access Control",
+      "recommendation": "Task 8 (bot handler) should add an explicit guard: if BLOGGER_PROMPTS_TOPIC_ID == 0, log a warning and skip enqueue (treat as unconfigured). This prevents accidental enqueue of messages from the main forum chat when the operator hasn't set the topic_id yet.",
+      "blocks_merge": false
+    }
+  ],
+  "owasp_checklist": {
+    "A01_broken_access_control": "PASS — vault_* facts protected by no_log; sops encryption at rest; topic_id=0 edge case flagged for Task 8",
+    "A02_cryptographic_failures": "PASS — AES-256-GCM with unique per-value IVs; file MAC re-computed; HMAC key length note flagged for template improvement",
+    "A03_injection": "N/A — configuration task only, no code that processes user input",
+    "A04_insecure_design": "PASS — two-location auto-mode binding documented; separate publisher bot token documented",
+    "A05_security_misconfiguration": "PASS — all new vault_* have safe defaults; no_log preserved; unencrypted empty string pattern is consistent with project convention (flagged as LOW)",
+    "A06_vulnerable_components": "N/A — no new dependencies in this task",
+    "A07_auth_failures": "LOW — HMAC key entropy not validated at deploy time (flagged T1-SEC-002)",
+    "A08_data_integrity": "PASS — pinned commit SHAs for blogger_repo_ref and claude_blog_repo_ref prevent supply chain drift; sops MAC covers all values",
+    "A09_logging_failures": "PASS — no_log: true on all vault_* facts",
+    "A10_ssrf": "N/A — configuration task only"
+  },
+  "project_specific_checks": {
+    "subprocess_argv_env_hygiene": "N/A — no subprocess code in this task",
+    "path_traversal": "N/A — no file path handling in this task",
+    "callback_hmac_format": "PASS with LOW note — rotation format documented; key length not enforced at deploy time (T1-SEC-002)",
+    "sops_env_leakage": "PASS — no_log:true; AES-256-GCM encryption; MAC integrity",
+    "publisher_token_leakage": "PASS — blogger_telegram_bot_token isolated from orchestrator token; template comment explains blast radius",
+    "attestation_content_binding": "N/A — not in scope for this task",
+    "auto_mode_two_location_integrity": "PASS — publish_auto_mode_token key added; template comment explains the mechanism and abort behavior",
+    "topic_filter_correctness": "LOW — topic_id=0 default could match main-forum messages if Task 8 doesn't guard against it (T1-SEC-006)"
+  },
+  "real_secrets_committed": false,
+  "no_log_preserved": true,
+  "encryption_hygiene": "PASS",
+  "action_required": "None blocking. Recommend addressing T1-SEC-001 and T1-SEC-002 with template comment improvements before or alongside Task 3. T1-SEC-006 should be passed as a note to Task 8 implementer."
+}

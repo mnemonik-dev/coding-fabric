@@ -1,0 +1,55 @@
+{
+  "task": "Task 1 — Sops + secrets template extension",
+  "commit": "2bdef02",
+  "round": 1,
+  "reviewer": "code-reviewer",
+  "verdict": "approved_with_minor",
+  "summary": "Implementation is correct and complete. All 10 keys are present and well-documented in the template. The deploy.yml vault_* mappings follow the existing pattern precisely. Two minor issues found: a type mismatch between template (int) and sops (float) for numeric keys, and one unencrypted sensitive placeholder in sops.yml that diverges from existing convention.",
+  "issues": [
+    {
+      "id": "T1-1",
+      "severity": "minor",
+      "dimension": "Type Safety / Correctness",
+      "file": "infrastructure/secrets/secrets.sops.yml",
+      "lines": "93-94",
+      "title": "publish_min_score and publish_approval_timeout_min stored as float, not int",
+      "description": "The sops.yml shows these as `type:float` (e.g. `publish_min_score: ENC[...,type:float]`), but the template defines them as integers (bare `80` / `5` without decimal). The Ansible `default(80)` and `default(5)` in deploy.yml also produce integers. When Jinja2 renders the env-file template `{{ vault_publish_min_score }}`, a float `80.0` would appear instead of `80`, breaking the worker's `int(os.environ['MNEMONIK_MIN_SCORE'])` parse. The existing `publish_approval_timeout_min` has the same issue.",
+      "recommendation": "Re-edit sops to set these as int: open sops, change `80` and `5` explicitly as YAML integers (they already look like integers — the float type may have been an artefact of `sops set` coercion). After re-encrypt, confirm `type:int` appears in the sops file. Alternatively, add an explicit `| int` Jinja2 filter in the `blogger.env.j2` template (Task 3) and document this in the env-file template comment.",
+      "impact": "Worker startup parse error (`ValueError: invalid literal for int()`) on non-integer env values. Not a security issue but a runtime correctness bug that will surface at first deploy."
+    },
+    {
+      "id": "T1-2",
+      "severity": "minor",
+      "dimension": "Security Considerations",
+      "file": "infrastructure/secrets/secrets.sops.yml",
+      "lines": "90",
+      "title": "blogger_telegram_bot_token stored as unencrypted empty string",
+      "description": "The line `blogger_telegram_bot_token: \"\"` appears as plaintext in the encrypted sops file, matching the same pattern used for `anthropic_api_key: \"\"` and `openai_api_key: \"\"`. This is consistent with existing project convention. However, the template marks this as `YOUR_BLOGGER_BOT_TOKEN_HERE` (a real secret placeholder, not an optional key like `anthropic_api_key`). When the operator fills in the real token and runs `sops edit`, they must be careful to save the file correctly to trigger encryption. Since this is intentional project convention and matches three existing keys (`anthropic_api_key`, `openai_api_key`, `deepgram_api_key`), this is minor — but worth noting that the content-publisher role (Task 3) should assert `vault_blogger_telegram_bot_token != ''` before enabling the service, not silently fall inert.",
+      "recommendation": "No change required here (convention is established). Ensure Task 3's role asserts or gates on non-empty token with a clear fail message, as mentioned in the deploy.yml comment (`content-publisher role is gated on a non-empty bot token and falls inert when unconfigured`).",
+      "impact": "If the gate logic in Task 3 is too lenient (falls silently inert), a misconfigured deploy would silently not start the service. Not a secret exposure risk."
+    }
+  ],
+  "positive_observations": [
+    "All 10 required keys are present in both template and sops file — AC completeness is full.",
+    "Template documentation is excellent: every key has a purpose comment, generation command reference (`openssl rand -hex 32`), and operational context. The rotation procedure for `publish_callback_hmac_secrets` (6-step procedure) is clear and complete.",
+    "The `blogger_prompts_topic_id` key correctly documents both retrieval methods (getUpdates + @RawDataBot) and explains the `\"0\"` sentinel meaning.",
+    "The `publish_auto_mode_token` description accurately captures the two-location binding requirement from Decision 7 — the comment is precise enough to implement the worker startup check without re-reading the tech-spec.",
+    "deploy.yml set_fact block is extended inside the existing single task (not a new task), preserving the pattern and keeping `no_log: true` scoped correctly.",
+    "Default values in deploy.yml are appropriate: `default('@mnemonik')` for channel, `default('0')` for topic_id, `default(80)` / `default(5)` for numeric keys, `default('approval')` for mode.",
+    "No existing vault_* facts were touched — diff shows only additions, satisfying the non-regression AC.",
+    "The `publish_callback_hmac_secrets` comment clearly shows both single and rotation-window formats, addressing Decision 9's two-secret rotation requirement.",
+    "Template follows the established `# === Section Name ===` style exactly, with spacing consistent with other sections."
+  ],
+  "ac_coverage": {
+    "all_10_keys_in_template": "PASS",
+    "all_10_keys_in_sops": "PASS",
+    "blogger_prompts_topic_id_documented_separately": "PASS",
+    "publish_auto_mode_token_documented_separately": "PASS",
+    "publish_callback_hmac_secrets_rotation_format_documented": "PASS",
+    "deploy_yml_vault_mappings_extended": "PASS",
+    "no_log_true_preserved": "PASS",
+    "no_real_tokens_committed": "PASS",
+    "existing_vault_facts_untouched": "PASS",
+    "ansible_syntax_check": "PASS (reported by implementer)"
+  }
+}

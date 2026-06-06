@@ -1,0 +1,37 @@
+{
+  "task": "Task 1 — Sops + secrets template extension",
+  "commit": "66b2684",
+  "round": 2,
+  "reviewer": "code-reviewer",
+  "verdict": "approved",
+  "summary": "Both round 1 issues are fully resolved. publish_min_score and publish_approval_timeout_min now carry type:int in the sops envelope. The template gained a clear warning about the sops-editor-only workflow for the bot token, and the HMAC key minimum-length enforcement note is a valuable addition. Task 1 is complete.",
+  "issues": [],
+  "round1_resolution": {
+    "T1-1": {
+      "status": "FIXED",
+      "verified": "sops.yml lines 93-94 now show type:int for both publish_min_score and publish_approval_timeout_min. Ciphertext data changed (gWA= / hg==), confirming re-encryption. Worker int() parse will succeed."
+    },
+    "T1-2": {
+      "status": "ADDRESSED_IN_DOCS",
+      "verified": "Template lines 123-129 now include an explicit IMPORTANT warning block explaining sops-editor-only workflow and the plaintext-commit risk. No code change needed (convention is established); documentation improvement is sufficient and correct."
+    }
+  },
+  "bonus_improvement": {
+    "title": "HMAC minimum key length documented + worker contract established",
+    "description": "The addition of 'Each key segment must be at least 32 bytes of cryptographic randomness (i.e. 64 hex chars)... The worker rejects keys shorter than 32 bytes at startup (loud abort)' in the template proactively documents a worker-level constraint that doesn't exist yet. This is good practice — it sets a contract for Task 6's worker startup validation and prevents silently weakened callback signing from a short key. One note: Task 6 must implement this startup check to honor the documented contract; if it doesn't, the comment will be misleading. Flagging for Task 6 reviewer attention.",
+    "severity": "informational"
+  },
+  "ac_coverage": {
+    "all_10_keys_in_template": "PASS",
+    "all_10_keys_in_sops": "PASS",
+    "blogger_prompts_topic_id_documented_separately": "PASS",
+    "publish_auto_mode_token_documented_separately": "PASS",
+    "publish_callback_hmac_secrets_rotation_format_documented": "PASS",
+    "deploy_yml_vault_mappings_extended": "PASS",
+    "no_log_true_preserved": "PASS",
+    "no_real_tokens_committed": "PASS",
+    "existing_vault_facts_untouched": "PASS",
+    "ansible_syntax_check": "PASS (reported by implementer)",
+    "numeric_types_correct": "PASS (type:int confirmed in sops envelope)"
+  }
+}
