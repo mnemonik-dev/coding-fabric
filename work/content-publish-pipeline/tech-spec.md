@@ -156,7 +156,7 @@ Operator (in TG forum topic 📝 blogger-prompts):
            CAS publishing -> publish-failed (with pr.error)
            Bot EDITS preview to:
              "⚠ Telegram API failed: <pr.error>
-              Try /publish_content again with same brief."
+              Repost the brief in this topic to retry."
              reply_markup=None
 
 4. Attestation via MCP JSON-RPC over stdio
