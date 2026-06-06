@@ -15,20 +15,23 @@ Architecture step 4.
 
 1. **Node.js prerequisite**: NodeSource setup_20.x → `apt install nodejs`
    (pattern shared with the `telegram-ai-agent` role).
-2. **Local lockfile install** (supply-chain pin for the full tree,
+2. **Single-step lockfile install** (supply-chain pin for the full tree,
    per security R2-8): `npm ci` consumes the checked-in
    `files/package-lock.json` in `{{ mnemonik_mcp_install_dir }}` (default
    `/opt/mnemonik-mcp/`). Every transitive integrity hash is fixed.
-3. **Global install for PATH**: `community.general.npm` installs
-   `@mnemonik-xyz/mcp@{{ mnemonik_mcp_npm_version }}` globally, which
-   drops the bin at the npm global prefix (`/usr/local/bin/` on the
-   target VM).
+   This is the only audited resolution path — there is no separate
+   global install that could resolve transitives independently from the
+   registry.
+3. **System-wide binary access via symlink**:
+   `/usr/local/bin/mnemonik-mcp` → `<install_dir>/node_modules/.bin/mnemonik-mcp`.
+   The binary on PATH is the exact byte sequence the lockfile pinned.
 4. **Binary discovery**: `which mnemonik-mcp || which mnemonic-mcp`.
    Upstream has shipped the bin under both spellings (current
    `@mnemonik-xyz/mcp@0.2.4` ships `mnemonik-mcp` with K; older builds
-   shipped `mnemonic-mcp` without K). The cascade resolves whichever
-   spelling the pinned version actually shipped; the result lands in the
-   `mnemonic_mcp_binary` fact.
+   shipped `mnemonic-mcp` without K). The symlink in step 3 is the
+   resolution; the cascade is kept as defense-in-depth for the case
+   where a future bump reverts the spelling and a maintainer extends
+   the role.
 5. **systemd unit**: `templates/mnemonic-mcp.service.j2` renders
    `ExecStart={{ mnemonic_mcp_binary }} mcp-stdio` and inherits the
    hardening block (`NoNewPrivileges`, `ProtectSystem=strict`,

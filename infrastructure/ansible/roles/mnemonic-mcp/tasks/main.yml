@@ -5,6 +5,16 @@
 # and expose it as fact `mnemonic_mcp_binary` for downstream roles (Task 3
 # templates `/etc/blogger.mcp.json` from this fact).
 
+# When the role is disabled, set the fact to an empty sentinel so downstream
+# roles that reference `mnemonic_mcp_binary` (Task 3's blogger.mcp.json
+# template) get a clearly-empty `command:` field rather than a cryptic
+# Jinja `UndefinedError`. The downstream service will fail-loud on the
+# empty command at start, which is the right failure mode.
+- name: Set empty mnemonic_mcp_binary sentinel when role is disabled
+  ansible.builtin.set_fact:
+    mnemonic_mcp_binary: ""
+  when: not (mnemonic_mcp_enabled | bool)
+
 - name: Mnemonik MCP install + configure
   when: mnemonic_mcp_enabled | bool
   block:
@@ -52,11 +62,24 @@
       when: mnemonik_node_check.rc != 0
 
     # ------------------------------------------------------------------
-    # Pin transitive deps via the checked-in lockfile, then global-install
-    # the scoped package at the pinned version. `npm ci` against the
-    # lockfile is the supply-chain hardening anchor (R2-8); the subsequent
-    # `community.general.npm` global install is what puts the binary on
-    # PATH at a system-wide location.
+    # Defensive cleanup of any stale binary from the prior descoped install
+    # at /opt/mnemonic-mcp/bin/mnemonic-mcp. If that path lingered on PATH
+    # the discovery cascade below would pick it up first and the smoke
+    # handshake would fail confusingly. `failed_when: false` because the
+    # path may not exist on a fresh VM — that's fine.
+    # ------------------------------------------------------------------
+    - name: Remove stale descoped binary from prior install (idempotent)
+      ansible.builtin.file:
+        path: /opt/mnemonic-mcp/bin/mnemonic-mcp
+        state: absent
+      failed_when: false
+
+    # ------------------------------------------------------------------
+    # Single-step lockfile install: every byte of the dependency tree comes
+    # from `files/package-lock.json` (npm ci enforces hash integrity per
+    # transitive package). The binary is then exposed system-wide via a
+    # symlink — no separate registry resolution, no two-tree divergence.
+    # See security-auditor T2-SEC-002 round 1.
     # ------------------------------------------------------------------
     - name: Copy package.json into install dir
       ansible.builtin.copy:
@@ -73,6 +96,7 @@
         owner: "{{ mnemonic_mcp_service_user }}"
         group: "{{ mnemonic_mcp_service_group }}"
         mode: "0644"
+      register: mnemonik_packagejson_copy
 
     - name: Copy pinned package-lock.json into install dir
       ansible.builtin.copy:
@@ -83,25 +107,39 @@
         mode: "0644"
       register: mnemonik_lockfile_copy
 
-    - name: Install pinned tree via npm ci (local — supply-chain anchor)
+    - name: Install pinned tree via npm ci (single supply-chain anchor)
+      # `npm ci` enforces every per-package integrity hash from the lockfile;
+      # `--no-fund` quietens donation prompts. We keep `--audit` (no
+      # `--no-audit`) — the lockfile pins what we get, but the advisory
+      # check still surfaces CVE info worth seeing (security-auditor
+      # T2-SEC-001 round 1).
       ansible.builtin.command:
         chdir: "{{ mnemonik_mcp_install_dir }}"
-        cmd: npm ci --no-audit --no-fund
+        cmd: npm ci --no-fund
       register: mnemonik_npm_ci
-      changed_when: mnemonik_npm_ci.rc == 0 and 'up to date' not in (mnemonik_npm_ci.stdout | default(''))
+      changed_when: mnemonik_npm_ci.rc == 0
+      when: mnemonik_lockfile_copy.changed or mnemonik_packagejson_copy.changed
 
-    - name: Install Mnemonik MCP globally (puts binary on PATH)
-      community.general.npm:
-        name: "{{ mnemonik_mcp_npm_package }}"
-        version: "{{ mnemonik_mcp_npm_version }}"
-        global: true
-        state: present
+    - name: Symlink Mnemonik MCP binary to /usr/local/bin
+      # The binary is provided by the lockfile-installed tree at
+      # `{{ mnemonik_mcp_install_dir }}/node_modules/.bin/<binary>`. We use a
+      # single canonical spelling here that matches the currently-pinned
+      # version (`mnemonik-mcp` per `@mnemonik-xyz/mcp@0.2.4`); the
+      # downstream discovery cascade still tolerates either spelling
+      # because the symlink itself is the resolution. If a future version
+      # ships a different bin name, this symlink will fail to create and
+      # bump-runbook step 7 takes effect.
+      ansible.builtin.file:
+        src: "{{ mnemonik_mcp_install_dir }}/node_modules/.bin/mnemonik-mcp"
+        dest: /usr/local/bin/mnemonik-mcp
+        state: link
+        force: true
 
     # ------------------------------------------------------------------
-    # Binary-name discovery. Cascade tolerates `mnemonik-mcp` (current,
-    # `@mnemonik-xyz/mcp@0.2.4`) and the older `mnemonic-mcp` spelling.
-    # The fact is consumed by the systemd template here and by
-    # `/etc/blogger.mcp.json` in the content-publisher role (Task 3).
+    # Binary-name discovery. The symlink above guarantees `mnemonik-mcp`
+    # resolves on PATH; the cascade is kept as defense-in-depth for the
+    # case where a future bump's bin spelling reverts to the older
+    # `mnemonic-mcp` form and the maintainer extends this role.
     # ------------------------------------------------------------------
     - name: Discover installed Mnemonik MCP binary name
       ansible.builtin.shell: |
