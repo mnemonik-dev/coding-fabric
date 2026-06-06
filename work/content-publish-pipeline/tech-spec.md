@@ -318,7 +318,7 @@ On startup, worker compares the two; mismatch = abort with loud error. On first 
 **Alternatives considered:** Single env flip (rejected for security). Hardcoded approval-only with auto deferred (rejected — Q11 user wants the path).
 **User-spec anchor:** AC11.
 
-### Decision 8: Manual verification for `publishing`-state crash recovery + `/recovery-mark-published` slash command
+### Decision 8: Manual verification for `publishing`-state crash recovery + `/recovery_mark_published` slash command
 **Decision:** On worker startup, jobs in `publishing` status are CAS'd to a new `recovery-needed` terminal-ish state. Worker DMs operator with the article path + instructions. Operator handles via TWO new slash commands (BOTH owned by Task 9 alongside the existing publish:approve/reject/retry):
 - `/recovery_mark_published <job_id>` — moves `recovery-needed → published` and resumes attestation (sub-loop b retries `attest-pending`).
 - `/recovery_mark_failed <job_id>` — moves `recovery-needed → publish-failed` (terminal). Operator may then re-issue `/publish_content` with the original prompt (stored at the worktree path).
@@ -520,7 +520,7 @@ Mock fixtures centralized in `fabric/content-publisher/tests/conftest.py`: `mock
 
 - `test_queue_persist.py` — write job → kill+restart worker → resumes from correct status.
 - `test_concurrent_publish.py` — threading: concurrent callback click + deadline-fire → exactly one mocked `run_campaign_from_article` call.
-- `test_crash_recovery.py` — kill at each in-flight status. `writing` → restart; `scoring` → restart scorer; `preview-sent` → re-check deadline; `publishing` → CAS to `recovery-needed` + DM operator. `recovery-needed` + manual `/recovery-mark-published` slash → status `published`.
+- `test_crash_recovery.py` — kill at each in-flight status. `writing` → restart; `scoring` → restart scorer; `preview-sent` → re-check deadline; `publishing` → CAS to `recovery-needed` + DM operator. `recovery-needed` + manual `/recovery_mark_published` slash → status `published`.
 - `test_attestation_pipeline.py` — happy + Mnemonik MCP fail → attest-pending + retry cadence + 24h escalation.
 
 ### E2E tests
@@ -576,6 +576,12 @@ Per-task `Verify-smoke:` in each Implementation Task. The Final Wave's post-depl
 **What tech-spec does:** adds locked-hashes pin.
 **Why:** public PyPI + popular dep names = realistic typosquatting risk per security audit.
 **Status:** [TECHNICAL].
+
+### Deviation #3: Crash recovery in `publishing` state uses manual operator verification (not blogger CLI auto-check)
+**What user-spec says:** AC14 + Риск 6 prescribe that on worker restart with a job at `status=publishing`, the worker "проверяет реальный post-status через blogger CLI и НЕ double-post'ит" (queries blogger to determine whether the post actually landed before deciding to re-publish).
+**What tech-spec does:** Decision 8 substitutes a manual operator step: worker CAS's the job to `recovery-needed` + DMs the operator with the article path and channel link; operator handles via `/recovery_mark_published` (post landed — resume attestation) or `/recovery_mark_failed` (post missing — re-issue `/publish_content`).
+**Why:** skeptic round 2 verified `mnemonik_blogger.agent.find_post_by_id` does not exist in upstream blogger. Skeptic round 3 verified `mnemonik-mcp recall <hash>` is also not a CLI subcommand (it's an MCP tool over mcp-stdio, but it recalls signed memories — not arbitrary Telegram posts). Scanning the channel via Bot API `getUpdates` is brittle (100-update history limit) and would mis-detect during busy periods. Worker-crash-mid-publish is a rare event (<1/year expected), so trading "automated but brittle" for "manual but reliable" is the right call. The no-double-post guarantee from user-spec Риск 6 is preserved because the worker never auto-retries publish on `recovery-needed`.
+**Status:** [TECHNICAL — operator must accept the rare manual recovery step].
 
 ## Acceptance Criteria
 
