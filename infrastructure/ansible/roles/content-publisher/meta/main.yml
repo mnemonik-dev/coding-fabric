@@ -1,0 +1,21 @@
+---
+galaxy_info:
+  role_name: content_publisher
+  author: mnemonik-dev
+  description: >-
+    Install scaffold for the Mnemonik content-publish-pipeline:
+    pinned blogger + claude-blog clones, hardened systemd unit,
+    persistent-volume queue directories.
+  license: proprietary
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+  galaxy_tags:
+    - mnemonik
+    - publishing
+    - telegram
+
+dependencies: []

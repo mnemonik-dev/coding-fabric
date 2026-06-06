@@ -1,0 +1,274 @@
+---
+#
+# content-publisher role — install scaffold (Task 3 of content-publish-pipeline)
+#
+# This role lays down the filesystem + venv + systemd foundation for the
+# Python content-publisher worker. The worker package itself is installed
+# by Task 7. After this role runs successfully, the unit is enabled but
+# inactive (Wave 1 contract).
+#
+# Tech-spec: work/content-publish-pipeline/tech-spec.md (Task 3, Decisions
+# 10, 11, 12; Risks "in-process publish hardening").
+#
+
+# --- Preflight: assert required upstream refs are set ----------------------
+
+- name: Assert pinned upstream SHAs are configured
+  ansible.builtin.assert:
+    that:
+      - blogger_repo_ref | length == 40
+      - claude_blog_repo_ref | length == 40
+    fail_msg: >-
+      blogger_repo_ref and claude_blog_repo_ref must be full 40-char
+      commit SHAs. Set them in defaults/main.yml or via sops
+      (Decision 11 — never pin to a tag or branch).
+    quiet: true
+
+# --- Resolve hetzner_volume_id from mounts (Decision 10) -------------------
+
+- name: Collect mounts matching the configured Hetzner volume device
+  ansible.builtin.set_fact:
+    _cp_matching_mounts: >-
+      {{ ansible_facts.mounts
+         | selectattr('device', 'equalto', hetzner_volume_device)
+         | list }}
+
+- name: Fail loud if persistent volume is not mounted
+  ansible.builtin.fail:
+    msg: >-
+      hetzner_volume_id not resolved; {{ hetzner_volume_device }}
+      is not mounted. Refusing to template a systemd unit with an
+      unresolved RequiresMountsFor= path.
+  when: _cp_matching_mounts | length == 0
+
+- name: Resolve persistent volume mount path + systemd .mount unit name
+  # No literal '*' or '{' reaches RequiresMountsFor=. The mount unit
+  # name (used in After=) follows systemd's path-to-unit-name
+  # convention: leading slash dropped, remaining slashes → dashes.
+  ansible.builtin.set_fact:
+    content_publisher_volume_mount: "{{ (_cp_matching_mounts | first).mount }}"
+    content_publisher_volume_mount_unit: >-
+      {{ ((_cp_matching_mounts | first).mount
+          | regex_replace('^/', '')
+          | regex_replace('/', '-')) + '.mount' }}
+
+- name: Show resolved persistent volume mount
+  ansible.builtin.debug:
+    msg: "content-publisher will live under {{ content_publisher_volume_mount }}/content-publisher"
+
+- name: Assert resolved mount path looks sane (no wildcards, absolute, non-empty)
+  ansible.builtin.assert:
+    that:
+      - content_publisher_volume_mount | length > 1
+      - content_publisher_volume_mount.startswith('/')
+      - "'*' not in content_publisher_volume_mount"
+      - content_publisher_volume_mount.find('{' + '{') == -1
+    fail_msg: "Resolved volume mount path is unsafe: '{{ content_publisher_volume_mount }}'"
+    quiet: true
+
+# --- System packages (idempotent) ------------------------------------------
+
+- name: Install system packages (python venv toolchain + git)
+  become: true
+  ansible.builtin.apt:
+    name:
+      - python3
+      - python3-venv
+      - python3-pip
+      - git
+    state: present
+    install_recommends: false
+
+# --- Clone upstream repos at pinned commit SHAs ----------------------------
+
+- name: Ensure /opt is writable by operator for clone targets
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ base_operator_user }}"
+    group: "{{ base_operator_user }}"
+    mode: '0755'
+  loop:
+    - "{{ blogger_install_dir }}"
+    - "{{ claude_blog_install_dir }}"
+
+- name: Clone mnemonik-dev/blogger at pinned commit SHA
+  become: true
+  become_user: "{{ base_operator_user }}"
+  ansible.builtin.git:
+    repo: "{{ blogger_repo_url }}"
+    dest: "{{ blogger_install_dir }}"
+    version: "{{ blogger_repo_ref }}"
+    update: true
+    force: true
+
+- name: Clone mnemonik-dev/claude-blog at pinned commit SHA
+  become: true
+  become_user: "{{ base_operator_user }}"
+  ansible.builtin.git:
+    repo: "{{ claude_blog_repo_url }}"
+    dest: "{{ claude_blog_install_dir }}"
+    version: "{{ claude_blog_repo_ref }}"
+    update: true
+    force: true
+
+# --- Python venv + pinned dependencies (Decision 12) -----------------------
+
+- name: Create Python venv for blogger
+  become: true
+  become_user: "{{ base_operator_user }}"
+  ansible.builtin.command:
+    cmd: python3 -m venv {{ blogger_install_dir }}/venv
+    creates: "{{ blogger_install_dir }}/venv/bin/python"
+
+- name: Copy pinned requirements.locked.txt into blogger install dir
+  become: true
+  ansible.builtin.copy:
+    src: requirements.locked.txt
+    dest: "{{ blogger_install_dir }}/requirements.locked.txt"
+    owner: "{{ base_operator_user }}"
+    group: "{{ base_operator_user }}"
+    mode: '0644'
+
+- name: Install pinned dependencies (--require-hashes, supply-chain hardening)
+  # Decision 12: every transitive dep is pinned by hash. Generation
+  # procedure is documented in the role README ("How to regenerate
+  # requirements.locked.txt"). pip-compile --generate-hashes runs OFFLINE
+  # by the role author; this play just verifies the lockfile against PyPI.
+  become: true
+  become_user: "{{ base_operator_user }}"
+  ansible.builtin.pip:
+    requirements: "{{ blogger_install_dir }}/requirements.locked.txt"
+    virtualenv: "{{ blogger_install_dir }}/venv"
+    extra_args: "--require-hashes"
+
+- name: Install blogger package itself (no-deps; all deps already pinned)
+  become: true
+  become_user: "{{ base_operator_user }}"
+  ansible.builtin.pip:
+    name: "."
+    chdir: "{{ blogger_install_dir }}"
+    virtualenv: "{{ blogger_install_dir }}/venv"
+    extra_args: "--no-deps"
+
+# --- Verify upstream import surface + signature (Decision 11) --------------
+
+- name: Verify blogger import surface and run_campaign_from_article signature
+  # Catches round-3-style upstream drift at deploy time: if Platform,
+  # Settings, ingest_article, render or run_campaign_from_article change
+  # name or signature, this fails before the unit is rendered.
+  become: true
+  become_user: "{{ base_operator_user }}"
+  ansible.builtin.command:
+    cmd: >
+      {{ blogger_install_dir }}/venv/bin/python -c "
+      from pathlib import Path;
+      from inspect import signature;
+      from mnemonik_blogger.config import Platform, Settings;
+      from mnemonik_blogger.content.ingest import ingest_article;
+      from mnemonik_blogger.content.formatters import render;
+      from mnemonik_blogger.agent import run_campaign_from_article, CampaignResult;
+      sig = signature(run_campaign_from_article);
+      required = {'article','platforms','settings'};
+      assert required <= set(sig.parameters), 'missing kwargs: ' + repr(required - set(sig.parameters));
+      assert all(sig.parameters[n].kind.name == 'KEYWORD_ONLY' for n in required), 'run_campaign_from_article args must be keyword-only';
+      assert Platform.TELEGRAM.value == 'telegram', 'Platform.TELEGRAM.value drifted'
+      "
+  changed_when: false
+
+- name: Verify claude-blog scorer is reachable
+  become: true
+  become_user: "{{ base_operator_user }}"
+  ansible.builtin.command:
+    cmd: "{{ blogger_install_dir }}/venv/bin/python {{ claude_blog_install_dir }}/scripts/analyze_blog.py --help"
+  changed_when: false
+
+# --- Filesystem layout (worktrees + persistent queue/archive) --------------
+
+- name: Create content-publisher worktree root (root disk)
+  become: true
+  ansible.builtin.file:
+    path: "{{ content_publisher_work_dir }}"
+    state: directory
+    owner: "{{ base_operator_user }}"
+    group: "{{ base_operator_user }}"
+    mode: '0750'
+
+- name: Create content-publisher persistent dirs (queue + archive on volume)
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ base_operator_user }}"
+    group: "{{ base_operator_user }}"
+    mode: '0750'
+  loop:
+    - "{{ content_publisher_volume_mount }}/content-publisher"
+    - "{{ content_publisher_volume_mount }}/content-publisher/archive"
+
+# --- Render env-file + MCP config + systemd unit ---------------------------
+
+- name: Render /etc/blogger.env from sops-backed vars
+  become: true
+  ansible.builtin.template:
+    src: blogger.env.j2
+    dest: /etc/blogger.env
+    owner: root
+    group: root
+    mode: '0600'
+  notify: Restart content-publisher
+
+- name: Render /etc/blogger.mcp.json with discovered mnemonic_mcp_binary
+  become: true
+  ansible.builtin.template:
+    src: blogger.mcp.json.j2
+    dest: /etc/blogger.mcp.json
+    owner: root
+    group: "{{ base_operator_user }}"
+    mode: '0640'
+
+- name: Render content-publisher systemd unit
+  become: true
+  ansible.builtin.template:
+    src: content-publisher.service.j2
+    dest: /etc/systemd/system/{{ content_publisher_systemd_unit }}
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload systemd
+
+- name: Flush handlers so the daemon-reload runs before the assert + enable steps
+  ansible.builtin.meta: flush_handlers
+
+- name: Assert systemd unit contains required hardening directives
+  # Post-render assertion guards against template regression: the four
+  # mandatory directives must reach the on-disk unit file with concrete
+  # values (no '*' wildcards, no unrendered Jinja).
+  become: true
+  ansible.builtin.command:
+    cmd: grep -E '^(RequiresMountsFor|LimitCORE|ProtectSystem|NoNewPrivileges)=' /etc/systemd/system/{{ content_publisher_systemd_unit }}
+  register: cp_unit_grep
+  changed_when: false
+
+- name: Verify hardening lines are present and concrete
+  ansible.builtin.assert:
+    that:
+      - "'LimitCORE=0' in cp_unit_grep.stdout"
+      - "'ProtectSystem=strict' in cp_unit_grep.stdout"
+      - "'NoNewPrivileges=true' in cp_unit_grep.stdout"
+      - "'RequiresMountsFor=' in cp_unit_grep.stdout"
+      - "'*' not in cp_unit_grep.stdout"
+      - cp_unit_grep.stdout.find('{' + '{') == -1
+    fail_msg: "content-publisher.service is missing or mis-rendering hardening directives"
+    quiet: true
+
+- name: Enable content-publisher.service (but do not start — Wave 1)
+  # Wave 1 contract: the Python entrypoint (`content_publisher.main`) is
+  # not installed yet. The unit is enabled so systemd will auto-start it
+  # once Task 7 drops the package in place. Until then it stays inactive.
+  become: true
+  ansible.builtin.systemd:
+    name: "{{ content_publisher_systemd_unit }}"
+    enabled: true
+    state: "{{ content_publisher_systemd_state }}"

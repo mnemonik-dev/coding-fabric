@@ -300,6 +300,41 @@
             systemd_timer: fabric-watchdog.timer
             systemd_unit: fabric-watchdog.service
 
+    # Phase 7.5: Content publisher install scaffold
+    # Lays down the filesystem + venv + systemd unit foundation for the
+    # publish worker. Wave 1 of work/content-publish-pipeline — the
+    # Python entrypoint package (`content_publisher.main`) is installed
+    # in Wave 2 / Task 7. Until then the unit is `enabled / inactive`.
+    # Runs between fabric-services (uses op user, /opt layout) and
+    # telegram-ai-agent (bot that writes to the queue), so all required
+    # dirs + env-files exist by the time the bot starts.
+    - role: content-publisher
+      tags: [content-publisher, deploy]
+      vars:
+        base_operator_user: op
+        # Pinned upstream refs (Decision 11). Operator can override via
+        # sops to roll forward without a code commit; defaults in the
+        # role lock to a known-good revision.
+        blogger_repo_ref: "{{ vault_blogger_repo_ref | default(sops.blogger_repo_ref | default('')) }}"
+        claude_blog_repo_ref: "{{ vault_claude_blog_repo_ref | default(sops.claude_blog_repo_ref | default('')) }}"
+        # Secrets / config from sops (added in Task 1).
+        blogger_telegram_bot_token: "{{ sops.blogger_telegram_bot_token | default('') }}"
+        blogger_telegram_channel: "{{ sops.blogger_telegram_channel | default('@mnemonik') }}"
+        blogger_prompts_topic_id: "{{ sops.blogger_prompts_topic_id | default('0') }}"
+        publish_callback_hmac_secrets: "{{ sops.publish_callback_hmac_secrets | default('') }}"
+        publish_mode: "{{ sops.publish_mode | default('approval') }}"
+        publish_auto_mode_token: "{{ sops.publish_auto_mode_token | default('') }}"
+        publish_min_score: "{{ sops.publish_min_score | default(80) }}"
+        publish_approval_timeout_min: "{{ sops.publish_approval_timeout_min | default(5) }}"
+        # Shared with telegram-ai-agent for operator-bot integration —
+        # OPERATOR_USER_ID in /etc/blogger.env is the FIRST entry of this
+        # list (Decision 13, tech-spec line 418).
+        telegram_forum_chat_id: "{{ sops.telegram_forum_chat_id | default('') }}"
+        telegram_ai_agent_allowed_user_ids: "{{ vault_telegram_allowed_user_ids | default([]) }}"
+        # mnemonic_mcp_binary is set as a fact by the mnemonic-mcp role
+        # (Task 2) earlier in this play. The role's blogger.mcp.json.j2
+        # consumes it directly. No mapping needed here.
+
     # Phase 8: Telegram AI agent
     - role: telegram-ai-agent
       tags: [telegram-ai-agent, bot]

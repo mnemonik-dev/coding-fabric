@@ -1,0 +1,53 @@
+---
+#
+# content-publisher role defaults
+#
+# Scaffold for the content-publish-pipeline.
+# Tech-spec: work/content-publish-pipeline/tech-spec.md.
+# This role lays down filesystem + systemd + venv foundation. The Python
+# worker package itself (`fabric/content-publisher/`) is installed by Task 7.
+#
+
+# --- Upstream repositories (Decision 11: pinned commit SHAs, never tags) ----
+# Bumped by editing this file + redeploy (README "Pinned upstream refs"
+# runbook). Both SHAs come from sops via the playbook so they can be
+# rotated without a code change, but defaults pin a known-good revision.
+# Empty defaults force Jinja to fail loudly on first deploy if the
+# operator forgot to set the sops keys — supply-chain fail-loud strategy.
+blogger_repo_url: "https://github.com/mnemonik-dev/blogger.git"
+blogger_repo_ref: ""
+
+claude_blog_repo_url: "https://github.com/mnemonik-dev/claude-blog.git"
+claude_blog_repo_ref: ""
+
+# --- Install paths ----------------------------------------------------------
+blogger_install_dir: /opt/blogger
+claude_blog_install_dir: /opt/claude-blog
+content_publisher_work_dir: /var/lib/content-publisher/work
+
+# --- Service user (cloud-init creates 'op'; mirrors fabric-services) --------
+base_operator_user: op
+
+# --- /etc/blogger.env non-sensitive defaults --------------------------------
+# Sensitive fields (bot token, HMAC secrets, auto-mode token) have NO
+# default by design — Jinja must fail with UndefinedError if the operator
+# forgot to set the sops key (Decision 12, fail-loud supply-chain).
+blogger_telegram_channel: "@mnemonik"
+publish_mode: "approval"
+publish_min_score: 80
+publish_approval_timeout_min: 5
+mnemonik_dry_run: "false"
+
+# --- systemd unit -----------------------------------------------------------
+content_publisher_systemd_unit: content-publisher.service
+# Wave 1 unit is enabled but NOT started — the Python entrypoint package
+# (`content-publisher`) is installed by Task 7. Wave 2 flips this to
+# 'started' once the worker code exists.
+content_publisher_systemd_state: stopped
+
+# --- Hetzner persistent volume ----------------------------------------------
+# Resolved at runtime via `ansible_facts.mounts | selectattr('device',
+# 'equalto', '/dev/sdb') | ...` (Decision 10). The role fails loud if the
+# resolution returns empty — no literal '*' ever reaches the systemd
+# unit's `RequiresMountsFor=`.
+hetzner_volume_device: "/dev/sdb"

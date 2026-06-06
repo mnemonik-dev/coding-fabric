@@ -1,0 +1,23 @@
+# requirements.locked.txt — pinned dependencies for /opt/blogger/venv
+#
+# Generated offline by the role author with:
+#   pip-compile --generate-hashes --output-file requirements.locked.txt requirements.in
+#
+# DO NOT regenerate during `ansible-playbook` — the CI runner has internet
+# and would silently bind to newer transitives than what the operator
+# reviewed. See README.md section "How to regenerate requirements.locked.txt".
+#
+# Lockfile is bound to blogger_repo_ref in defaults/main.yml — when bumping
+# the SHA, regenerate this file in the same commit so the lockfile and
+# upstream sources stay consistent. Mismatch → `pip install --require-hashes`
+# fails loud, deploy aborts before the systemd unit is touched.
+#
+# ============================================================
+# PLACEHOLDER — must be regenerated against the real blogger
+# pyproject.toml at blogger_repo_ref BEFORE first deploy.
+# A bogus marker entry below keeps `pip install --require-hashes`
+# in fail-closed mode: without the real hashes, pip will refuse
+# to proceed and the role aborts at "Install pinned dependencies".
+# ============================================================
+PLACEHOLDER-NOT-A-REAL-PACKAGE==0.0.0 \
+    --hash=sha256:0000000000000000000000000000000000000000000000000000000000000000

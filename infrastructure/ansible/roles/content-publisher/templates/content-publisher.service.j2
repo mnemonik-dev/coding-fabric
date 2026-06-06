@@ -1,0 +1,51 @@
+[Unit]
+Description=Mnemonik Content Publisher (long-running publish worker)
+After=network-online.target {{ content_publisher_volume_mount_unit }}
+Wants=network-online.target
+# RequiresMountsFor= ensures the systemd mount unit for the Hetzner
+# persistent volume is active BEFORE the service starts. Path is
+# resolved at install time by Ansible from `ansible_facts.mounts`
+# (Decision 10). A literal '*' must never reach this line — empty
+# fact forces the role to fail loud before rendering.
+RequiresMountsFor={{ content_publisher_volume_mount }}/content-publisher
+
+[Service]
+Type=simple
+User={{ base_operator_user }}
+Group={{ base_operator_user }}
+WorkingDirectory={{ blogger_install_dir }}
+
+# Secrets via /etc/blogger.env (mode 0600 root:root, rendered from sops).
+# Leading `-` so Ansible reordering between deploy steps doesn't trap
+# the unit in a permanent failed state before the env file exists.
+EnvironmentFile=-/etc/blogger.env
+Environment="PYTHONUNBUFFERED=1"
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# Wave 1 places a placeholder ExecStart — the Python entrypoint module
+# (`content_publisher.main`) is installed by Task 7. Until then the unit
+# stays `enabled / inactive`. The path will be overwritten in Task 7
+# when the package lands in a venv at /opt/content-publisher/venv/.
+ExecStart=/opt/content-publisher/venv/bin/python -m content_publisher.main
+
+# --- Hardening (tech-spec Risks: in-process publish hardening) -------------
+# LimitCORE=0  — no core dumps on disk (article text could leak).
+# ProtectSystem=strict — no writes to system paths.
+# NoNewPrivileges=true — blocks setuid escalation if a dep is compromised.
+LimitCORE=0
+ProtectSystem=strict
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths={{ content_publisher_work_dir }} {{ content_publisher_volume_mount }}/content-publisher
+
+Restart=always
+RestartSec=10
+StartLimitInterval=60s
+StartLimitBurst=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=content-publisher
+
+[Install]
+WantedBy=multi-user.target

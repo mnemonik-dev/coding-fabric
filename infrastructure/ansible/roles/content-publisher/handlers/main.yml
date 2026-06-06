@@ -1,0 +1,15 @@
+---
+- name: Reload systemd
+  become: true
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Restart content-publisher
+  become: true
+  ansible.builtin.systemd:
+    name: "{{ content_publisher_systemd_unit }}"
+    state: restarted
+  # On Wave 1 the service has no entrypoint yet — a restart attempt would
+  # only fail-loop. Skip the handler unless the operator explicitly opted
+  # in via content_publisher_systemd_state=started (Wave 2 / Task 7).
+  when: content_publisher_systemd_state == 'started'
