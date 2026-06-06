@@ -66,7 +66,7 @@ Concretely:
 - [code-research.md](../code-research.md)
 
 **Project context:**
-- [CLAUDE.md](../../../CLAUDE.md) — project map, infra layout, Rules, Co-Authored-By policy
+- [CLAUDE.md](/Users/syi/src/sessions/coding-fabric/CLAUDE.md) — project map, infra layout, Rules, Co-Authored-By policy
 - [code-reviewing SKILL.md](~/.claude/skills/code-reviewing/SKILL.md) — 11 review dimensions and methodology
 
 **Code under audit — Wave 1 (Ansible / Infra):**

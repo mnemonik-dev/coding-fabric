@@ -1,5 +1,5 @@
 ---
-status: ready
+status: planned
 depends_on: []
 wave: 1
 skills: [code-writing]
@@ -73,7 +73,8 @@ teammate_name:
    ```
    `failed_when: rc != 0`, вывод stderr попадает в Ansible-лог при падении.
 5. Шаблоны:
-   - `templates/blogger.env.j2` — содержимое см. tech-spec, "Data Models / `/etc/blogger.env`" (строки 411–428). Все переменные приходят через `vars:` от вышестоящего playbook (sops-снимок).
+   - `templates/blogger.env.j2` — содержимое см. tech-spec, "Data Models / `/etc/blogger.env`" (строки 411–428). Все переменные приходят через `vars:` от вышестоящего playbook (sops-снимок). Источники нетривиальных переменных:
+     - `OPERATOR_USER_ID={{ telegram_ai_agent_allowed_user_ids[0] }}` — берём ПЕРВЫЙ элемент списка `telegram_ai_agent_allowed_user_ids`. Этот список НЕ принадлежит роли `content-publisher` — он загружается ролью `telegram-ai-agent` (см. `infrastructure/ansible/roles/telegram-ai-agent/templates/.env.j2:13` как пример использования). Цепочка происхождения значения: sops-ключ `telegram_allowed_user_ids` (JSON-array-as-string, например `"[206475911]"`) → парсится в playbook `deploy.yml` на строках 80–82 в `vault_telegram_allowed_user_ids` (`from_json`) → пробрасывается в роль `telegram-ai-agent` на строке 322 как `telegram_ai_agent_allowed_user_ids: "{{ vault_telegram_allowed_user_ids | default([]) }}"`. Для phase 7.5 (content-publisher) надо в том же духе пробросить тот же список как `vars:` блок к роли — либо переиспользуя уже-резолвленный `vault_telegram_allowed_user_ids`, либо повторно через `telegram_ai_agent_allowed_user_ids` (предпочтительно — повторно, чтобы роль не зависела от внутреннего имени `vault_*`). Fail-loud: если список пуст или undefined — Jinja упадёт на `[0]` с IndexError/UndefinedError, что соответствует supply-chain-стратегии Decision 12.
    - `templates/blogger.mcp.json.j2` — однострочный JSON: `{ "mcpServers": { "mnemonik": { "command": "{{ mnemonic_mcp_binary }}", "args": ["mcp-stdio"] } } }`. `mnemonic_mcp_binary` приходит как факт из роли `mnemonic-mcp` (Task 2).
    - `templates/content-publisher.service.j2` — структура по образцу `fabric-services/templates/workspace-manager.service.j2`, но с обязательными строками:
      - `RequiresMountsFor=/mnt/HC_Volume_{{ hetzner_volume_id }}/content-publisher` (НЕ литерал `*`)
@@ -116,16 +117,19 @@ teammate_name:
 - [ ] `README.md` роли содержит три runbook-раздела: HMAC secret rotation, switching PUBLISH_MODE=auto (two-location binding), publisher-token rotation.
 - [ ] После деплоя `systemctl is-enabled content-publisher.service` → `enabled`; `systemctl is-active content-publisher.service` → `inactive` (Python-сервис ещё не существует, придёт в Task 7).
 - [ ] `ansible-playbook infrastructure/ansible/playbooks/deploy.yml --syntax-check` проходит без ошибок.
+- [ ] **No-regression on existing services** (carryover from tech-spec AC-T2, строки 535–537): после прогона роли врезанной в `deploy.yml` все ранее установленные сервисы по-прежнему здоровы — Task 3 владеет ответственностью за это требование, потому что именно эта задача мутирует `playbooks/deploy.yml` (вставляет phase 7.5 между fabric-services и telegram-ai-agent). Проверка на test-deploy: `systemctl is-active telegram-ai-agent workspace-manager mnemonic-mcp.service` → все `active`; `docker compose ps` в `/opt/kaneo/` и `/opt/vaultwarden/` → все контейнеры `Up (healthy)`. Регрессия = поломанная врезка (например, неправильный indent в YAML или сдвинутые номера строк) — ловится здесь, а не на финальной пост-деплой верификации.
 
 ## Context Files
 
 - [user-spec.md](../user-spec.md)
-- [tech-spec.md](../tech-spec.md) — раздел `#### Task 3:` (строка 569), `Decision 10` (строка 302), `Decision 11` (строка 308), `Decision 12` (строка 330), `Risks` (строки 499–518), `Data Models` (строки 411–434)
+- [tech-spec.md](../tech-spec.md) — раздел `#### Task 3:` (строка 569), `Decision 10` (строка 302), `Decision 11` (строка 308), `Decision 12` (строка 330), `Risks` (строки 499–518), `Data Models` (строки 411–434), `AC-T2` (строки 535–537 — no-regression criteria)
 - [decisions.md](../decisions.md)
+- [CLAUDE.md](/Users/syi/src/sessions/coding-fabric/CLAUDE.md) — project context: pipeline, components map (`telegram-ai-agent` at `/opt/telegram-ai-agent/`, `workspace-manager` at `/opt/fabric/workspace-manager/`, planned `blogger` at `/opt/blogger/`, planned `claude-blog` at `/opt/claude-blog/`), infrastructure (Hetzner ccx33, persistent volume `fabric-data` mounted at `/mnt/HC_Volume_105783873/`), key operational constraints (CI deploy is canonical, no destroy-recreate, sops at `infrastructure/secrets/secrets.sops.yml`)
 - [infrastructure/ansible/roles/fabric-services/tasks/main.yml](../../../infrastructure/ansible/roles/fabric-services/tasks/main.yml) — venv pattern (`Create Python venv`, `Install ... into venv`)
 - [infrastructure/ansible/roles/fabric-services/templates/workspace-manager.service.j2](../../../infrastructure/ansible/roles/fabric-services/templates/workspace-manager.service.j2) — systemd-юнит-shape для зеркалирования
 - [infrastructure/ansible/roles/fabric-services/templates/symphony.env.j2](../../../infrastructure/ansible/roles/fabric-services/templates/symphony.env.j2) — sops→env-file render
-- [infrastructure/ansible/playbooks/deploy.yml](../../../infrastructure/ansible/playbooks/deploy.yml) — phase ordering, точки врезки 253 ↔ 290
+- [infrastructure/ansible/playbooks/deploy.yml](../../../infrastructure/ansible/playbooks/deploy.yml) — phase ordering, точки врезки 253 ↔ 290; см. также строки 80–82 (как `sops.telegram_allowed_user_ids` парсится в `vault_telegram_allowed_user_ids`) и строку 322 (`telegram_ai_agent_allowed_user_ids: "{{ vault_telegram_allowed_user_ids | default([]) }}"` — где этот список становится role var для `telegram-ai-agent`)
+- [infrastructure/ansible/roles/telegram-ai-agent/templates/.env.j2](../../../infrastructure/ansible/roles/telegram-ai-agent/templates/.env.j2) — строка 13 (`{% set _ids = telegram_ai_agent_allowed_user_ids | default([]) -%}`) — каноничный пример того, как `telegram_ai_agent_allowed_user_ids` рендерится в env-файл соседней роли
 
 ## Verification Steps
 

@@ -1,7 +1,7 @@
 ---
 status: planned
 depends_on: [12]
-wave: 5
+wave: 6
 skills: [deploy-pipeline]
 verify: [smoke]
 reviewers: []
@@ -25,12 +25,14 @@ The deploy must succeed with the **persistent-VM** semantics that landed in task
 
 The gate for this task is: workflow run `completed:success` AND VM `/proc/uptime` strictly greater post-deploy than pre-deploy AND the two new/changed systemd units (`content-publisher`, `mnemonic-mcp`) report `active (running)` on the VM. Failing any of these three checks means the deploy did not actually succeed regardless of GitHub Actions' green tick.
 
+**Sidecar jobs awareness:** `deploy-fabric.yml` chains downstream jobs `e2e-smoke` and `post-deploy-avp` after successful Tofu/Ansible apply. These are feature-orthogonal infrastructure smoke checks owned elsewhere — Task 13's gate MUST NOT block on their pass/fail. Task 13 ends when `tofu-apply` and `ansible-deploy` jobs are green and the three local checks above pass. Treat sidecar job results as informational; surface them in `decisions.md` but do not fail Task 13 on a sidecar failure (those are reported separately).
+
 ## What to do
 
 1. Capture pre-deploy VM uptime baseline via `ssh op@<vm-host> 'cat /proc/uptime'` (first number, seconds since boot). Record it for the post-deploy comparison.
 2. Ensure the working tree is committed and pushed: `git push origin claude/review-coding-fabric-spec-uUvMK`.
 3. Dispatch the deploy workflow: `gh workflow run deploy-fabric.yml -f action=apply --ref claude/review-coding-fabric-spec-uUvMK`.
-4. Start a background watcher that polls workflow run status until `completed:success` (or fail-out on `completed:failure` / `completed:cancelled`). Use the proven pattern from this session — `gh run list --workflow=deploy-fabric.yml --limit 1 --json status,conclusion,databaseId` polled at a reasonable cadence.
+4. Start a background watcher that polls workflow run status until `completed:success` (or fail-out on `completed:failure` / `completed:cancelled`). Use the proven session pattern — `gh run list --workflow=deploy-fabric.yml --limit 1 --json status,conclusion,databaseId` polled at a reasonable cadence. NOTE on the race: a bare `gh run list --limit 1` can return a different workflow's run if another workflow fires simultaneously; ALWAYS scope with `--workflow=deploy-fabric.yml`. Preferred (race-free) alternative: capture the run URL/id directly from `gh workflow run ... --json` output where supported, or call `gh api /repos/{owner}/{repo}/actions/workflows/deploy-fabric.yml/runs --jq '.workflow_runs[0]'` immediately after dispatch and pin to that `databaseId` for the rest of the watch loop. Do NOT re-resolve the run id on every poll iteration — pin once, then watch.
 5. While the workflow runs, surface progress (current job name, latest annotation) so the operator can see where it is — but do NOT block on operator input.
 6. On `completed:success`, immediately capture post-deploy VM uptime via `ssh op@<vm-host> 'cat /proc/uptime'`.
 7. Assert post-deploy uptime > pre-deploy uptime. If post-deploy uptime is LOWER (VM was rebooted/recreated), report failure even though the workflow succeeded — this is the #24/#25 regression signal.
@@ -69,10 +71,10 @@ The gate for this task is: workflow run `completed:success` AND VM `/proc/uptime
 - [03-content-publisher-ansible-scaffold.md](./03-content-publisher-ansible-scaffold.md)
 - [02-mnemonik-mcp-role-npm-rewrite.md](./02-mnemonik-mcp-role-npm-rewrite.md)
 - [07-content-publisher-wire-service-smoke.md](./07-content-publisher-wire-service-smoke.md)
-- [CLAUDE.md](../../../CLAUDE.md) — pipeline overview, infrastructure section, key constraints (#24/#25)
-- [docs/vm-runbook.md](../../../docs/vm-runbook.md) — SSH host, paths, secrets map (gitignored; lives on operator's local machine)
-- [.github/workflows/deploy-fabric.yml](../../../.github/workflows/deploy-fabric.yml) — the workflow being dispatched
-- [infrastructure/ansible/playbooks/deploy.yml](../../../infrastructure/ansible/playbooks/deploy.yml) — playbook that runs the roles
+- [CLAUDE.md](/Users/syi/src/sessions/coding-fabric/CLAUDE.md) — pipeline overview, infrastructure section, key constraints (#24/#25)
+- [docs/vm-runbook.md](/Users/syi/src/sessions/coding-fabric/docs/vm-runbook.md) — SSH host, paths, secrets map (gitignored; lives on operator's local machine)
+- [.github/workflows/deploy-fabric.yml](/Users/syi/src/sessions/coding-fabric/.github/workflows/deploy-fabric.yml) — the workflow being dispatched
+- [infrastructure/ansible/playbooks/deploy.yml](/Users/syi/src/sessions/coding-fabric/infrastructure/ansible/playbooks/deploy.yml) — playbook that runs the roles
 
 ## Verification Steps
 
@@ -117,8 +119,8 @@ These are the checks the deploying agent runs as part of executing the task — 
   1. `UPTIME_PRE=$(ssh op@<host> "awk '{print \$1}' /proc/uptime")`
   2. `git push origin claude/review-coding-fabric-spec-uUvMK`
   3. `gh workflow run deploy-fabric.yml -f action=apply --ref claude/review-coding-fabric-spec-uUvMK`
-  4. Resolve the new run id: `RUN_ID=$(gh run list --workflow=deploy-fabric.yml --limit 1 --json databaseId --jq '.[0].databaseId')`
-  5. Poll loop: `gh run view $RUN_ID --json status,conclusion --jq '.status + " " + (.conclusion // "")'` — every 15–30s; break on `completed *`.
+  4. Resolve the new run id ONCE, scoped to this workflow (avoids the race where another workflow fires at the same time): `RUN_ID=$(gh run list --workflow=deploy-fabric.yml --limit 1 --json databaseId --jq '.[0].databaseId')`. Even safer: `RUN_ID=$(gh api /repos/{owner}/{repo}/actions/workflows/deploy-fabric.yml/runs --jq '.workflow_runs[0].id')`. Pin this id for the entire watch loop; do not re-resolve.
+  5. Poll loop: `gh run view $RUN_ID --json status,conclusion --jq '.status + " " + (.conclusion // "")'` — every 15–30s; break on `completed *`. Using the pinned `$RUN_ID` here means a concurrent workflow run cannot accidentally redirect the watcher.
   6. Gate on `conclusion == success`.
   7. `UPTIME_POST=$(ssh op@<host> "awk '{print \$1}' /proc/uptime")`
   8. Compare floats: `awk -v a="$UPTIME_POST" -v b="$UPTIME_PRE" 'BEGIN{exit !(a>b)}'`.

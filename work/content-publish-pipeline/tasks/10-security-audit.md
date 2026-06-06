@@ -35,6 +35,8 @@ The audit is the second of two audit-wave tasks (Task 9 = code audit, this = sec
    - **(7) Attestation content-sha256 binding** — `mnemonic_sign_memory` MCP `tools/call` payload includes BOTH `content` and `content_sha256` (recomputed by the worker from the on-disk article bytes); worker also stores `content_sha256` in the queue record so future tamper detection is possible; `post_url`, `score`, `prompt` are bound into the attestation metadata.
    - **(8) Auto-mode two-location integrity** — Decision 7: worker startup checks `PUBLISH_MODE=auto` against `PUBLISH_AUTO_MODE_TOKEN` matching sops `publish_auto_mode_token`; mismatch aborts loud (no silent downgrade, no partial-mode); the env-flip-alone single-point attack is genuinely closed.
    - **(9) Supply chain** — `pip install --require-hashes -r requirements.locked.txt` is the actual install command (not `pip install .`); the locked file has hashes for every package; `npm ci` (not `npm install`) is used when installing `@mnemonik-xyz/mcp` with a checked-in `package-lock.json`; pinned commit SHAs for `mnemonik-dev/blogger` and `mnemonik-dev/claude-blog`.
+   - **(10) Posts-per-hour rate ceiling in worker** — security finding R2-9 (cited in tech-spec Task 6): the worker enforces a posts-per-hour rate ceiling on the publish path; verify the implementation actually rejects publish on burst (e.g., when the per-hour counter is at/over the configured cap). Verify the counter window is correctly bounded (sliding or fixed-hour), is process-restart safe (or explicitly documented as best-effort across restarts), and the rejection path leaves the job in a recoverable state with a clear log line — not silently dropped.
+   - **(11) Bot's 10-minute sliding-window HMAC-failure counter** — Task 8: bot tracks HMAC-validation failures in a 10-minute sliding window and emits an alert when the threshold is crossed; verify (a) the sliding window actually slides (entries older than 10 minutes are evicted, not accumulated forever), (b) the counter resets correctly after the window passes with no new failures, (c) the alert message is actually delivered to the operator (not lost on send failure), (d) the counter is per-process and does not crash on bot restart.
 4. For every OWASP category and every focus item, record a verdict: PASS, FAIL, or N/A with one-line rationale. For FAIL findings, capture: file:line, attack vector, severity (Critical/High/Medium/Low), suggested fix.
 5. Write the structured report to `work/content-publish-pipeline/logs/audit/security-audit.json` (see format below).
 6. If any Critical or High finding is present, return a clear summary at the top of the JSON — pre-deploy QA (Task 12) MUST gate on Critical/High count == 0.
@@ -43,7 +45,7 @@ The audit is the second of two audit-wave tasks (Task 9 = code audit, this = sec
 
 - [ ] All files listed under "Files" have been read and audited.
 - [ ] All 10 OWASP categories have a recorded verdict (PASS / FAIL / N/A with rationale).
-- [ ] All 9 focus items from the hit list have a recorded verdict.
+- [ ] All 11 focus items from the hit list have a recorded verdict.
 - [ ] Every FAIL finding includes: file path, line number(s) where applicable, attack vector, severity, suggested fix.
 - [ ] AC-T6 (operator authorization + HMAC) explicitly verified — foreign `from_user.id` rejected, tampered HMAC rejected.
 - [ ] AC-T8 (mnemonik-mcp argv hygiene) explicitly verified — argv is exactly `[<binary>, "mcp-stdio"]`.
@@ -61,8 +63,8 @@ The audit is the second of two audit-wave tasks (Task 9 = code audit, this = sec
 - [decisions.md](../decisions.md)
 
 **Project context:**
-- [CLAUDE.md](../../../CLAUDE.md) — project architecture, infrastructure layout, security rules, secrets handling conventions
-- [handoff-bot-mcp-debug-2026-05-23.md](../../../.claude/skills/project-knowledge/references/handoff-bot-mcp-debug-2026-05-23.md) — reference notes on bot MCP integration patterns
+- [CLAUDE.md](/Users/syi/src/sessions/coding-fabric/CLAUDE.md) — project architecture, infrastructure layout, security rules, secrets handling conventions
+- [handoff-bot-mcp-debug-2026-05-23.md](/Users/syi/src/sessions/coding-fabric/.claude/skills/project-knowledge/references/handoff-bot-mcp-debug-2026-05-23.md) — reference notes on bot MCP integration patterns
 
 **Implementation surface (files to audit — from Tasks 1–8):**
 
@@ -124,7 +126,7 @@ Task 8 (bot handlers):
 ### Automated
 
 - `python -c "import json; json.load(open('work/content-publish-pipeline/logs/audit/security-audit.json'))"` → exits 0 (report is valid JSON).
-- `python -c "import json; r=json.load(open('work/content-publish-pipeline/logs/audit/security-audit.json')); assert len(r['owasp_findings'])==10; assert len(r['focus_findings'])==9; assert 'critical_high_count' in r; assert 'passed' in r"` → exits 0 (all 10 OWASP + 9 focus items recorded; required fields present).
+- `python -c "import json; r=json.load(open('work/content-publish-pipeline/logs/audit/security-audit.json')); assert len(r['owasp_findings'])==10; assert len(r['focus_findings'])==11; assert 'critical_high_count' in r; assert 'passed' in r"` → exits 0 (all 10 OWASP + 11 focus items recorded; required fields present).
 
 ## Details
 
@@ -169,7 +171,7 @@ Task 8 (bot handlers):
 
 The 10 OWASP categories to record (2021+): `A01_broken_access_control`, `A02_cryptographic_failures`, `A03_injection`, `A04_insecure_design`, `A05_security_misconfiguration`, `A06_vulnerable_outdated_components`, `A07_identification_authentication_failures`, `A08_software_data_integrity_failures`, `A09_security_logging_monitoring_failures`, `A10_ssrf`.
 
-The 9 focus items: `subprocess_argv_env_hygiene`, `path_traversal_worktree`, `callback_hmac_replay_rotation`, `sops_env_leakage`, `topic_filter_correctness`, `publisher_token_leakage`, `attestation_content_sha256_binding`, `auto_mode_two_location_integrity`, `supply_chain_pinning`.
+The 11 focus items: `subprocess_argv_env_hygiene`, `path_traversal_worktree`, `callback_hmac_replay_rotation`, `sops_env_leakage`, `topic_filter_correctness`, `publisher_token_leakage`, `attestation_content_sha256_binding`, `auto_mode_two_location_integrity`, `supply_chain_pinning`, `worker_posts_per_hour_rate_ceiling`, `bot_hmac_failure_sliding_window_alert`.
 
 **Dependencies:** Tasks 1–8 must be done. No package install needed for the audit itself — it is read-only.
 

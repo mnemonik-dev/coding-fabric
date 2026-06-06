@@ -1,9 +1,9 @@
 ---
 status: planned
 depends_on: [13]
-wave: 5
+wave: 7
 skills: [post-deploy-qa]
-verify: []
+verify: [smoke, user]
 reviewers: []
 teammate_name:
 ---
@@ -27,7 +27,7 @@ Symphony / Kaneo / workspace-manager в этом тесте **не задейс�
 
 ## What to do
 
-1. **Подготовка контекста.** Прочитать tech-spec (особенно секцию Architecture и AC-T1-13), user-spec (AC1-15), и пост-деплой отчёт из Task 13 (если есть `work/content-publish-pipeline/logs/deploy/`). Достать из sops/Ansible facts (или из decisions.md Task 1) три переменные, которые понадобятся в проверках:
+1. **Подготовка контекста.** Прочитать tech-spec (особенно секцию Architecture и AC-T1-13), user-spec (AC1-15), и пост-деплой отчёт из Task 13 (блок Task 13 в `work/content-publish-pipeline/decisions.md` — там же финальный статус деплоя и URL-ы/IP-адреса VM). Достать из sops/Ansible facts (или из decisions.md Task 1) три переменные, которые понадобятся в проверках:
    - `hetzner_volume_id` — для пути к `queue.jsonl` на томе.
    - `mnemonic_mcp_binary` — фактическое имя бинарника после `npm install -g @mnemonik-xyz/mcp` (Task 2 его дискаверил).
    - `BLOGGER_PROMPTS_TOPIC_ID` — id forum-топика, куда оператор пишет брифы.
@@ -50,7 +50,8 @@ Symphony / Kaneo / workspace-manager в этом тесте **не задейс�
    - **FAIL:** `status=publish-failed` (читать `publish_error`); ИЛИ `publishing` висит дольше 30s; ИЛИ оператор не видит пост в @mnemonik.
 
 4. **Чек #3 — MCP-stdio handshake → `mnemonic_recall` возвращает тело статьи.**
-   - Достать `attestation_hash` из последней записи queue.jsonl (после Task 14 чек #2 он должен быть выставлен — это и есть гейт между `published → attest-pending → done`; если ещё `attest-pending`, подождать минут до 5 и перепроверить — deadline-checker крутится с шагом 5min).
+   - **Порядок исполнения:** этот чек **зависит по данным от Чека #5**: `mnemonic_recall` требует `attestation_hash`, а тот появляется в queue.jsonl только когда worker перевёл job в `done` (т.е. формально это «результат Чека #5»). На практике: сначала прокрути Чек #5 до `status=done` (подожди до 5 минут — sub-loop b / deadline-checker крутится раз в 5min, см. tech-spec), достань оттуда `attestation_hash` и только потом возвращайся сюда. Если очень хочется параллельно — можно ретраить Чек #3 раз в минуту в течение этих же 5 минут, пока `attestation_hash` не появится.
+   - Достать `attestation_hash` из последней записи queue.jsonl (после того как Чек #5 показал `status=done` — это и есть гейт между `published → attest-pending → done`; если queue ещё в `attest-pending`, подождать до 5 минут и перепроверить — deadline-checker крутится с шагом 5min).
    - Запустить bash one-liner на VM (через ssh op@<vm>):
      ```bash
      ssh op@<vm> '(

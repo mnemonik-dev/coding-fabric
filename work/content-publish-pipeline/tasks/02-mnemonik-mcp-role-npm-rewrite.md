@@ -1,5 +1,5 @@
 ---
-status: ready
+status: planned
 depends_on: []
 wave: 1
 skills: [code-writing]
@@ -31,7 +31,7 @@ teammate_name:
    - Удалить `get_url` mnemonic-mcp binary + SHA assertion.
    - Удалить bw materialise signing-key task + cleanup.
    - Удалить config.yml render, protocol-qa.env render, molyanov hooks render, hook scripts loop, hook scripts assertion.
-   - Добавить блок установки node+npm (паттерн из `roles/telegram-ai-agent/tasks/main.yml:63-88` — `node --version` check, NodeSource setup_20.x, `ansible.builtin.apt nodejs`).
+   - Добавить блок установки node+npm (паттерн из `roles/telegram-ai-agent/tasks/main.yml:63-88` — `node --version` check, NodeSource setup_20.x, `ansible.builtin.apt nodejs`). Строки 89-112 того же файла относятся к Claude CLI install — не копировать.
    - Скопировать `files/package-lock.json` → `{{ mnemonik_mcp_install_dir }}/package-lock.json` (mode 0644).
    - Прогнать `npm ci` или `npm install -g @mnemonik-xyz/mcp@{{ mnemonik_mcp_npm_version }}` global=true (точный вариант — см. Implementation Hints; контракт — pin виден в lockfile, root и транзитивы фиксированы).
    - Дискавер бинаря: `command: bash -c 'which mnemonik-mcp || which mnemonic-mcp'` с `register: mcp_which`, `failed_when: mcp_which.rc != 0`, `changed_when: false`. Затем `ansible.builtin.set_fact: mnemonic_mcp_binary: "{{ mcp_which.stdout | trim }}"` — fact доступен всем последующим ролям в этом play (включая Task 3's content-publisher role).
@@ -46,19 +46,24 @@ teammate_name:
    - Publisher-bot token rotation runbook (entry-point для оператора): @BotFather revoke → новый токен → `sops edit secrets.sops.yml` → bump `blogger_telegram_bot_token` → деплой → удалить старый токен у @BotFather. (Содержательно — operator-side task, но runbook упоминается тут для дискаверабельности; Task 3's content-publisher README ссылается обратно сюда.)
 6. **handlers/main.yml** — оставить только `reload mnemonic-mcp systemd` и `restart mnemonic-mcp service`; убрать handlers связанные с config.yml.
 7. **Удалить** артефакты descoped-схемы: `templates/config.yml.j2`, `templates/protocol-qa.env.j2`, `templates/molyanov-mnemonic-hooks.yml.j2`, `templates/hooks/` (вся подпапка). Меньше поверхности для security review.
-8. **molecule/** — если в директории есть сценарий, обновить `verify.yml` под новые ассерты (см. TDD Anchor). Если scenario не запускается в текущем CI — оставить как есть с пометкой TODO в README; не блокирующее.
+8. **molecule/** — две части с разным статусом:
+   - **GATING (обязательно):** если в директории `molecule/default/` есть сценарий и он запускается в текущем CI — обновить `verify.yml` под новые ассерты (см. TDD Anchor); если сценария нет — пропускаем этот пункт (gate уже покрыт обязательными `ansible-lint` + `pytest` из Automated).
+   - **INFORMATIONAL (не блокирующее):** если сценарий есть, но не запускается в текущем CI — оставить как есть, добавить пометку TODO в README с указанием на task ID для follow-up'а. Не блокирует merge.
 
 ## TDD Anchor
 
-Тесты пишем ДО реализации. Цель — проверка пройдёт только если задача выполнена честно.
+Тесты пишем ДО реализации. Каждый из перечисленных — **runnable + mandatory** (gate для merge). Все запускаются без живой VM, в локальной dev/CI среде. Сценарии molecule (если есть) — separate informational layer, см. шаг 8 в What to do.
 
-- `infrastructure/ansible/roles/mnemonic-mcp/molecule/default/verify.yml::test_npm_install_pinned_version` — `npm list -g @mnemonik-xyz/mcp --json` на target'е показывает ровно `mnemonik_mcp_npm_version` из defaults.
-- `infrastructure/ansible/roles/mnemonic-mcp/molecule/default/verify.yml::test_binary_discovery_fact` — `ansible_facts['mnemonic_mcp_binary']` непустой; указывает на исполняемый файл; basename файла ∈ {`mnemonik-mcp`, `mnemonic-mcp`}.
-- `infrastructure/ansible/roles/mnemonic-mcp/molecule/default/verify.yml::test_mcp_stdio_handshake` — pipeline: `printf '{init JSON-RPC}\n' | <binary> mcp-stdio` → первая строка stdout парсится как JSON-RPC response с `result.protocolVersion` формата `YYYY-MM-DD`. Mocked-stdio shim допустим в CI если real бинарь недоступен.
-- `infrastructure/ansible/roles/mnemonic-mcp/molecule/default/verify.yml::test_systemd_unit_active` — `systemctl is-active mnemonic-mcp` → `active`.
-- `infrastructure/ansible/roles/mnemonic-mcp/molecule/default/verify.yml::test_no_sign_memory_probe` — `grep -r 'sign-memory' infrastructure/ansible/roles/mnemonic-mcp/` ничего не находит. Защита от регрессии: кто-нибудь захочет добавить `<binary> sign-memory ...` smoke, а subcommand'а нет.
-- `infrastructure/ansible/roles/mnemonic-mcp/molecule/default/verify.yml::test_package_lock_present_and_used` — `/opt/mnemonik-mcp/package-lock.json` существует, mode 0644, sha256 совпадает с checked-in `files/package-lock.json`.
-- `infrastructure/ansible/roles/mnemonic-mcp/molecule/default/verify.yml::test_etc_blogger_mcp_json_binary_match` — интеграционный smoke с Task 3's template для `/etc/blogger.mcp.json`: рендер выдаёт `command` равный значению `mnemonic_mcp_binary` fact'а (контракт cross-role propagation).
+- `infrastructure/ansible/roles/mnemonic-mcp/tests/test_role_contract.py::test_defaults_pin_npm_package_and_version` — pytest читает `defaults/main.yml` через PyYAML и assert'ит наличие ключей `mnemonik_mcp_npm_package == "@mnemonik-xyz/mcp"`, непустого `mnemonik_mcp_npm_version`, `mnemonic_mcp_enabled is True`, отсутствия `mnemonic_mcp_binary_url` и `mnemonic_mcp_binary_sha256`.
+- `infrastructure/ansible/roles/mnemonic-mcp/tests/test_role_contract.py::test_tasks_set_fact_for_binary_discovery` — pytest читает `tasks/main.yml` через PyYAML, находит task с `set_fact: mnemonic_mcp_binary: ...` и проверяет что register'нутая команда содержит и `mnemonik-mcp` и `mnemonic-mcp` (каскад) и имеет `failed_when` на rc != 0.
+- `infrastructure/ansible/roles/mnemonic-mcp/tests/test_role_contract.py::test_no_sign_memory_anywhere` — pytest grep'ает по всей роли (`tasks/`, `templates/`, `defaults/`, `handlers/`, `README.md`) на подстроку `sign-memory` и assert'ит 0 совпадений. Защита от регрессии.
+- `infrastructure/ansible/roles/mnemonic-mcp/tests/test_role_contract.py::test_systemd_template_uses_binary_fact` — pytest читает `templates/mnemonic-mcp.service.j2` как текст и assert'ит наличие подстроки `{{ mnemonic_mcp_binary }} mcp-stdio` в строке `ExecStart=`, отсутствия `LoadCredential=`.
+- `infrastructure/ansible/roles/mnemonic-mcp/tests/test_role_contract.py::test_package_lock_checked_in_and_valid_json` — pytest assert'ит существование `files/package-lock.json` (NEW артефакт), что это валидный JSON, что `lockfileVersion >= 2`, и что в `packages` (или `dependencies`) есть запись с `@mnemonik-xyz/mcp` в ключе или value.
+- `infrastructure/ansible/roles/mnemonic-mcp/tests/test_role_contract.py::test_descoped_artifacts_removed` — pytest assert'ит несуществование `templates/config.yml.j2`, `templates/protocol-qa.env.j2`, `templates/molyanov-mnemonic-hooks.yml.j2`, директории `templates/hooks/`.
+- `infrastructure/ansible/roles/mnemonic-mcp/tests/test_role_contract.py::test_ansible_lint_clean` — pytest вызывает `subprocess.run(["ansible-lint", "infrastructure/ansible/roles/mnemonic-mcp/"])` и assert'ит rc == 0.
+- `infrastructure/ansible/roles/mnemonic-mcp/tests/test_role_contract.py::test_ansible_syntax_check` — pytest вызывает `subprocess.run(["ansible-playbook", "--syntax-check", "infrastructure/ansible/playbooks/deploy.yml"])` и assert'ит rc == 0.
+
+Все вышеперечисленные тесты пишутся в один новый файл `infrastructure/ansible/roles/mnemonic-mcp/tests/test_role_contract.py`. Запуск: `pytest infrastructure/ansible/roles/mnemonic-mcp/tests/ -v`. Прохождение всех 8 тестов — обязательное условие готовности задачи.
 
 ## Acceptance Criteria
 
@@ -79,12 +84,12 @@ teammate_name:
 - [user-spec.md](../user-spec.md)
 - [tech-spec.md](../tech-spec.md) — Architecture step 4, Decision 3, Implementation Tasks Task 2
 - [decisions.md](../decisions.md)
-- [CLAUDE.md](../../../CLAUDE.md) — operational truths: VM persistence (#24/#25), direct-to-trunk, NO Co-Authored-By
+- [CLAUDE.md](../../../CLAUDE.md) — **project context (PK substitute)**: components map, pipeline, infrastructure (Hetzner VM, persistent volume, tofu state), bus protocol, operational truths (VM persistence #24/#25, direct-to-trunk, NO `Co-Authored-By` trailer). Этот репо не содержит `.claude/skills/project-knowledge/project.md` или `architecture.md` — CLAUDE.md выполняет обе роли.
 - [infrastructure/ansible/roles/mnemonic-mcp/tasks/main.yml](../../../infrastructure/ansible/roles/mnemonic-mcp/tasks/main.yml) — текущая роль (descoped), переписать
 - [infrastructure/ansible/roles/mnemonic-mcp/defaults/main.yml](../../../infrastructure/ansible/roles/mnemonic-mcp/defaults/main.yml) — текущие defaults, заменить distribution-channel переменные
 - [infrastructure/ansible/roles/mnemonic-mcp/templates/mnemonic-mcp.service.j2](../../../infrastructure/ansible/roles/mnemonic-mcp/templates/mnemonic-mcp.service.j2) — текущий unit, переписать ExecStart, снять LoadCredential
 - [infrastructure/ansible/roles/mnemonic-mcp/README.md](../../../infrastructure/ansible/roles/mnemonic-mcp/README.md) — текущий README с DESCOPED notice, переписать
-- [infrastructure/ansible/roles/telegram-ai-agent/tasks/main.yml](../../../infrastructure/ansible/roles/telegram-ai-agent/tasks/main.yml) — паттерн node+npm install (строки 63-112), `community.general.npm` global install
+- [infrastructure/ansible/roles/telegram-ai-agent/tasks/main.yml](../../../infrastructure/ansible/roles/telegram-ai-agent/tasks/main.yml) — паттерн node+npm install (строки 63-88), `community.general.npm` global install
 - [infrastructure/ansible/roles/fabric-services/tasks/main.yml](../../../infrastructure/ansible/roles/fabric-services/tasks/main.yml) — общий стиль ролей в fabric
 - [infrastructure/ansible/playbooks/deploy.yml](../../../infrastructure/ansible/playbooks/deploy.yml) — где роль вызывается в pipeline (для понимания где `mnemonic_mcp_binary` fact будет потребляться downstream)
 
@@ -92,10 +97,11 @@ teammate_name:
 
 ### Automated
 
-- `ansible-playbook --syntax-check infrastructure/ansible/playbooks/deploy.yml` → exit 0.
-- `ansible-lint infrastructure/ansible/roles/mnemonic-mcp/` → no errors.
-- `molecule test -s default` (если сценарий есть в роли) → все assertions в verify.yml зелёные.
-- Negative test: удалить локально строку `mnemonic_mcp_binary` set_fact и прогнать downstream Task 3 render — должен валиться с понятным `'mnemonic_mcp_binary' is undefined`. Затем восстановить (контракт защищает от silent fallback).
+- `pytest infrastructure/ansible/roles/mnemonic-mcp/tests/ -v` → все 8 contract-тестов (см. TDD Anchor) зелёные. **Gating.**
+- `ansible-playbook --syntax-check infrastructure/ansible/playbooks/deploy.yml` → exit 0. **Gating** (также покрыт pytest-обёрткой).
+- `ansible-lint infrastructure/ansible/roles/mnemonic-mcp/` → no errors. **Gating** (также покрыт pytest-обёрткой).
+- `molecule test -s default` (если сценарий запускается в текущем CI) → все assertions в verify.yml зелёные. **Informational** — см. What to do шаг 8.
+- Negative test (manual one-off): удалить локально строку `mnemonic_mcp_binary` set_fact и прогнать downstream Task 3 render — должен валиться с понятным `'mnemonic_mcp_binary' is undefined`. Затем восстановить (контракт защищает от silent fallback). **Informational.**
 
 ### Smoke
 

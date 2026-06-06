@@ -1,5 +1,5 @@
 ---
-status: ready
+status: planned
 depends_on: [4, 5]
 wave: 2
 skills: [code-writing]
@@ -29,6 +29,8 @@ teammate_name:
 
 Терминальные статусы: `done`, `rejected`, `regenerated`, `publish-failed`, `attest-failed`, `failed`. `cleanup_at` устанавливается в момент `preview-sent`; cleanup-gc сносит worktree только у терминальных джоб.
 
+**Known scope.** This task is intentionally large per tech-spec Task 6 atomic scope — оператор подтвердил это при декомпозиции. Внутри есть естественные швы (publish + ordering / sub-loops + lifespan / MCP attestation), они документированы ниже для удобства исполнителя, но **деливерится задача единым куском** (один PR, один набор reviewer-ов, один отчёт в decisions.md). Не дроби её на под-задачи по своей инициативе.
+
 ## What to do
 
 1. **`publish.py`** — функция шага publish: получает джобу в статусе `publishing`, пишет `tentative_publish_started_at = now` в queue.jsonl ДО вызова, собирает `Settings` (см. Implementation hints), делает строго keyword-only вызов `run_campaign_from_article(...)` с `attest=False`, читает `pr = result.results[0]` (не `result.posts[0]`). При `pr.ok==True`: CAS `publishing → published`, сохраняет `post_url = pr.primary_url`, `post_message_ids = pr.ids`, считает `content_sha256` от байт `article.md`. При `pr.ok==False`: CAS `publishing → publish-failed`, пишет `publish_error = pr.error` и `notify_pending = true`.
@@ -39,7 +41,7 @@ teammate_name:
 
 3. **`cleanup.py`** — фоновый под-цикл с каденсом 5 минут. Проходит queue.jsonl, для каждой джобы в **терминальном** статусе с `cleanup_at != null AND cleanup_at <= now`: `shutil.rmtree(worktree_path, ignore_errors=False)`, аппендит сериализованную запись в `queue.archive.jsonl` рядом с queue.jsonl (тем же atomic-append паттерном), затем убирает её из queue.jsonl. Не-терминальные джобы НЕ собираются (даже если у них почему-то заполнен `cleanup_at`).
 
-4. **`attest.py`** — оркестрация attestation: считает sha256 от содержимого `article.md`, вызывает `mcp_client.sign_memory(...)`, на успехе CAS `published → done` с `attestation_hash`, на неуспехе CAS `published → attest-pending` и инкремент `attest_attempts`. На 24h без успеха (вычисляется от `created_at` либо от первого попадания в `attest-pending`): CAS `attest-pending → attest-failed`, поднимает флаг `notify_pending=true` с сообщением для оператора (DM поток обрабатывается ботом через Task 8).
+4. **`attest.py`** — оркестрация attestation: считает sha256 от содержимого `article.md`, вызывает `mcp_client.sign_memory(...)`, на успехе CAS `published → done` с `attestation_hash`, на неуспехе CAS `published → attest-pending` и инкремент `attest_attempts`. При первом переходе в `attest-pending` фиксируется поле `attest_pending_since = now` (на последующих retry оно НЕ перезаписывается). На 24h без успеха (`now - attest_pending_since >= 24h`): CAS `attest-pending → attest-failed`, поднимает флаг `notify_pending=true` с сообщением для оператора (DM поток обрабатывается ботом через Task 8).
 
 5. **`mcp_client.py`** — тонкий клиент для MCP-stdio:
    - `asyncio.create_subprocess_exec(<mnemonic_mcp_binary>, "mcp-stdio", stdin=PIPE, stdout=PIPE, stderr=PIPE, env=restricted_env("mnemonik-mcp"))`. Argv **строго** двухэлементный (`[<binary>, "mcp-stdio"]`) — никаких payload-аргументов.
@@ -85,14 +87,14 @@ teammate_name:
 ## Acceptance Criteria
 
 - [ ] **(a)** Publish step пишет `tentative_publish_started_at` в queue.jsonl ДО вызова `run_campaign_from_article` (AC-T7).
-- [ ] **(b)** In-process call строго keyword-only по сигнатуре `run_campaign_from_article(article=Path(...), platforms=[Platform.TELEGRAM], settings=Settings(dry_run=False, min_score=N, claude_blog_path=..., telegram=TelegramConfig(...)), attest=False, min_score=...)` — никаких позиционных аргументов, никакого `dry_run=` как аргумента функции.
+- [ ] **(b)** In-process call строго keyword-only к `run_campaign_from_article(...)` — никаких позиционных аргументов, никакого `dry_run=` как аргумента самой функции. `Settings` собирается отдельно и пробрасывается как `settings=...`; внутри `Settings` обязаны быть установлены `dry_run=False`, `min_score`, `claude_blog_path`, и блок `telegram` с `bot_token` и `channel` (точные имена/типы — по сигнатуре запиненной версии `mnemonik_blogger`, см. Implementation hints).
 - [ ] **(c)** Чтение результата — `pr = result.results[0]` (НЕ `result.posts[0]`); сохраняются `pr.primary_url` (→ `post_url`) и `pr.ids` (→ `post_message_ids`).
 - [ ] **(d)** При `pr.ok == True`: CAS `publishing → published`; считается и сохраняется `content_sha256`.
 - [ ] **(e)** При `pr.ok == False`: CAS `publishing → publish-failed` с сохранением `publish_error = pr.error` И установкой `notify_pending = true`.
 - [ ] **(f)** Deadline-checker под-цикл (каденс 30s): обрабатывает джобы `status == preview-sent AND now >= approval_deadline` через CAS на `publishing`, И ретраит `attest-pending` через `attest.py`.
 - [ ] **(g)** Cleanup-gc под-цикл (каденс 5min): для терминальных джоб с `cleanup_at <= now` выполняет `shutil.rmtree(worktree_path)` и аппендит запись в `queue.archive.jsonl`; не-терминальные джобы НЕ удаляются.
 - [ ] **(h)** Attestation: `asyncio.create_subprocess_exec` с argv строго `[<mnemonic_mcp_binary>, "mcp-stdio"]` БЕЗ payload, `env=restricted_env("mnemonik-mcp")`; MCP JSON-RPC `initialize` затем `tools/call mnemonic_sign_memory` с ключами `{content, content_sha256, post_url, score, prompt}` пишутся в stdin построчно (newline-delimited); receipt парсится из stdout; stdin закрывается на выход (AC-T8).
-- [ ] **(i)** Attestation failure → CAS `published → attest-pending` + ретрай через под-цикл (deadline-checker) каждые 5min; 24h escalation → `attest-failed` + поднятие `notify_pending=true` для DM оператору (поток DM выполняет бот в Task 8).
+- [ ] **(i)** Attestation failure → CAS `published → attest-pending` + ретрай через под-цикл (deadline-checker) каждые 5min; 24h escalation → `attest-failed` + поднятие `notify_pending=true` для DM оператору (поток DM выполняет бот в Task 8). **24 часа отсчитываются от ПЕРВОГО входа джобы в `attest-pending`** (а не от `created_at`); для этого при первом CAS `published → attest-pending` фиксируется поле `attest_pending_since` и больше не перезаписывается на последующих retry-tick-ах.
 - [ ] **(j)** `main.py` lifespan startup сканирует queue.jsonl: `writing` / `scoring` → рестарт от начала (CAS на `queued`); `preview-sent` → не трогать, deadline-checker сам разрулит по `approval_deadline`; `publishing` → **просто ретрай** через нормальный publish path (Decision 8, AC-T13); `attest-pending` → возобновляется через расписание deadline-checker.
 - [ ] **(k)** Two-location auto-mode token check на startup: `PUBLISH_MODE=auto` AND `/etc/blogger.env` `PUBLISH_AUTO_MODE_TOKEN` == sops `publish_auto_mode_token` → auto-режим включён; mismatch → процесс падает с громким сообщением (AC-T10).
 - [ ] **(l)** Posts-per-hour rate ceiling (R2-9): если за последний час уже опубликовано `> N` джоб → CAS `publishing → publish-failed` с `publish_error = "rate ceiling exceeded"` и `notify_pending = true` (без in-process call).
@@ -104,12 +106,13 @@ teammate_name:
 - [user-spec.md](../user-spec.md)
 - [tech-spec.md](../tech-spec.md)
 - [decisions.md](../decisions.md)
-- `fabric/workspace-manager/main.py` — FastAPI lifespan + asyncio task pattern, REFERENCE only.
-- `fabric/workspace-manager/state.py` — atomic-write + flock helpers, паттерн для аппенда в `queue.archive.jsonl`.
-- `fabric/content-publisher/src/content_publisher/queue.py` — shared `cas_status`, `append_job`, `load` (созданы в Task 4).
-- `fabric/content-publisher/src/content_publisher/models.py` — Job + status enum (Task 4).
-- `fabric/content-publisher/src/content_publisher/env.py` — `restricted_env(kind)` (Task 4).
-- `fabric/content-publisher/src/content_publisher/worker.py` — queue-poll loop из Task 5.
+- [CLAUDE.md](/Users/syi/src/sessions/coding-fabric/CLAUDE.md) — project context (components map, infra constraints, rules).
+- [fabric/workspace-manager/main.py](../../../fabric/workspace-manager/main.py) — FastAPI lifespan + asyncio task pattern, REFERENCE only.
+- [fabric/workspace-manager/state.py](../../../fabric/workspace-manager/state.py) — atomic-write + flock helpers, паттерн для аппенда в `queue.archive.jsonl`.
+- [fabric/content-publisher/src/content_publisher/queue.py](../../../fabric/content-publisher/src/content_publisher/queue.py) — shared `cas_status`, `append_job`, `load` (созданы в Task 4).
+- [fabric/content-publisher/src/content_publisher/models.py](../../../fabric/content-publisher/src/content_publisher/models.py) — Job + status enum (Task 4).
+- [fabric/content-publisher/src/content_publisher/env.py](../../../fabric/content-publisher/src/content_publisher/env.py) — `restricted_env(kind)` (Task 4).
+- [fabric/content-publisher/src/content_publisher/worker.py](../../../fabric/content-publisher/src/content_publisher/worker.py) — queue-poll loop из Task 5.
 
 ## Verification Steps
 
@@ -160,7 +163,7 @@ teammate_name:
 - Двойной in-process publish при гонке callback + deadline: CAS гарантирует, что только один поток успешно сделает `preview-sent → publishing`; loser получит «too late».
 - Worker крашится между записью `tentative_publish_started_at` и фактическим запросом к Telegram API — крайне редкий случай; на рестарте recovery просто ретраит publish; дубликат удаляется оператором вручную (Decision 8).
 - MCP-stdio subprocess не отвечает на `initialize`: timeout читалки → закрываем stdin, kill subprocess, считаем это failure → CAS published → attest-pending.
-- 24h-эскалация: точка отсчёта — `created_at` джобы (либо первый ввод в `attest-pending`; зафиксировать в attest.py и одинаково в тесте).
+- 24h-эскалация: точка отсчёта — **первый вход джобы в `attest-pending`** (поле `attest_pending_since`, выставляется один раз при первом CAS `published → attest-pending`). НЕ `created_at` и НЕ перезаписывается на retry-tick-ах. То же значение используется в `attest.py` и в `test_attest_retry.py`.
 - Cleanup-gc натыкается на отсутствующий worktree (уже удалён вручную): `shutil.rmtree(..., ignore_errors=False)` — обрабатывать `FileNotFoundError` как успех и всё равно архивировать.
 - Rate ceiling — считаем только успешно опубликованные за окно; CAS на `publish-failed` происходит ДО in-process вызова, никаких частичных пост-эффектов.
 - `PUBLISH_MODE=approval` + наличие `PUBLISH_AUTO_MODE_TOKEN` — нормально (просто игнорируется); проверка integrity только когда `PUBLISH_MODE=auto`.
@@ -168,7 +171,7 @@ teammate_name:
 **Implementation hints:**
 - **MCP framing.** Official MCP spec (stdio transport) допускает два варианта: (1) `Content-Length:` headers по образцу LSP, (2) newline-delimited JSON. Какой именно говорит `@mnemonik-xyz/mcp@<pinned>` — фиксируется в Task 2 handshake-фикстуре. Не угадывай: либо подтяни фикстуру из Task 2, либо в `mcp_client.py` сделай одну точку — функцию-writer/reader — и реализуй ту, которая согласуется с фикстурой; добавь TODO-комментарий с указанием на фикстуру.
 - Используй `asyncio.create_subprocess_exec(<binary>, "mcp-stdio", stdin=PIPE, stdout=PIPE, stderr=PIPE, env=restricted_env("mnemonik-mcp"))`. `stderr=PIPE` — собирать для диагностики, в `attest.py` логировать tail на failure.
-- `Settings(...)` для publish-step: `dry_run=False`, `min_score=<int from env>`, `claude_blog_path=<from env>`, `telegram=TelegramConfig(bot_token=SecretStr(<token from env>), channel=<from env>)`. `SecretStr` — обязательная обёртка для токена.
+- `Settings(...)` для publish-step — какие именно поля передавать и под какими именами зависит от точной сигнатуры `Settings`/`TelegramConfig` из той версии `mnemonik_blogger`, которая запиннена в Task 3. Проверь её прежде, чем кодировать. Из tech-spec на момент написания подтверждены следующие значения, которые должны быть переданы в каком-то виде: `dry_run=False`, `min_score=<int from env>`, `claude_blog_path=<from env>`, `telegram=TelegramConfig(bot_token=<token from env, обёрнутый в SecretStr если этого требует Pydantic-модель в той версии>, channel=<from env>)`. Если конкретные имена/типы полей в актуальной версии отличаются — выровняй вызов под реальную сигнатуру и зафиксируй отклонение в decisions.md.
 - `recover_in_flight` — синхронный helper (одного прохода по queue.jsonl достаточно). Запускать ДО трёх asyncio task; иначе deadline-checker/cleanup-gc могут наскочить на промежуточные состояния.
 - Для атомарного аппенда в `queue.archive.jsonl` — переиспользовать паттерн `_write_raw` / flock из `fabric/workspace-manager/state.py` (тот же, что в Task 4).
 - Три startup log lines (`queue-poll started`, `deadline-checker started`, `cleanup-gc started`) — буквально так, без вариаций; Ansible smoke в Task 7 проверяет их регулярками.

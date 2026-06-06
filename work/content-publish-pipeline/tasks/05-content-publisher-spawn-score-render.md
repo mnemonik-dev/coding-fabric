@@ -1,9 +1,9 @@
 ---
-status: ready
-depends_on: [4]
+status: planned
+depends_on: [3, 4]
 wave: 2
 skills: [code-writing]
-verify: []
+verify: [smoke]
 reviewers: [code-reviewer, test-reviewer, security-auditor]
 teammate_name:
 ---
@@ -30,7 +30,7 @@ teammate_name:
    - `worker.py` — связывает три модуля + CAS-переходы. Берёт `queued` job из queue (через `cas_status` из Task 4), валидирует `job.id` как UUID v4, собирает worktree path `worktree_root / sanitized_id`, делает path-containment check (см. hints), создаёт каталог, проходит `queued→writing → spawn → writing→scoring → score+render → scoring→preview-sent` с записью полей `score`, `issues` (truncated), `preview_segments`, `approval_deadline=now+PUBLISH_APPROVAL_TIMEOUT_MIN`, `preview_pending=true`, `cleanup_at=now+24h`. Любой сбой на `writing`/`scoring`/`render` → CAS в `failed` + `notify_pending=true` + сохранение `error_message`.
 
 2. Написать тесты в `fabric/content-publisher/tests/`:
-   - `test_preview_render.py` — Decision 4 cross-comparison. Берём фикстурную `article.md` (короткую, чтобы один сегмент). Считаем `expected = render(Platform.TELEGRAM, ingest_article(path)).segments`. Monkey-patch'им внутренний платформенный publisher в `mnemonik_blogger.agent._publish_post` (точное имя seam — из import-check Task 3; если другое, тест должен явно ссылаться на верифицированную точку) — захватываем то, что бы туда улетело. Вызываем `run_campaign_from_article(article=Path(path), platforms=[Platform.TELEGRAM], settings=Settings(dry_run=False, ...), attest=False)`. Assert `captured_segments == expected` ПО БАЙТАМ.
+   - `test_preview_render.py` — Decision 4 cross-comparison. Берём фикстурную `article.md` (короткую, чтобы один сегмент). Считаем `expected = render(Platform.TELEGRAM, ingest_article(path)).segments`. Monkey-patch'им внутренний платформенный sender — конкретное имя/путь определяем грепом upstream (см. Implementation Hints; `mnemonik_blogger.agent._publish_post` — стартовая гипотеза, не подтверждённый seam) — захватываем то, что бы туда улетело. Вызываем `run_campaign_from_article(article=Path(path), platforms=[Platform.TELEGRAM], settings=Settings(dry_run=False, ...), attest=False)`. Assert `captured_segments == expected` ПО БАЙТАМ.
    - `test_analyze_gate.py` — два кейса: (a) high score (>= min_score) — `worker` НЕ ставит флаг для `[🔄]` (issues пусто/в коротком списке), переходит в `preview-sent` нормально; (b) low score (< min_score) — issues длиной 7 элементов → в job в `preview-sent` остаётся ровно первые 3, остальные обрезаны.
    - `test_spawn_failure_path.py` — claude subprocess завершается с exit 1 (mock). Assert: статус job становится `failed` (НЕ `writing`/`scoring`), `notify_pending=true`, в job записан `error_message` со stderr-хвостом, worktree остался для последующего cleanup.
    - `test_separate_bot_token.py` — (AC12) спавн `claude` происходит с `env`, в котором НЕТ `TELEGRAM_BOT_TOKEN` оператора-бота; subprocess для `analyze_blog` тоже не видит токен; токен `TELEGRAM_BOT_TOKEN` из `/etc/blogger.env` остаётся ТОЛЬКО для in-process publisher (Task 6), но в spawn-шагах его в env быть не должно.
@@ -72,7 +72,8 @@ teammate_name:
 - [user-spec.md](../user-spec.md)
 - [tech-spec.md](../tech-spec.md)
 - [decisions.md](../decisions.md)
-- [CLAUDE.md (project context — canonical, no project-knowledge skill initialized)](/Users/syi/src/sessions/coding-fabric/CLAUDE.md)
+- [CLAUDE.md (project context — canonical, no project-knowledge skill initialized)](/Users/syi/src/sessions/coding-fabric/CLAUDE.md) — Project overview, pipeline, components map, constraints.
+- [CLAUDE.md (architecture + patterns)](/Users/syi/src/sessions/coding-fabric/CLAUDE.md) — Architecture, Rules, Build & Test sections.
 
 **Spec sections to read first:**
 - tech-spec.md → Solution + Architecture diagram (особенно блок `writing → scoring → preview-sent`)
@@ -117,10 +118,10 @@ teammate_name:
 ## Details
 
 **Files:**
-- `fabric/content-publisher/src/content_publisher/spawn.py` *(new)* — async `spawn_claude(prompt: str, worktree: Path) -> Path` (returns article_path); внутри `asyncio.create_subprocess_exec("claude", "--print", "--mcp-config", "/etc/blogger.mcp.json", "--strict-mcp-config", "--skill", "claude-blog/blog-writer", stdin=PIPE, stdout=PIPE, stderr=PIPE, cwd=worktree, env=restricted_env("claude"))`; `await proc.communicate(input=prompt.encode())`; non-zero → `raise SpawnFailed(stderr_tail)`.
-- `fabric/content-publisher/src/content_publisher/score.py` *(new)* — async `analyze(article_path: Path) -> ScoreResult`; `ScoreResult = dataclass(score: int, issues: list[str])`; внутри `create_subprocess_exec("python", "/opt/claude-blog/scripts/analyze_blog.py", str(article_path), stdout=PIPE, stderr=PIPE, env=restricted_env("analyze_blog"))`; парсит stdout (см. upstream формат — JSON-объект `{"score": N, "issues": [...]}` или построчно); truncate issues до 3 перед return.
-- `fabric/content-publisher/src/content_publisher/render.py` *(new)* — sync `render_preview(article_path: Path) -> list[str]`: импорт ровно как в Decision 4, без алиасов; возвращает `RenderedPost.segments`.
-- `fabric/content-publisher/src/content_publisher/worker.py` *(new)* — координатор шага: `async def run_writing_to_preview(job: Job) -> None`. Шаги: (1) UUID v4 validate + path-containment, (2) CAS `queued→writing`, (3) `spawn_claude`, (4) CAS `writing→scoring`, (5) `analyze`, (6) `render_preview`, (7) CAS `scoring→preview-sent` с deadlines. Обёртка `try/except (SpawnFailed, ScoreFailed, Exception)` → CAS в `failed` + `notify_pending=true`.
+- `fabric/content-publisher/src/content_publisher/spawn.py` *(new)* — async `spawn_claude(prompt: str, worktree: Path) -> Path` (returns article_path). Подход: используем `asyncio.create_subprocess_exec` с фиксированным набором аргументов (`claude --print --mcp-config /etc/blogger.mcp.json --strict-mcp-config --skill claude-blog/blog-writer`), `stdin=PIPE`, `cwd=worktree`, `env=restricted_env("claude")`. Prompt передаётся через `proc.communicate(input=prompt.encode())`. Non-zero exit → `raise SpawnFailed(stderr_tail)`. Точный набор pipe'ов (stdout/stderr) — на усмотрение реализатора, если поведение AC соблюдено.
+- `fabric/content-publisher/src/content_publisher/score.py` *(new)* — async `analyze(article_path: Path) -> ScoreResult`, где `ScoreResult` — простой dataclass с `score: int` и `issues: list[str]`. Подход: `create_subprocess_exec` для `python /opt/claude-blog/scripts/analyze_blog.py <article_path>` с `env=restricted_env("analyze_blog")`, парс stdout под фактический формат upstream (см. `analyze_blog.py` — JSON-объект `{"score": N, "issues": [...]}` либо построчный формат — определить чтением upstream). Truncate issues до 3 ПЕРЕД return. Выбор конкретного JSON-парсера/regex — на усмотрение реализатора.
+- `fabric/content-publisher/src/content_publisher/render.py` *(new)* — sync `render_preview(article_path: Path) -> list[str]`: импорт `Platform`/`ingest_article`/`render` ровно как в Decision 4 (без алиасов и переэкспортов); возвращает `RenderedPost.segments`. Если у `render(...)` другая форма return type — адаптировать вызов, не меняя байт-идентичность сегментов.
+- `fabric/content-publisher/src/content_publisher/worker.py` *(new)* — координатор шага. Один публичный entry-point вида `async def run_writing_to_preview(job: Job) -> None`. Подход: последовательность (1) UUID v4 validate + path-containment, (2) CAS `queued→writing`, (3) `spawn_claude`, (4) CAS `writing→scoring`, (5) `analyze`, (6) `render_preview`, (7) CAS `scoring→preview-sent` с записью deadlines в той же CAS-операции. Все исключения шагов (`SpawnFailed`, `ScoreFailed`, общие `Exception`) сводятся к CAS в `failed` + `notify_pending=true` + `error_message`. Конкретный layout `try/except` и логирование — на усмотрение реализатора.
 - Тестовые файлы — см. AC + TDD Anchor.
 
 **Dependencies:**
@@ -146,7 +147,7 @@ teammate_name:
 - Path containment для article: `article_path.resolve().is_relative_to(worktree.resolve())` — стандарт Python 3.9+.
 - `restricted_env("claude")` уже из Task 4 — не пересобирать env вручную здесь; если allowlist неполный — фиксить в Task 4, а не локально.
 - Truncate issues: `issues[:3]` — простой срез достаточен (порядок upstream считается «по убыванию важности» по умолчанию).
-- Для теста byte-equality смотри Testing Strategy: monkey-patch внутреннего sender'а `mnemonik_blogger.agent._publish_post` (точное имя из Task 3 import-check; если другое — обнови тест с комментарием со ссылкой на verified API).
+- Для теста byte-equality: ДО написания теста сгрепай upstream `mnemonik_blogger` source на предмет реальной точки вызова Telegram sender'а (кандидаты — `_publish_post`, `_send_telegram`, `publish_telegram`, `send_message` внутри `mnemonik_blogger.agent` / `mnemonik_blogger.platforms.telegram` и т.п.). Подтверди точный module path и имя функции; именно туда — monkey-patch для перехвата исходящих сегментов. В тесте оставь комментарий со ссылкой на верифицированный API (файл:строка из upstream). Имя `mnemonik_blogger.agent._publish_post`, упомянутое в Testing Strategy, — рабочая гипотеза, а не подтверждённый seam; не полагайся на него без проверки.
 - Для теста required-mounts: рендер Jinja-шаблона из Task 3 через `jinja2.Template` напрямую, фиксируя `hetzner_volume_id=105783873`; не дёргать `ansible-playbook` целиком — слишком тяжело для unit-уровня.
 - `cas_status` из Task 4 принимает мутацию через callback / kwargs (см. контракт Task 4) — записывай `approval_deadline`, `preview_pending`, `cleanup_at`, `preview_segments`, `score`, `issues` в одной CAS-операции, не разбивай на несколько (иначе race с deadline-checker из Task 6).
 - Логи: structured (jsonl или structlog, как делает workspace-manager) — `job_id`, `step`, `status_from`, `status_to`, `duration_ms`. Без секретов и без полного prompt'а в логах.

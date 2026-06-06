@@ -86,7 +86,7 @@ This is one of three audit-wave passes (Task 9 = code audit, Task 10 = security 
 - [decisions.md](../decisions.md) — round-by-round decision log; useful when a test references a stale decision.
 - [code-research.md](../code-research.md) — upstream API signatures (e.g. real shape of `run_campaign_from_article`) — used to confirm test mocks track the real surface.
 - [CLAUDE.md](/Users/syi/src/sessions/coding-fabric/CLAUDE.md) — project rules, pipeline overview, "Kaneo is the bus" architecture.
-- [01-sops-secrets-template-extension.md](./01-sops-secrets-template-extension.md) through [08-bot-publish-handlers.md](./08-bot-publish-handlers.md) — sibling task files; gives the exact list of tests each task was supposed to produce.
+- [01-sops-secrets-template-extension.md](./01-sops-secrets-template-extension.md) through [08-bot-topic-handler-callbacks-preview-poll.md](./08-bot-topic-handler-callbacks-preview-poll.md) — sibling task files; gives the exact list of tests each task was supposed to produce.
 - [test-master SKILL.md](~/.claude/skills/test-master/SKILL.md) — testing methodology and review dimensions for the audit.
 
 Code under audit (read-only):
@@ -173,6 +173,8 @@ Code under audit (read-only):
 **AC1 reinterpretation note:** AC1 in user-spec text says "slash-command registration". Decision 13 (round 5) replaced this with topic-handler dispatch. The audit must verify that the test for AC1 asserts the topic-handler is registered with the correct `F.chat.id & F.message_thread_id & F.from_user.id` filter — NOT a literal `/publish_content` slash-command registration. A test that still checks `bot_commands.py` for `publish_content` is a finding (the test was not updated to the round-5 decision).
 
 **Decision 8 (just-retry) cleanup check:** when reading `test_publishing_retry_on_crash.py`, grep mentally for any of: `recovery-needed`, `/recovery_mark_published`, `find_post_by_id`, `tentative_post_id`, "manual recovery". Each of these is a residue from rounds 1–4 and is a finding (severity: high — the test exists but tests a decision that was reversed).
+
+**AC14 conflict note (user-spec vs. tech-spec Decision 8):** User-spec AC14 was originally written as "no double-post via blogger CLI check" — a pre-publish lookup of the target channel to detect an already-posted version. Decision 8 (round 5, see tech-spec) intentionally reversed this: the worker just re-runs the normal publish path on crash recovery, accepting a rare double-post as the cost of removing the channel-scan complexity. Tech-spec AC-T13 (`test_publishing_retry_on_crash.py`) verifies this new behaviour. Auditors MUST accept `test_publishing_retry_on_crash` as satisfying both AC14 and AC-T13 (one test, both ACs map to it). Do NOT mark AC14 as `weak` or `missing` on the grounds that there is no channel-scan / no-double-post check — that check was deliberately removed. In the AC matrix, AC14's `note` should explicitly reference Decision 8 and point to the same test target as AC-T13.
 
 **Dependencies:**
 - All of Tasks 1–8 must be at least drafted (test files present) for the audit to have anything to read.

@@ -1,7 +1,7 @@
 ---
-status: ready                      # planned -> ready -> in_progress -> done
-depends_on: [1, 2, 3]              # Wave 1 foundation (sops + mnemonic-mcp role + ansible scaffold)
-wave: 2                            # Wave 2 — content-publisher package
+status: planned
+depends_on: [1, 2, 3]
+wave: 2
 skills: [code-writing]
 verify: []                         # No Verify-smoke/Verify-user in tech-spec Task 4
 reviewers: [code-reviewer, test-reviewer]
@@ -23,27 +23,28 @@ Tech-spec Decision 2 явно требует "JSONL queue with atomic CAS (not S
 
 1. Создаёт скелет нового пакета (pyproject.toml + структура src/tests).
 2. Переносит ~30 LOC flock-паттерна из workspace-manager в `content_publisher.state` (БЕЗ импорта из workspace-manager — пакеты должны быть decoupled).
-3. Реализует `content_publisher.queue` с тремя публичными функциями — `append_job`, `load`, `cas_status` — которые является SINGLE SOURCE OF TRUTH для очереди.
-4. Реализует `content_publisher.models` с Pydantic Job-моделью (24 поля из tech-spec Data Models) и status enum со всеми состояниями state-machine (queued, writing, scoring, preview-sent, publishing, published, attest-pending, done, rejected, regenerated, publish-failed, attest-failed, failed).
+3. Реализует `content_publisher.queue` с четырьмя публичными функциями — `append_job`, `load`, `cas_status`, `find_by_prefix` — которые являются SINGLE SOURCE OF TRUTH для очереди.
+4. Реализует `content_publisher.models` с Pydantic Job-моделью (24 поля из tech-spec Data Models) и status enum со всеми 13 состояниями state-machine (queued, writing, scoring, preview-sent, publishing, published, attest-pending, done, rejected, regenerated, publish-failed, attest-failed, failed).
 5. Реализует `content_publisher.env.restricted_env(kind)` — allowlist-функцию для генерации env-окружения дочерних процессов (claude/analyze_blog/mnemonik-mcp/blogger_inproc — таблица из tech-spec Data Models).
 6. Строгая валидация UUID v4 (отвергает path traversal и control chars — security).
 7. Централизованные mock-фикстуры в `tests/conftest.py` (используются всеми тестами в Tasks 5, 6, 8).
 
-После этой задачи Task 5 (writing/scoring) и Task 6 (publish/sub-loops) импортируют готовые `Job`, `cas_status`, `restricted_env`. Task 8 (bot) — те же самые `append_job` и `cas_status`.
+После этой задачи Task 5 (writing/scoring) и Task 6 (publish/sub-loops) импортируют готовые `Job`, `cas_status`, `restricted_env`. Task 8 (bot) — те же самые `append_job`, `cas_status` и `find_by_prefix` (для разрешения 12-символьных префиксов из `callback_data` обратно в полный `job_id`).
 
 ## What to do
 
 1. **Scaffold пакета.** Создать `fabric/content-publisher/pyproject.toml` (PEP 621), `src/content_publisher/__init__.py`, директорию `tests/`. Зависимости: `pydantic>=2.x`. Конфиг `pytest` + `ruff` + `mypy` по образцу `fabric/workspace-manager/pyproject.toml` (если есть).
 2. **`state.py` — atomic-write + flock helpers.** Перенести (НЕ импортировать) три приватные функции/паттерна из `fabric/workspace-manager/state.py:70-111`: `_write_raw(path, data)` (tempfile + fsync + `os.replace` + dir fsync), `_acquire(lock_path)` (открыть файл + `fcntl.flock(LOCK_EX)`), `_release(fh)` (`flock(LOCK_UN)` + close). Оставить как module-level функции, принимающие путь параметром (а не методы класса — потому что JSONL-файл и lock-файл будут параметризованы env-переменной `CONTENT_PUBLISHER_QUEUE`, а не зашиты в конструктор).
 3. **`models.py` — Pydantic Job + JobStatus enum.**
-   - `JobStatus` (StrEnum) с 12-ю значениями: `queued`, `writing`, `scoring`, `preview-sent`, `publishing`, `published`, `attest-pending`, `done`, `rejected`, `regenerated`, `publish-failed`, `attest-failed`, `failed`.
+   - `JobStatus` (StrEnum) с 13-ю значениями: `queued`, `writing`, `scoring`, `preview-sent`, `publishing`, `published`, `attest-pending`, `done`, `rejected`, `regenerated`, `publish-failed`, `attest-failed`, `failed`.
    - `Job` (BaseModel) с 24+ полями ровно по схеме tech-spec Data Models: `id`, `created_at`, `fire_at`, `approval_deadline`, `cleanup_at`, `prompt`, `feedback_for_retry`, `mode`, `status`, `score`, `issues`, `worktree_path`, `article_path`, `preview_segments`, `preview_message_id`, `preview_pending`, `notify_pending`, `chat_id`, `thread_id`, `reply_to_message_id`, `tentative_publish_started_at`, `publish_error`, `post_url`, `post_message_ids`, `content_sha256`, `attestation_hash`, `attest_attempts`, `regenerated_to`, `retries_of`. Типы соответствующие (datetime/int/str/list/Optional). `mode` тип `Literal["approval", "auto"]`.
    - Field validator на `id` — строго UUID v4 формат: regex `^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`. Отвергает path traversal (`..`, `/`, `\`), control chars (`\x00`-`\x1f`), любое отклонение от RFC 4122 v4.
    - State-machine helper: `Job.allowed_transitions() -> dict[JobStatus, set[JobStatus]]` — карта разрешённых переходов из state-machine диаграммы tech-spec.
-4. **`queue.py` — SHARED CAS-примитив.** Три публичные функции:
+4. **`queue.py` — SHARED CAS-примитив.** Четыре публичные функции:
    - `append_job(queue_path: Path, *, prompt: str, mode: str | None, chat_id: int | None, thread_id: int | None, reply_to_message_id: int | None, fire_at: datetime | None = None) -> Job` — генерирует UUID v4, создаёт `Job(status="queued", created_at=now())`, под flock делает append одного JSON-line к файлу (используя `state._acquire` + write в append-mode + `state._release`). Возвращает созданный Job.
    - `load(queue_path: Path) -> list[Job]` — читает JSONL целиком; парсит каждую строку через `Job.model_validate_json`; пропускает (с warning в лог) пустые/битые строки.
    - `cas_status(queue_path: Path, job_id: str, expected: JobStatus, target: JobStatus, *, updates: dict | None = None) -> Job` — **критический атомарный примитив**. Под `_acquire(lock_path)`: читает все строки; находит job по `id`; проверяет `status == expected`; проверяет `target in allowed_transitions[expected]`; применяет `updates` к dict-форме job; записывает все строки через `_write_raw` в temp + `os.replace`; возвращает обновлённый Job. Бросает `StaleStateError(actual_status=...)` если expected не совпал. Бросает `IllegalTransitionError` если переход не разрешён state-machine'ом. Бросает `JobNotFoundError`.
+   - `find_by_prefix(queue_path: Path, job_id_prefix12: str) -> Optional[Job]` — **нужен Task 8 (bot callback_data resolver)**. Принимает 12-символьный префикс UUID (так как Telegram `callback_data` ограничен 64 байтами и хранит первые 12 hex-символов вместо полного UUID). Загружает очередь через `load()`, ищет первый Job, у которого `id.startswith(job_id_prefix12)`. Возвращает `Job` при точном префиксном совпадении; `None` если ни одного матча; при коллизии (статистически почти невозможной для UUID v4 с 12-hex = 48 бит, но defensive) — **бросает `ValueError("ambiguous prefix: N matches")`** (выбор: fail-loud, потому что молчаливый выбор первого может опубликовать чужой контент по чужому callback). Валидирует длину префикса (== 12) и что все символы — lowercase hex; иначе `ValueError`.
 5. **`env.py` — `restricted_env(kind)` allowlist helper.** Принимает `kind: Literal["claude", "analyze_blog", "mnemonik-mcp", "blogger_inproc"]`, возвращает `dict[str, str]` по таблице из tech-spec Data Models раздела `restricted_env(kind)`. Источник переменных — `os.environ` (заранее загружено systemd из `/etc/blogger.env`). Для `blogger_inproc` возвращает все переменные текущего процесса (in-process call). Для `mnemonik-mcp` возвращает ТОЛЬКО `{"PATH": ...}` (см. AC-T9). Любая переменная, не найденная в `os.environ`, опускается (НЕ ошибка) — но `claude` обязан содержать хоть `CLAUDE_CODE_OAUTH_TOKEN` ИЛИ `ANTHROPIC_API_KEY`; иначе `RuntimeError`.
 6. **`tests/conftest.py` — централизованные fixtures.** Создать фикстуры, которые используются всеми тестами этого Task'а И последующих (Tasks 5, 6, 8 импортируют их же):
    - `tmp_queue_dir(tmp_path) -> Path` — изолированная директория для очереди + lock.
@@ -63,9 +64,14 @@ Tech-spec Decision 2 явно требует "JSONL queue with atomic CAS (not S
 - `tests/test_queue.py::test_cas_status_raises_stale_when_expected_mismatch` — текущий status=scoring, expected=queued → `StaleStateError` + файл НЕ изменён.
 - `tests/test_queue.py::test_cas_status_atomic_under_concurrent_clicks` — два потока одновременно вызывают `cas_status(id, preview-sent, publishing)`; ровно один SUCCESS, другой получает StaleStateError. **Главный security-критичный тест — моделирует race-condition concurrent callback click + deadline-fire из tech-spec Architecture.**
 - `tests/test_queue.py::test_cas_status_updates_field_atomically` — `updates={"score": 85}` записаны вместе с переходом status (одна fsync).
+- `tests/test_find_by_prefix.py::test_exact_12char_match_returns_job` — очередь с одним Job, `find_by_prefix(id[:12])` → возвращает этот Job.
+- `tests/test_find_by_prefix.py::test_prefix_not_found_returns_none` — префикс не совпадает ни с одним Job → возвращает `None` (не raise).
+- `tests/test_find_by_prefix.py::test_ambiguous_prefix_raises_value_error` — два Job-а синтетически подделаны с одинаковым 12-hex префиксом → `ValueError("ambiguous prefix: 2 matches")`. (Реализуется fail-loud, чтобы не опубликовать чужой контент по чужому callback.)
+- `tests/test_find_by_prefix.py::test_invalid_prefix_length_raises` — `find_by_prefix("abc")` (длина != 12) → `ValueError`.
+- `tests/test_find_by_prefix.py::test_invalid_prefix_chars_raises` — `find_by_prefix("XYZ123456789")` (не lowercase hex) → `ValueError`.
 - `tests/test_state_machine.py::test_all_valid_transitions_allowed` — каждый переход из диаграммы state-machine разрешён.
 - `tests/test_state_machine.py::test_illegal_transitions_raise` — `queued → published` (без промежуточных), `done → writing` (terminal → activity) → `IllegalTransitionError`.
-- `tests/test_state_machine.py::test_terminal_states_have_no_outgoing` — `done`, `rejected`, `publish-failed`, `attest-failed`, `failed` — пустые исходящие множества.
+- `tests/test_state_machine.py::test_terminal_states_have_no_outgoing` — `done`, `rejected`, `regenerated`, `publish-failed`, `attest-failed`, `failed` — пустые исходящие множества (Task 6 трактует `regenerated` как terminal-ish: job заменён на свой regenerated_to-потомок и сам больше не двигается).
 - `tests/test_uuid_validation.py::test_accepts_canonical_uuid_v4` — ловеркейс canonical form.
 - `tests/test_uuid_validation.py::test_rejects_uuid_v1` — version != 4 → `ValidationError`.
 - `tests/test_uuid_validation.py::test_rejects_path_traversal` — `id="../../etc/passwd"` → reject.
@@ -80,8 +86,8 @@ Tech-spec Decision 2 явно требует "JSONL queue with atomic CAS (not S
 
 - [ ] **AC1 — Python package scaffold.** `fabric/content-publisher/pyproject.toml` существует (PEP 621), `pip install -e fabric/content-publisher` работает; директории `src/content_publisher/` и `tests/` присутствуют.
 - [ ] **AC2 — `content_publisher.state` module.** Содержит `_write_raw(path, data)`, `_acquire(lock_path)`, `_release(fh)`. Поведение зеркалирует `fabric/workspace-manager/state.py:70-111` — tempfile + fsync + `os.replace` + dir fsync, `fcntl.flock(LOCK_EX)`. **НЕТ импортов из `workspace-manager`** — модули decoupled.
-- [ ] **AC3 — `content_publisher.queue` shared CAS primitive.** Три публичные функции `append_job`, `load`, `cas_status`. Реализация под `fcntl.flock(LOCK_EX)`; запись через temp + `os.replace`. Поведение race-safe (доказано `test_cas_status_atomic_under_concurrent_clicks`). Этот модуль импортируется ОБОИМИ процессами (worker + bot) — никаких других путей записи в `queue.jsonl` существовать не должно.
-- [ ] **AC4 — `content_publisher.models.Job`** Pydantic-модель с 24+ полями из tech-spec Data Models раздела "Queue JSONL schema". Все типы соответствуют schema (datetime/int/str/list/Optional). `JobStatus` StrEnum со всеми 12 состояниями. `Job.allowed_transitions()` возвращает карту переходов state-machine.
+- [ ] **AC3 — `content_publisher.queue` shared CAS primitive.** Четыре публичные функции `append_job`, `load`, `cas_status`, `find_by_prefix`. Реализация под `fcntl.flock(LOCK_EX)`; запись через temp + `os.replace`. Поведение race-safe (доказано `test_cas_status_atomic_under_concurrent_clicks`). `find_by_prefix(job_id_prefix12)` нужен Task 8 для разрешения 12-символьных префиксов из Telegram `callback_data` обратно в полный `job_id`; при ambiguous prefix — `ValueError` (fail-loud). Этот модуль импортируется ОБОИМИ процессами (worker + bot) — никаких других путей записи в `queue.jsonl` существовать не должно.
+- [ ] **AC4 — `content_publisher.models.Job`** Pydantic-модель с 24+ полями из tech-spec Data Models раздела "Queue JSONL schema". Все типы соответствуют schema (datetime/int/str/list/Optional). `JobStatus` StrEnum со всеми 13 состояниями (queued, writing, scoring, preview-sent, publishing, published, attest-pending, done, rejected, regenerated, publish-failed, attest-failed, failed). `Job.allowed_transitions()` возвращает карту переходов state-machine.
 - [ ] **AC5 — `content_publisher.env.restricted_env(kind)`** — реализует allowlist-таблицу из tech-spec Data Models. Четыре kind'а: `claude`, `analyze_blog`, `mnemonik-mcp`, `blogger_inproc`. Для `claude`: fail-loud если ни `CLAUDE_CODE_OAUTH_TOKEN`, ни `ANTHROPIC_API_KEY` не присутствует в `os.environ`.
 - [ ] **AC6 — Строгая UUID v4 валидация.** Field validator на `Job.id` отвергает: UUID других версий, path traversal (`..`, `/`, `\`), control chars (`\x00`-`\x1f`), uppercase hex, любые отклонения от canonical RFC 4122 v4 формата.
 - [ ] **AC7 — `tests/conftest.py` с centralized mock fixtures.** Содержит `tmp_queue_dir`, `tmp_queue_path`, `make_job` factory, заглушки `mock_analyze_blog`, `mock_blogger_run_campaign_from_article`, `mock_mnemonic_mcp_stdio`, `mock_claude_subprocess` (используются Tasks 5/6/8).
@@ -94,7 +100,7 @@ Tech-spec Decision 2 явно требует "JSONL queue with atomic CAS (not S
 - [user-spec.md](../user-spec.md)
 - [tech-spec.md](../tech-spec.md) — особенно Decision 2 (atomic CAS), Data Models (Queue JSONL schema + state machine + restricted_env table), Architecture (Shared resources)
 - [decisions.md](../decisions.md)
-- Project knowledge: каноничные PK-файлы (`project.md`, `architecture.md`, `patterns.md`) для этого репозитория не созданы. Основной context — `tech-spec.md` + репозиторный `CLAUDE.md` (project overview, pipeline, components map). Путь: `/Users/syi/src/sessions/coding-fabric/CLAUDE.md`.
+- Project knowledge: каноничные PK-файлы (`project.md`, `architecture.md`, `patterns.md`) для этого репозитория не созданы. Основной context — `tech-spec.md` + репозиторный [CLAUDE.md](/Users/syi/src/sessions/coding-fabric/CLAUDE.md) (project overview, pipeline, components map, Rules секция со списком "do not commit secrets" и "always read before edit").
 
 **Code files to read (current state — для понимания паттерна, который копируем):**
 - [`fabric/workspace-manager/state.py`](../../../fabric/workspace-manager/state.py) — строки 70-111 (`_write_raw`, `_acquire`, `_release`) — **источник паттерна, который мы копируем (НЕ импортируем)**. Сейчас это методы класса `StateStore`; нам нужны module-level функции с параметризованными путями.
@@ -103,13 +109,14 @@ Tech-spec Decision 2 явно требует "JSONL queue with atomic CAS (not S
 
 **Code files to modify (create new):**
 - `fabric/content-publisher/pyproject.toml` — PEP 621 manifest; deps: `pydantic>=2`; dev-deps: `pytest`, `pytest-asyncio`, `ruff`, `mypy`.
-- `fabric/content-publisher/src/content_publisher/__init__.py` — пустой, либо реэкспорт `Job`, `JobStatus`, `cas_status`, `append_job`, `load`, `restricted_env`.
+- `fabric/content-publisher/src/content_publisher/__init__.py` — пустой, либо реэкспорт `Job`, `JobStatus`, `cas_status`, `append_job`, `load`, `find_by_prefix`, `restricted_env`.
 - `fabric/content-publisher/src/content_publisher/state.py` — module-level `_write_raw`, `_acquire`, `_release` (copy ~30 LOC от workspace-manager).
-- `fabric/content-publisher/src/content_publisher/queue.py` — `append_job`, `load`, `cas_status` + исключения `StaleStateError`, `IllegalTransitionError`, `JobNotFoundError`.
+- `fabric/content-publisher/src/content_publisher/queue.py` — `append_job`, `load`, `cas_status`, `find_by_prefix` + исключения `StaleStateError`, `IllegalTransitionError`, `JobNotFoundError`.
 - `fabric/content-publisher/src/content_publisher/models.py` — `JobStatus` enum, `Job` Pydantic-модель, `allowed_transitions()`.
 - `fabric/content-publisher/src/content_publisher/env.py` — `restricted_env(kind)`.
 - `fabric/content-publisher/tests/conftest.py` — фикстуры (см. step 6).
 - `fabric/content-publisher/tests/test_queue.py` — см. TDD Anchor (7 тестов).
+- `fabric/content-publisher/tests/test_find_by_prefix.py` — см. TDD Anchor (5 тестов).
 - `fabric/content-publisher/tests/test_state_machine.py` — см. TDD Anchor (3 теста).
 - `fabric/content-publisher/tests/test_uuid_validation.py` — см. TDD Anchor (5 тестов).
 - `fabric/content-publisher/tests/test_env_isolation.py` — см. TDD Anchor (4 теста).
@@ -118,7 +125,7 @@ Tech-spec Decision 2 явно требует "JSONL queue with atomic CAS (not S
 
 ### Automated
 
-- `cd fabric/content-publisher && pip install -e . && pytest tests/ -v` → all pass (≥19 tests из TDD Anchor).
+- `cd fabric/content-publisher && pip install -e . && pytest tests/ -v` → all pass (≥24 tests из TDD Anchor).
 - `pytest fabric/content-publisher/tests/test_queue.py::test_cas_status_atomic_under_concurrent_clicks -v` → проходит надёжно (race-safety критичен).
 - `ruff check fabric/content-publisher/` → clean.
 - `mypy fabric/content-publisher/src/` → clean.
@@ -148,7 +155,7 @@ Tech-spec Decision 2 явно требует "JSONL queue with atomic CAS (not S
 - `restricted_env("claude")` — fail-loud, если оба `CLAUDE_CODE_OAUTH_TOKEN` и `ANTHROPIC_API_KEY` отсутствуют (защита от запуска claude без auth, что приведёт к молчаливой деградации).
 
 **Implementation hints:**
-- Скопировать ~30 LOC из `fabric/workspace-manager/state.py` (строки 70-111: `_write_raw`, `_read_raw`, `_acquire`, `_release`). НЕ делать `from workspace_manager.state import _write_raw` — пакеты должны быть decoupled (AC10). Изменения при копировании: (а) функции module-level (не методы класса); (б) принимают `path` параметром; (в) `_write_raw` принимает уже-сериализованные байты (JSONL), а не dict для `json.dump`.
+- Скопировать ~30 LOC из `fabric/workspace-manager/state.py` (строки 70-111: `_write_raw`, `_acquire`, `_release`). НЕ делать `from workspace_manager.state import _write_raw` — пакеты должны быть decoupled (AC10). Изменения при копировании: (а) функции module-level (не методы класса); (б) принимают `path` параметром; (в) `_write_raw` принимает уже-сериализованные байты (JSONL), а не dict для `json.dump`.
 - POSIX-атомарность `os.replace` — гарантируется на одном filesystem; queue.jsonl + temp-файл должны быть в одной директории (это и так так — `tempfile.mkstemp(dir=path.parent)`).
 - Lock-файл — `Path(str(queue_path) + ".lock")`, та же директория. Не пытаться lock'ать сам `queue.jsonl` (advisory flock на файле работает, но конвенция workspace-manager — отдельный `.lock`).
 - Для `cas_status`: ВСЕГДА считывать весь файл под flock; не пытаться "in-place патчить нужную строку" — JSONL не позиционируем без полного парса.
