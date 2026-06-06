@@ -17,6 +17,9 @@
   listen: Restart content-publisher
 
 - name: Restart content-publisher
+  # Must run AFTER the "Probe whether content-publisher is currently
+  # active" handler above — Ansible fires handlers in definition order
+  # and this one depends on the cp_unit_state register from the probe.
   become: true
   ansible.builtin.systemd:
     name: "{{ content_publisher_systemd_unit }}"
