@@ -9,7 +9,7 @@ size: L
 
 ## Solution
 
-Add a new long-running systemd service `content-publisher.service` that owns a JSONL job queue on the persistent Hetzner volume, spawns `claude` subprocesses with the `claude-blog` skill suite to write articles, then publishes them to the @mnemonik Telegram channel via in-process calls to `mnemonik_blogger.agent.run_campaign_from_article` (a Python function exported by the upstream blogger package). The Telegram bot gains a `/publish_content` slash command (and matching MCP tool `publish_content_enqueue`) that enqueues jobs; preview + approval/timeout flow uses aiogram inline keyboards (`publish:approve/reject/retry`). Attestation goes through the Mnemonik MCP server (installed via `npm install -g @mnemonik-xyz/mcp` — a scoped npm package that ships a pre-built binary; role flipped from descoped to enabled). The pipeline is fully independent of Symphony / Kaneo / workspace-manager.
+Add a new long-running systemd service `content-publisher.service` that owns a JSONL job queue on the persistent Hetzner volume, spawns `claude` subprocesses with the `claude-blog` skill suite to write articles, then publishes them to the @mnemonik Telegram channel via in-process calls to `mnemonik_blogger.agent.run_campaign_from_article` (a keyword-only Python function exported by the upstream blogger package, taking `article: Path`, `platforms: list[Platform]`, `settings: Settings`). The Telegram bot gains a `/publish_content` slash command (and matching MCP tool `publish_content_enqueue`) that enqueues jobs; preview + approval/timeout flow uses aiogram inline keyboards (`publish:approve/reject/retry`). Attestation goes through the Mnemonik MCP server (installed via `npm install -g @mnemonik-xyz/mcp` — a scoped npm package that ships the upstream binary named `mnemonik-mcp` per skeptic round 3; the role's Ansible Task verifies the actual installed binary name at deploy time and templates it everywhere). The worker invokes attestation by speaking MCP JSON-RPC over the `mnemonik-mcp mcp-stdio` transport — there is NO one-shot `sign-memory` subcommand; the `mnemonic_sign_memory` tool is reachable only via JSON-RPC. The pipeline is fully independent of Symphony / Kaneo / workspace-manager.
 
 ## Architecture
 
@@ -92,18 +92,19 @@ TG /publish_content      ┌─────────────────�
                          │     issues array to first 3           │
                          │  - render preview via DIRECT Python   │
                          │     import (see Decision 4):          │
-                         │     from mnemonik_blogger.content     │
-                         │       .ingest import ingest_article   │
-                         │     from mnemonik_blogger.content     │
-                         │       .formatters import render       │
-                         │     from mnemonik_blogger.content     │
-                         │       .voice import Platform          │
-                         │     src=ingest_article(Path(<art>))   │
+                         │     from pathlib import Path           │
+                         │     from mnemonik_blogger.config       │
+                         │       import Platform, Settings        │
+                         │     from mnemonik_blogger.content      │
+                         │       .ingest import ingest_article    │
+                         │     from mnemonik_blogger.content      │
+                         │       .formatters import render        │
+                         │     src=ingest_article(<article_path>) │
                          │     rendered=render(                   │
-                         │       Platform.TELEGRAM, src)         │
-                         │     preview_segments=rendered.segments│
-                         │     # list[str] — each is one Telegram│
-                         │     # message in the thread           │
+                         │       Platform.TELEGRAM, src)          │
+                         │     preview_segments=rendered.segments │
+                         │     # list[str] — each is one Telegram │
+                         │     # message in the thread            │
                          │  - CAS status: scoring -> preview-sent│
                          │     write approval_deadline=now+5min, │
                          │     preview_pending=true,             │
@@ -125,32 +126,65 @@ TG /publish_content      ┌─────────────────�
     Worker (NOT bot) does the actual publish:
        BEFORE in-process call: write
        tentative_publish_started_at to queue.jsonl
-       Invokes (DIRECT IMPORT):
+       Invokes (DIRECT IMPORT, keyword-only signature):
          from mnemonik_blogger.agent import \
               run_campaign_from_article,    \
               CampaignResult
-         result: CampaignResult =          \
+         settings = Settings(
+             dry_run=False,
+             min_score=<from env>,
+             claude_blog_path=<from env>,
+             telegram=TelegramConfig(
+                 bot_token=SecretStr(<token>),
+                 channel="@mnemonik"))
+         result: CampaignResult = \
            run_campaign_from_article(       \
-             Path(<article_md>),            \
+             article=Path(<article_md>),    \
              platforms=[Platform.TELEGRAM], \
-             dry_run=False)
-       # Internally calls render(Platform.TELEGRAM, source)
-       # so segments emitted are byte-identical to preview_segments
-       Captures result.posts[0].url, result.posts[0].message_id
-       CAS publishing -> published
+             settings=settings,             \
+             attest=False,                  \
+             min_score=<min_score>)
+       # run_campaign_from_article internally calls
+       # render(Platform.TELEGRAM, post) so segments
+       # match preview_segments byte-for-byte.
+       # attest=False because we handle attestation
+       # ourselves via MCP-stdio (Decision 8).
+       # CampaignResult.results: list[PublishResult].
+       # PublishResult fields: platform, ok, dry_run,
+       #   urls: list[str], ids: list[str], error,
+       #   primary_url (property).
+       pr = result.results[0]
+       if pr.ok:
+           post_url = pr.primary_url
+           post_id = pr.ids[0] if pr.ids else None
+           CAS publishing -> published
+       else:
+           # Live TG API failure path (Risk 4)
+           CAS publishing -> publish-failed
+           DM operator with pr.error + retry hint
 
-4. Attestation (decoupled from publish success)
-   Worker writes a JSON envelope to a tempfile, then:
-     subprocess (env=restricted_env('mnemonic-mcp'),
-                 stdin=PIPE):
-       mnemonic-mcp sign-memory  # reads JSON from stdin
-   stdin payload (no argv leak):
-     {"content_sha256": "<sha>",
-      "post_url": "<url>",
-      "score": <N>,
-      "prompt": "<operator's brief>",
-      "metadata": {...}}
-   Returns receipt_hash on stdout
+4. Attestation via MCP JSON-RPC over stdio
+   Worker spawns:
+     subprocess (env=restricted_env('mnemonik-mcp'),
+                 argv=["mnemonik-mcp", "mcp-stdio"],
+                 stdin=PIPE, stdout=PIPE):
+   Writes MCP framed JSON-RPC to stdin:
+     {"jsonrpc":"2.0","id":1,"method":"initialize",
+      "params":{"protocolVersion":"2024-11-05",
+                "capabilities":{},
+                "clientInfo":{"name":"content-publisher",
+                              "version":"0.1"}}}
+     <reads init response from stdout>
+     {"jsonrpc":"2.0","id":2,"method":"tools/call",
+      "params":{"name":"mnemonic_sign_memory",
+                "arguments":{"content":"<article_md>",
+                             "content_sha256":"<sha>",
+                             "post_url":"<url>",
+                             "score":<N>,
+                             "prompt":"<brief>"}}}
+     <reads tool response with receipt>
+     <closes stdin → subprocess exits>
+   Argv has no payload (entire envelope is stdin JSON-RPC).
    CAS published -> done (attestation_hash + content_sha256 stored)
 
 5. If attestation fails:
@@ -197,37 +231,69 @@ TG /publish_content      ┌─────────────────�
 **Alternatives considered:** SQLite — overkill + WAL locking quirks. Redis — adds network dep. Postgres — cross-service coupling.
 **User-spec anchor:** Decision #3 + AC8.
 
-### Decision 3: Mnemonik MCP installed via `npm install -g @mnemonik-xyz/mcp` (scoped package, pre-built binary)
-**Decision:** Rewrite `infrastructure/ansible/roles/mnemonic-mcp/tasks/main.yml` to replace the bogus binary-download flow (`mnemonic_mcp_binary_url` pointed at the non-existent `github.com/mnemonic-ai/mnemonic-mcp` repo) with `npm install -g @mnemonik-xyz/mcp@<pinned-version>` — a published scoped npm package that ships a pre-built `mnemonic-mcp` binary on PATH. Toggle `mnemonic_mcp_enabled: true`. systemd unit invokes `mnemonic-mcp` from PATH.
-**Rationale:** Real upstream install path confirmed by operator (round 2 clarification). Reproducible: pin npm version. No build toolchain required on VM.
-**Alternatives considered:** `cargo install --git https://github.com/mnemonik-xyz/monorepo --path mcp` (skeptic round 2 saw Rust source in monorepo). Rejected — the npm-published binary is the upstream-supported distribution; the Rust source is the build, not the install.
+### Decision 3: Mnemonik MCP installed via `npm install -g @mnemonik-xyz/mcp` (scoped package); binary spelling + transport verified by Task 2
+**Decision:** Rewrite `infrastructure/ansible/roles/mnemonic-mcp/tasks/main.yml` to replace the bogus binary-download flow (`mnemonic_mcp_binary_url` pointed at non-existent `github.com/mnemonic-ai/mnemonic-mcp`) with `npm install -g @mnemonik-xyz/mcp@<pinned-version>`. Skeptic round 3 verified the upstream npm package `@mnemonik-xyz/mcp@0.2.4` ships a binary spelled `mnemonik-mcp` (with K, NOT `mnemonic-mcp` with C). The underlying Rust binary in `mnemonik-xyz/monorepo/mcp` may be spelled differently and live under `~/.local/share/@mnemonik-xyz/mcp/bin/`. Task 2 verifies the exact installed binary name with `which mnemonik-mcp || which mnemonic-mcp` and templates the discovered name into `/etc/blogger.mcp.json`, the systemd unit, and an Ansible fact `mnemonic_mcp_binary` consumed by Task 3's templates. Subcommands available on the binary: `install`, `mcp-stdio`, `doctor` (NOT `sign-memory`, NOT `recall`). Attestation is invoked via MCP JSON-RPC over the `mcp-stdio` transport (see Architecture step 4 + Decision 8).
+**Rationale:** Real upstream install path; pin npm version; no build toolchain required on VM; binary name uncertainty is resolved at deploy time by Ansible discovery + fact-templating, so we cannot bake a wrong spelling into the spec.
+**Alternatives considered:** `cargo install --git https://github.com/mnemonik-xyz/monorepo --path mcp`. Rejected — npm-published binary is the upstream distribution; building Rust adds toolchain dep without benefit.
 **User-spec anchor:** Decision #5 (attestation via local Mnemonik MCP) + AC7.
 
-### Decision 4: Direct Python import of blogger renderer + publisher (not CLI)
-**Decision:** Both preview and publish use in-process Python calls into the upstream `mnemonik_blogger` package. The earlier draft of this spec referenced `mnemonik-blogger render --stdout` (doesn't exist) and `mnemonik_blogger.agent.publish_post` (also doesn't exist). Real upstream API verified by skeptic:
+### Decision 4: Direct Python import of blogger renderer + publisher (not CLI) — verified empirically
+**Decision:** Both preview and publish use in-process Python calls into upstream `mnemonik_blogger`. Round 4 verified the real API by reading the upstream source via `gh api`:
 ```python
 from pathlib import Path
-from mnemonik_blogger.content.ingest import ingest_article  # signature: (path: str | Path) -> SourcePost
-from mnemonik_blogger.content.formatters import render  # signature: (platform: Platform, post: SourcePost) -> RenderedPost
-from mnemonik_blogger.content.voice import Platform  # enum: TELEGRAM, DISCORD, X, FARCASTER
+from pydantic import SecretStr
+from mnemonik_blogger.config import Platform, Settings, TelegramConfig
+# Platform is a StrEnum in CONFIG, NOT in content.voice (earlier draft was wrong)
+# Values: TELEGRAM, DISCORD, TWITTER, FARCASTER  (NOT "X")
+from mnemonik_blogger.content.ingest import ingest_article
+# signature: (path: str | Path) -> SourcePost
+from mnemonik_blogger.content.formatters import render
+# signature: (platform: Platform, post: SourcePost) -> RenderedPost
+# render() IS the dispatcher: _RENDERERS[platform](post)
 from mnemonik_blogger.agent import run_campaign_from_article, CampaignResult
+# Keyword-only signature:
+#   def run_campaign_from_article(
+#       *, article: str | Path, platforms: list[Platform],
+#       settings: Settings, grounding: Grounding | None = None,
+#       attest: bool = True, min_score: int | None = None,
+#   ) -> CampaignResult
+# There is NO `dry_run` positional/kwarg — dry-run is set on Settings.dry_run.
 
 # Preview path (worker):
-src = ingest_article(Path(article_md_path))
+src = ingest_article(article_md_path)  # str | Path both work
 rendered = render(Platform.TELEGRAM, src)
-preview_segments = rendered.segments  # list[str], one per Telegram message in the thread
+preview_segments = rendered.segments  # list[str], one per TG msg in thread
 
 # Publish path (worker, after operator approves or timeout fires):
-result: CampaignResult = run_campaign_from_article(
-    Path(article_md_path),
-    platforms=[Platform.TELEGRAM],
-    dry_run=False
+settings = Settings(
+    dry_run=False,
+    min_score=int(env["MNEMONIK_MIN_SCORE"]),
+    claude_blog_path=env["MNEMONIK_CLAUDE_BLOG_PATH"],
+    telegram=TelegramConfig(
+        bot_token=SecretStr(env["TELEGRAM_BOT_TOKEN"]),
+        channel=env["TELEGRAM_CHANNEL"],
+    ),
 )
-# run_campaign_from_article internally calls render(Platform.TELEGRAM, ingest_article(...))
-# so result.posts[i].body for the Telegram segment is byte-identical to preview_segments[i]
+result: CampaignResult = run_campaign_from_article(
+    article=Path(article_md_path),
+    platforms=[Platform.TELEGRAM],
+    settings=settings,
+    attest=False,  # we attest ourselves via MCP-stdio (Decision 8)
+    min_score=settings.min_score,
+)
+# CampaignResult fields: post: SourcePost, results: list[PublishResult],
+#   quality: <score report>, blocked: bool
+# PublishResult fields: platform, ok, dry_run, urls: list[str],
+#   ids: list[str], error: str | None
+# PublishResult property: primary_url -> str | None
+pr = result.results[0]
+if pr.ok:
+    post_url = pr.primary_url
+    post_id = pr.ids[0] if pr.ids else None
 ```
-**Rationale:** Direct import is the only way to satisfy user-spec AC5 (byte-equality preview ↔ publish). Both code paths share the same `render()` call. Pinning blogger ref + Decision 11 import test mitigate upstream drift.
-**Alternatives considered:** Parse `mnemonik-blogger preview` CLI output. Rejected — preview CLI emits decorated multi-segment output (`===== telegram =====` headers) not byte-identical to actual publish output.
+The key invariant: `run_campaign_from_article` internally calls `_publish_post()` which uses the same `render(Platform.TELEGRAM, post)` dispatcher, so the bytes sent to Telegram are derived from the same render call as preview_segments. Byte-equality is structural, not assumed.
+**Rationale:** Direct import is the only way to satisfy AC5 (byte-equality preview ↔ publish). Earlier drafts referenced `mnemonik-blogger render --stdout` (doesn't exist), `mnemonik_blogger.agent.publish_post` (doesn't exist), and positional args / `dry_run=` kwarg (signature is keyword-only, no `dry_run` arg). Empirical verification via `gh api repos/mnemonik-dev/blogger/contents/...` confirmed real shape.
+**Alternatives considered:** Parse `mnemonik-blogger preview` CLI output. Rejected — preview CLI emits decorated multi-segment output (`===== telegram =====` headers) not byte-identical to publish output.
 **User-spec anchor:** AC5.
 
 ### Decision 5: Separate publisher bot
@@ -252,10 +318,13 @@ On startup, worker compares the two; mismatch = abort with loud error. On first 
 **Alternatives considered:** Single env flip (rejected for security). Hardcoded approval-only with auto deferred (rejected — Q11 user wants the path).
 **User-spec anchor:** AC11.
 
-### Decision 8: Manual verification for `publishing`-state crash recovery (no channel scan)
-**Decision:** On worker startup, jobs in `publishing` status are CAS'd to a new `recovery-needed` terminal-ish state. Worker DMs operator with the article path + instructions to check @mnemonik manually. If the operator confirms the post landed: `/recovery-mark-published <job_id>` slash command moves it to `published` and resumes attestation. If the post is missing: operator can re-run `/publish_content` with the same brief.
-**Rationale:** Telegram Bot API doesn't expose a clean "find recent post by content/id" — scanning getUpdates/getChat is brittle and may miss the post. Manual operator step is rare (only on worker crash mid-publish, <1/year expected) and inherently safer.
-**Alternatives considered:** Scan channel via Bot API (`getUpdates` + content_sha256 match). Rejected — Bot API has 100-update history limit; if crash happens during a busy period, the post might already be off the window.
+### Decision 8: Manual verification for `publishing`-state crash recovery + `/recovery-mark-published` slash command
+**Decision:** On worker startup, jobs in `publishing` status are CAS'd to a new `recovery-needed` terminal-ish state. Worker DMs operator with the article path + instructions. Operator handles via TWO new slash commands (BOTH owned by Task 9 alongside the existing publish:approve/reject/retry):
+- `/recovery_mark_published <job_id>` — moves `recovery-needed → published` and resumes attestation (sub-loop b retries `attest-pending`).
+- `/recovery_mark_failed <job_id>` — moves `recovery-needed → publish-failed` (terminal). Operator may then re-issue `/publish_content` with the original prompt (stored at the worktree path).
+Both commands gated by `OPERATOR_USER_ID` allowlist.
+**Rationale:** Telegram Bot API doesn't expose a clean "find recent post by content/id" — scanning getUpdates/getChat is brittle. Manual step is rare (only on worker crash mid-publish, <1/year expected) and safer.
+**Alternatives considered:** Scan channel via Bot API (`getUpdates` + content_sha256 match). Rejected — Bot API has 100-update history limit; busy period may push post off the window.
 **User-spec anchor:** Риск 6 (preserves no-double-post guarantee).
 
 ### Decision 9: HMAC-tagged callback_data + 12-char job_id prefix + operator authorization + rotation window
@@ -270,17 +339,28 @@ On startup, worker compares the two; mismatch = abort with loud error. On first 
 **Alternatives considered:** `After=mnt-HC_Volume_<id>.mount` — preferred per systemd best practice but adds the same id-resolution requirement.
 **User-spec anchor:** Риск 9, AC15.
 
-### Decision 11: Pinned upstream refs + role asserts import surface at install
-**Decision:** Role defaults pin `blogger_repo_ref` and `claude_blog_repo_ref` to specific commit SHAs (not `main`). Ansible role asserts:
+### Decision 11: Pinned upstream refs + role asserts real import surface + signature inspection at install
+**Decision:** Role defaults pin `blogger_repo_ref` and `claude_blog_repo_ref` to specific commit SHAs. Ansible role runs:
 ```
-python -c "from pathlib import Path; \
-    from mnemonik_blogger.content.ingest import ingest_article; \
-    from mnemonik_blogger.content.formatters import render; \
-    from mnemonik_blogger.content.voice import Platform; \
-    from mnemonik_blogger.agent import run_campaign_from_article, CampaignResult"
+python -c "
+from pathlib import Path
+from inspect import signature
+from mnemonik_blogger.config import Platform, Settings
+from mnemonik_blogger.content.ingest import ingest_article
+from mnemonik_blogger.content.formatters import render
+from mnemonik_blogger.agent import run_campaign_from_article, CampaignResult
+# verify upstream signature still keyword-only with the args we use
+sig = signature(run_campaign_from_article)
+required = {'article','platforms','settings'}
+assert required <= set(sig.parameters), f'missing kwargs: {required - set(sig.parameters)}'
+assert all(sig.parameters[n].kind.name == 'KEYWORD_ONLY' for n in required), \
+       'run_campaign_from_article args must be keyword-only'
+# verify Platform.TELEGRAM enum value
+assert Platform.TELEGRAM.value == 'telegram'
+"
 ```
-exits 0; `python /opt/claude-blog/scripts/analyze_blog.py --help` exits 0. Failures stop the deploy with a clear "blogger upstream API drift" message.
-**Rationale:** User-spec mandates this gate. Import test catches what the earlier-draft CLI-grep would have missed.
+exits 0; `python /opt/claude-blog/scripts/analyze_blog.py --help` exits 0. Failures stop the deploy with clear "blogger upstream API drift" + diff hint.
+**Rationale:** User-spec mandates this gate. Earlier import-test variants would NOT have caught round-3 mirages (wrong module path for Platform, missing dry_run kwarg) — the signature inspection above closes that gap.
 **User-spec anchor:** Ограничения "обязательная верификация CLI surface".
 
 ### Decision 12: pip install with `--require-hashes` for blogger venv
@@ -321,8 +401,9 @@ One JSON object per line. Order = creation order.
   "preview_pending": false,                    // worker→bot signal flag
   "notify_pending": false,                     // worker→bot DM signal (failures, attest done)
   "tentative_publish_started_at": null,        // ISO 8601, written BEFORE blogger call
-  "post_url": null,
-  "post_message_id": null,                     // first message in TG thread
+  "publish_error": null,                        // PublishResult.error if status=publish-failed
+  "post_url": null,                             // PublishResult.primary_url
+  "post_message_id": null,                      // PublishResult.ids[0] if available
   "content_sha256": null,                      // sha256(article_md_bytes); attestation binding
   "attestation_hash": null,
   "attest_attempts": 0,
@@ -334,22 +415,24 @@ One JSON object per line. Order = creation order.
 ### Job state machine
 
 ```
-queued ─► writing ─► scoring ─► preview-sent ─┬─► publishing ─► published ─► attest-pending ─► done
-   │         │           │            │       ├─► rejected (terminal — [✗] click)
-   │         │           │            │       └─► (regenerated; new job created; this stays
-   │         │           │            │            at preview-sent until cleanup_at, then GC)
-   │         │           │            │
-   └─────────┴───────────┴────────────┴─► failed (terminal — any hard error)
-                                                              │
-                                                              ▼ 24h fail
-                                                        attest-failed (terminal)
-                                                              ▲
-   (worker startup, job at "publishing")                      │
-       └─► recovery-needed (terminal-ish; operator must verify TG; can manually mark "published")
-                                                              │
-                                          (via /recovery-mark-published <id>)
-                                                              ▼
-                                                          published → attest-pending → done
+queued ─► writing ─► scoring ─► preview-sent ─┬─► publishing ─┬─► published ─► attest-pending ─► done
+   │         │           │            │       ├─► rejected    │
+   │         │           │            │       │   (terminal)  │
+   │         │           │            │       └─► regenerated │           (24h fail)
+   │         │           │            │           (stays at   │              ▼
+   │         │           │            │           preview-sent│         attest-failed (terminal)
+   │         │           │            │           until GC)   │
+   │         │           │            │                       └─► publish-failed (terminal — TG
+   │         │           │            │                                   API failure; user-spec
+   │         │           │            │                                   Risk 4; operator can
+   │         │           │            │                                   /publish_content again)
+   └─────────┴───────────┴────────────┘─► failed (terminal — any hard error in writing/scoring/spawn)
+
+(worker startup, job at "publishing")
+    └─► recovery-needed (terminal-ish; operator must verify TG manually)
+         │
+         ├─► /recovery_mark_published <id>  → published → attest-pending → done
+         └─► /recovery_mark_failed <id>     → publish-failed (terminal)
 ```
 
 ### `restricted_env(kind)` allowlist table
@@ -360,7 +443,7 @@ Helper produces a minimal env dict per subprocess kind (none of the parent proce
 |------|--------------------|--------|
 | `claude` | `PATH`, `HOME=/var/lib/content-publisher`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY` (fallback) | `/etc/blogger.env` |
 | `analyze_blog` | `PATH`, `MNEMONIK_CLAUDE_BLOG_PATH` | `/etc/blogger.env` |
-| `mnemonic-mcp` | `PATH` only | (none — all payload via stdin JSON) |
+| `mnemonik-mcp` (binary name templated from Task 2 fact) | `PATH` only | (none — all payload via stdin JSON-RPC envelope; argv = `["<bin>", "mcp-stdio"]`) |
 | `blogger_inproc` | (in-process call, no subprocess; uses `TELEGRAM_BOT_TOKEN`, `MNEMONIK_MIN_SCORE` from worker's env) | worker process env |
 
 `test_env_isolation.py` asserts each subprocess kind sees exactly the listed variables and nothing else (specifically asserts that `BOT_TOKEN` from telegram-ai-agent is NOT visible to claude/analyze_blog/mnemonic-mcp subprocesses).
@@ -382,11 +465,13 @@ CONTENT_PUBLISHER_WORKTREE_ROOT=/var/lib/content-publisher/work
 MNEMONIK_DRY_RUN=false
 ```
 
-### `/etc/blogger.mcp.json`
+### `/etc/blogger.mcp.json` (mcp-stdio transport — binary name resolved at install)
 
 ```json
-{ "mcpServers": { "mnemonik": { "command": "mnemonic-mcp", "args": [] } } }
+{ "mcpServers": { "mnemonik": { "command": "{{ mnemonic_mcp_binary }}", "args": ["mcp-stdio"] } } }
 ```
+
+The `{{ mnemonic_mcp_binary }}` Ansible fact is set by Task 2 to whatever binary name `npm install -g @mnemonik-xyz/mcp` actually placed on PATH (skeptic round 3 saw `mnemonik-mcp` with K; the role discovers and templates the discovered value rather than baking in a spelling assumption).
 
 ## Dependencies
 
@@ -412,7 +497,7 @@ Mock fixtures centralized in `fabric/content-publisher/tests/conftest.py`: `mock
 
 - `test_queue.py` — JSONL round-trip; `cas_status` atomic under simulated concurrent writers (threading); sort by fire_at; idempotent transitions.
 - `test_state_machine.py` — every valid + every illegal transition; crash-recovery decisions per status (including `publishing → recovery-needed`).
-- `test_preview_render.py` — **cross-comparison byte-equality**: call `render(Platform.TELEGRAM, ingest_article(path))` AND capture what `run_campaign_from_article(path, platforms=[Platform.TELEGRAM], dry_run=True)` would emit. Assert `result.posts[i].body == rendered.segments[i]` for all i. Mock the actual TG send.
+- `test_preview_render.py` — **cross-comparison byte-equality**: (a) compute `rendered_segments = render(Platform.TELEGRAM, ingest_article(path)).segments`; (b) monkey-patch the platform-specific publisher inside `mnemonik_blogger.agent._publish_post` (e.g. patch `mnemonik_blogger.publish.telegram.send_segments` or whichever is the actual seam in upstream) to capture what would be sent to Telegram instead of calling the real Bot API; (c) call `run_campaign_from_article(article=Path(path), platforms=[Platform.TELEGRAM], settings=Settings(dry_run=False, ...), attest=False)`; (d) assert captured segments == rendered_segments byte-for-byte. The intercept point's exact name is verified by Task 3's import-test (Decision 11).
 - `test_analyze_gate.py` — high score (90): preview without `[🔄]`. Low score (50): preview with `[🔄]` + first 3 issues only.
 - `test_at_parse.py` — future ISO accepted; past ISO rejected with explicit error.
 - `test_uuid_validation.py` — accepts UUID v4 only; rejects `../`, control chars, leading dash, empty, too-long.
@@ -428,7 +513,7 @@ Mock fixtures centralized in `fabric/content-publisher/tests/conftest.py`: `mock
 - `test_retry_linkage.py` — `[🔄 Retry]` callback creates new job AND atomically writes `regenerated_to=<new_id>` on the old job (Decision 6).
 - `test_slash_registration.py` — `publish_content` appears in `MOLYANOV_BOT_COMMANDS`; Telegram-style format validator (`re.fullmatch(r"[a-z0-9_]+", name)`) accepts (AC1).
 - `test_env_isolation.py` — each subprocess kind sees only its allowlisted env vars; `BOT_TOKEN` of telegram-ai-agent NOT visible to claude/analyze_blog/mnemonic-mcp.
-- `test_attest_envelope.py` — `mnemonic-mcp sign-memory` invocation: argv is `["mnemonic-mcp", "sign-memory"]` ONLY; the JSON envelope (post_url, score, prompt, content_sha256) goes via stdin; assert via mocked subprocess capture.
+- `test_attest_envelope.py` — Mnemonik MCP-stdio attestation envelope: argv is exactly `[<mnemonic_mcp_binary>, "mcp-stdio"]` ONLY (no payload); the MCP JSON-RPC `initialize` then `tools/call mnemonic_sign_memory` messages (with `content`, `content_sha256`, `post_url`, `score`, `prompt` in the `arguments` field) are written to stdin; mocked subprocess captures argv + stdin bytes; receipt is parsed from mocked stdout response.
 - `test_auto_mode_token_binding.py` — flipping `PUBLISH_MODE=auto` without matching `publish_auto_mode_token` → worker startup raises + journald error.
 
 ### Integration tests
@@ -461,7 +546,8 @@ Per-task `Verify-smoke:` in each Implementation Task. The Final Wave's post-depl
 
 | Risk | Mitigation |
 |------|-----------|
-| Mnemonik MCP CLI args differ after npm install | Decision 11 verification asserts `mnemonic-mcp --help` and signs a test envelope at install time; fail-loud if API drifts |
+| Mnemonik MCP binary name/subcommand differs after npm install | Task 2's binary discovery (`which mnemonik-mcp || which mnemonic-mcp` → fact) + post-install MCP-stdio handshake test catches drift at deploy time; fail-loud |
+| `mnemonik_blogger` upstream signature shifts (e.g. adds required kwarg) | Decision 11's `inspect.signature` check at install time asserts keyword-only `article`, `platforms`, `settings` are all present; fail-loud with diff hint |
 | Blogger upstream renames internal modules | Decision 11 import test catches at deploy time. Pinned ref protects from drift |
 | LLM hallucinates args in `publish_content_enqueue` MCP call | Server-side re-validation; `_actor_user_id` bound from MCP session context, not LLM-supplied; auto-mode rejected via this path (Decision 13) |
 | Concurrent queue writes from bot (MCP tool) + worker | Shared `cas_status` via flock; worst case ~10ms wait |
@@ -469,7 +555,7 @@ Per-task `Verify-smoke:` in each Implementation Task. The Final Wave's post-depl
 | Mnemonik MCP role npm install fails | Role exits non-zero with clear message; deploy fails fast |
 | Pinned refs go stale | Manual bump: edit `defaults/main.yml` + redeploy |
 | Operator forgets to add publisher bot as channel admin | Role's Ansible smoke calls `getChat` on @mnemonik with publisher token; fails clearly |
-| Subprocess argv content leak via `ps` | All bulk content via stdin; mnemonic-mcp argv is just `["mnemonic-mcp", "sign-memory"]` (envelope in stdin JSON) |
+| Subprocess argv content leak via `ps` | All bulk content via stdin; mnemonik-mcp argv is just `[<binary>, "mcp-stdio"]` (entire MCP JSON-RPC envelope including content/url/score/prompt lives in stdin) |
 | in-process publish hardening | systemd unit: `LimitCORE=0`, `ProtectSystem=strict`, `NoNewPrivileges=true`. excepthook scrubs article_text from tracebacks before journald |
 | HMAC secret rotation breaks live previews | `CALLBACK_HMAC_SECRETS=current,previous` window; runbook in `infrastructure/ansible/roles/content-publisher/README.md` |
 | `PUBLISH_MODE=auto` env-flip single-point | Decision 7: two-location binding (`PUBLISH_AUTO_MODE_TOKEN` env value must equal sops); DM challenge on transition |
@@ -497,14 +583,14 @@ User-spec AC1-15 inherited. Additional tech-level:
 
 - [ ] **AC-T1 — Module imports verified during role install**: Ansible asserts blogger imports (5 names) + analyze_blog --help. Result + SHAs recorded in `work/content-publish-pipeline/decisions.md`.
 - [ ] **AC-T2 — No regression in existing services**: post-deploy verify all services healthy:
-  - systemd: `telegram-ai-agent`, `workspace-manager`, `mnemonic-mcp` (newly enabled) — `active (running)`
+  - systemd: `telegram-ai-agent`, `workspace-manager`, `mnemonic-mcp.service` (the systemd unit name stays the same regardless of binary spelling), `content-publisher` — `active (running)`
   - docker compose: `kaneo-*` stack at `/opt/kaneo/` and `vaultwarden-*` stack at `/opt/vaultwarden/` — all containers `Up (healthy)` via `docker compose ps`
 - [ ] **AC-T3 — File modes**: queue.jsonl `op:op 0600`; `/etc/blogger.env` `root:root 0600`; `/etc/blogger.mcp.json` `root:op 0644`.
 - [ ] **AC-T4 — RequiresMountsFor**: `umount` volume → `systemctl restart content-publisher` exits non-zero; journalctl has "mount missing" message.
 - [ ] **AC-T5 — Existing tests pass**: workspace-manager + telegram-ai-agent suites green.
 - [ ] **AC-T6 — Operator authorization + HMAC**: foreign `from_user.id` callback → "Not authorized"; tampered HMAC → "Invalid signature".
 - [ ] **AC-T7 — tentative ordering**: `test_tentative_write_ordering.py` verifies `tentative_publish_started_at` written before `run_campaign_from_article` call.
-- [ ] **AC-T8 — mnemonic-mcp argv hygiene**: `test_attest_envelope.py` proves no payload data in argv.
+- [ ] **AC-T8 — Mnemonik MCP argv hygiene + MCP-stdio handshake**: `test_attest_envelope.py` proves subprocess argv is exactly `[<mnemonic_mcp_binary>, "mcp-stdio"]` (no payload data); `integration/test_mcp_stdio_handshake.py` proves the worker correctly performs MCP `initialize` then `tools/call mnemonic_sign_memory` over stdin and parses the receipt from stdout.
 - [ ] **AC-T9 — env isolation**: `test_env_isolation.py` proves per-subprocess allowlist.
 - [ ] **AC-T10 — auto-mode two-location binding**: `test_auto_mode_token_binding.py` proves mismatched token aborts.
 - [ ] **AC-T11 — HMAC rotation runbook**: README documents 4-step rotation; security-audit task signs off.
@@ -520,12 +606,12 @@ User-spec AC1-15 inherited. Additional tech-level:
 - **Files to modify:** `infrastructure/secrets/secrets.sops.yml.template`, `infrastructure/secrets/secrets.sops.yml` (sops-edited)
 - **Files to read:** `infrastructure/secrets/secrets.sops.yml.template`, `infrastructure/ansible/roles/fabric-services/tasks/main.yml`
 
-#### Task 2: Rewrite Mnemonik MCP role for npm scoped-package install
-- **Description:** Replace `mnemonic_mcp_binary_url`/`mnemonic_mcp_binary_sha256` with `npm install -g @mnemonik-xyz/mcp@<pinned-version>`. Ensure node+npm prerequisite on VM. Update systemd unit to invoke `mnemonic-mcp` from PATH. Toggle `mnemonic_mcp_enabled: true`.
+#### Task 2: Rewrite Mnemonik MCP role for npm scoped-package install + binary-name discovery + npm lockfile
+- **Description:** Replace `mnemonic_mcp_binary_url`/`mnemonic_mcp_binary_sha256` with `npm install -g @mnemonik-xyz/mcp@<pinned-version>`. Ensure node+npm prerequisite on VM. After install, discover the actual binary name on PATH via `which mnemonik-mcp || which mnemonic-mcp` → save as Ansible fact `mnemonic_mcp_binary`. Update systemd unit + `/etc/blogger.mcp.json` template to use the discovered binary name. Toggle `mnemonic_mcp_enabled: true`. Install via `npm ci` from a checked-in `package-lock.json` (per security R2-8) so transitive deps are also locked. Add publisher-bot token rotation runbook AND mnemonik-mcp version-bump runbook to role README.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor
-- **Verify-smoke:** post-deploy `systemctl is-active mnemonic-mcp` → `active`; `mnemonic-mcp --help` exits 0; `echo '{"content_sha256":"deadbeef"}' | mnemonic-mcp sign-memory` returns a non-empty receipt (sanity).
-- **Files to modify:** `infrastructure/ansible/roles/mnemonic-mcp/defaults/main.yml`, `infrastructure/ansible/roles/mnemonic-mcp/tasks/main.yml`, `infrastructure/ansible/roles/mnemonic-mcp/templates/mnemonic-mcp.service.j2`
+- **Verify-smoke:** post-deploy `systemctl is-active mnemonic-mcp` → `active`; `$mnemonic_mcp_binary --help` exits 0 and lists subcommand `mcp-stdio`; one-shot JSON-RPC handshake: spawn `$mnemonic_mcp_binary mcp-stdio` and feed an `initialize` message via stdin → expect protocol-version response from stdout. NO `sign-memory` subcommand probe (skeptic round 3 confirmed it doesn't exist).
+- **Files to modify:** `infrastructure/ansible/roles/mnemonic-mcp/{defaults/main.yml, tasks/main.yml, templates/mnemonic-mcp.service.j2, files/package-lock.json (NEW), README.md (NEW or extended)}`
 - **Files to read:** `infrastructure/ansible/roles/mnemonic-mcp/tasks/main.yml`, `infrastructure/ansible/roles/fabric-services/tasks/main.yml`
 
 #### Task 3: Ansible role `content-publisher` — install scaffold + upstream verification + README rotation runbook
@@ -552,12 +638,12 @@ User-spec AC1-15 inherited. Additional tech-level:
 - **Files to modify:** `fabric/content-publisher/src/content_publisher/{worker.py, spawn.py, score.py, render.py}`, `fabric/content-publisher/tests/{test_preview_render.py, test_analyze_gate.py, test_spawn_failure_path.py, test_separate_bot_token.py, test_required_mounts_for.py}`
 - **Files to read:** `fabric/workspace-manager/dispatch.py` (subprocess pattern, REFERENCE only)
 
-#### Task 6: `fabric/content-publisher/` — publish + deadline-checker + cleanup-gc + attestation + recovery
-- **Description:** Implement publish step: writes `tentative_publish_started_at` BEFORE call; in-process call to `run_campaign_from_article(Path(article_md), platforms=[Platform.TELEGRAM], dry_run=False)`; captures `post_url`+`post_message_id`; CAS `publishing → published`. Implement deadline-checker sub-loop (30s; also retries `attest-pending`). Implement cleanup-gc sub-loop (5min; rmtree worktrees of terminal jobs whose `cleanup_at <= now`; archive record to `queue.archive.jsonl`). Implement attestation step (`mnemonic-mcp sign-memory` subprocess with `env=restricted_env("mnemonic-mcp")` and JSON envelope via stdin; on failure: `published → attest-pending` + retry every 5min; 24h escalation: `attest-failed`). Implement crash recovery scan on `main.py` startup: `publishing` → CAS `recovery-needed` + DM operator. Implement two-location auto-mode token check on startup.
+#### Task 6: `fabric/content-publisher/` — publish + deadline-checker + cleanup-gc + MCP-stdio attestation + recovery + rate ceiling
+- **Description:** Implement publish step: writes `tentative_publish_started_at` BEFORE the call; in-process call to `run_campaign_from_article(article=Path(article_md), platforms=[Platform.TELEGRAM], settings=Settings(...), attest=False, min_score=N)` (keyword-only signature, see Decision 4); captures `pr.primary_url`, `pr.ids[0]` from `result.results[0]`; CAS `publishing → published` on `pr.ok==True` OR `publishing → publish-failed` with `pr.error` stored on `pr.ok==False` + DM operator. Implement deadline-checker sub-loop (30s; also retries `attest-pending`). Implement cleanup-gc sub-loop (5min; rmtree worktrees of terminal jobs whose `cleanup_at <= now`; archive record to `queue.archive.jsonl`). Implement attestation via MCP-stdio: spawn `<mnemonic_mcp_binary> mcp-stdio` subprocess with `env=restricted_env("mnemonik-mcp")`; speak MCP JSON-RPC over stdin (newline-delimited) — `initialize` then `tools/call` for `mnemonic_sign_memory` with arguments `{content, content_sha256, post_url, score, prompt}`; read receipt from stdout; close stdin to exit subprocess. On any failure (subprocess crash, MCP error response, timeout): `published → attest-pending` + retry every 5min via sub-loop (b); 24h escalation: `attest-failed` + DM operator. Implement crash recovery scan on `main.py` startup: `publishing` → CAS `recovery-needed` + DM operator. Implement two-location auto-mode token check on startup (abort if mismatch). Add posts-per-hour rate ceiling counter (security R2-9) — refuses to publish if >N posts in last hour, status `publish-failed` with `publish_error="rate ceiling"`.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, test-reviewer, security-auditor
-- **Files to modify:** `fabric/content-publisher/src/content_publisher/{publish.py, deadline.py, cleanup.py, attest.py, recovery.py, main.py}`, `fabric/content-publisher/tests/{test_deadline_checker.py, test_cleanup_gc.py, test_attest_retry.py, test_attest_envelope.py, test_auto_mode.py, test_auto_mode_token_binding.py, test_tentative_write_ordering.py, integration/test_crash_recovery.py, integration/test_concurrent_publish.py, integration/test_attestation_pipeline.py}`
-- **Files to read:** `fabric/workspace-manager/main.py` (lifespan)
+- **Files to modify:** `fabric/content-publisher/src/content_publisher/{publish.py, deadline.py, cleanup.py, attest.py, recovery.py, main.py, mcp_client.py}`, `fabric/content-publisher/tests/{test_deadline_checker.py, test_cleanup_gc.py, test_attest_retry.py, test_attest_envelope.py, test_auto_mode.py, test_auto_mode_token_binding.py, test_tentative_write_ordering.py, test_publish_failed_path.py, test_rate_ceiling.py, integration/test_crash_recovery.py, integration/test_concurrent_publish.py, integration/test_attestation_pipeline.py, integration/test_mcp_stdio_handshake.py}`
+- **Files to read:** `fabric/workspace-manager/main.py` (lifespan pattern)
 
 #### Task 7: Wire `content-publisher.service` to start on deploy + Ansible smoke
 - **Description:** Update Ansible role (append to Task-3 role; not a rewrite): install `fabric/content-publisher/` package into venv, enable+start the systemd unit. `wait_for` task asserts polling within 30s of start (specific log line: `queue-poll started`, `deadline-checker started`, `cleanup-gc started`). Ansible task calls publisher-bot's `getChat` on @mnemonik via Bot API — fails clearly if not admin.
@@ -576,8 +662,8 @@ User-spec AC1-15 inherited. Additional tech-level:
 - **Files to modify:** `mnemonik-bridge-workspace/telegram-ai-agent/mcp-servers/bot/server.py`, `mnemonik-bridge-workspace/telegram-ai-agent/mcp-servers/bot/tests/__init__.py` *(NEW dir)*, `mnemonik-bridge-workspace/telegram-ai-agent/mcp-servers/bot/tests/test_publish_tool.py` *(NEW)*
 - **Files to read:** `mnemonik-bridge-workspace/telegram-ai-agent/mcp-servers/bot/server.py`, `fabric/content-publisher/src/content_publisher/queue.py` (Task 4)
 
-#### Task 9: Bot — slash command + callback handlers + preview-dispatch poll + retry linkage
-- **Description:** Add `LocalizedBotCommand("publish_content", ...)` to `MOLYANOV_BOT_COMMANDS`. New file `core/handlers/publish.py` with: slash handler for `/publish_content` (passes raw text to bot's claude → MCP tool per Deviation #1); 3 callback handlers for `publish:approve|reject|retry:<id[:12]>:<hmac>` with `from_user.id` allowlist + HMAC validation (accept current OR previous secret); on retry: atomically write `regenerated_to=<new_id>` on old job + create new job (single CAS-protected operation). Background asyncio task polls queue.jsonl every 5s for jobs where `status=preview-sent AND preview_pending=true`, sends preview DM (joined `preview_segments`) with HMAC-tagged inline keyboard, marks `preview_pending=false`. Same poll sends DMs for `notify_pending=true` jobs (spawn failures, attest results). Register `publish_router` in `__main__.py`.
+#### Task 9: Bot — slash commands + callback handlers + preview-dispatch poll + retry linkage + recovery commands + rejection-rate metric
+- **Description:** Add 3 new entries to `MOLYANOV_BOT_COMMANDS`: `publish_content`, `recovery_mark_published`, `recovery_mark_failed` (last two per Decision 8). New file `core/handlers/publish.py` with: (a) slash handler for `/publish_content` (passes raw text to bot's claude → MCP tool per Deviation #1); (b) slash handlers for `/recovery_mark_published <job_id>` and `/recovery_mark_failed <job_id>` (operator-only; resolve full UUID by 8-char prefix in queue, CAS `recovery-needed → published` or `recovery-needed → publish-failed`); (c) 3 callback handlers for `publish:approve|reject|retry:<id[:12]>:<hmac>` with `from_user.id` allowlist + HMAC validation (accept current OR previous secret); on retry: atomically write `regenerated_to=<new_id>` on old job + create new job (single CAS-protected operation). Background asyncio task polls queue.jsonl every 5s for `status=preview-sent AND preview_pending=true`, sends preview DM (joined `preview_segments` with `\n— — —\n` separator) with HMAC-tagged inline keyboard, marks `preview_pending=false`. Same poll sends DMs for `notify_pending=true` (spawn failures, publish-failed, attest results). Sliding-window counter (security R2-9): if >5 HMAC failures or unauthorized callbacks in 10-min window → DM operator. Register `publish_router` in `__main__.py`.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, test-reviewer, security-auditor
 - **Verify-smoke:** unit `test_publish_handlers.py`: simulate `publish:approve:abc123456789:<hmac>` → CAS preview-sent→publishing → mocked `run_campaign_from_article` called once.
@@ -617,7 +703,7 @@ User-spec AC1-15 inherited. Additional tech-level:
 - **Description:** Live verification:
   - `/publish_content TEST: explain Mnemonik in one tweet` → preview within 90s — Telegram MCP / operator eyes
   - Click `[✓]` → post in @mnemonik within 30s — Bot API / operator eyes
-  - `mnemonic-mcp recall <hash>` → returns body — ssh + mnemonic-mcp CLI
+  - Recall the post: spawn `<mnemonic_mcp_binary> mcp-stdio`, send MCP `initialize` then `tools/call mnemonic_recall {"id": "<receipt_hash>"}` via stdin → expect article body in tool response — ssh + bash one-liner. (There is NO `mnemonic-mcp recall <hash>` CLI subcommand; recall is an MCP JSON-RPC tool only.)
   - Services healthy: `systemctl is-active content-publisher mnemonic-mcp telegram-ai-agent workspace-manager` (all `active`) AND `docker compose -f /opt/kaneo/docker-compose.yml ps` + `docker compose -f /opt/vaultwarden/docker-compose.yml ps` (all healthy) — ssh
   - `/mnt/HC_Volume_<id>/content-publisher/queue.jsonl` → job status=done — ssh + cat
   - Delete test post manually after verification.
