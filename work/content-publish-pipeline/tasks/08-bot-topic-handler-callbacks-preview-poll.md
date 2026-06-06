@@ -50,7 +50,7 @@ HMAC-ошибок или unauthorized-кликов, бот публикует se
      `/etc/blogger.env`, render Task 3). Fail-loud при отсутствии.
    - В startup hook добавить assertion:
      `assert OPERATOR_USER_ID in get_settings().allowed_user_ids` (импорт
-     `from telegram_bot.core.services.settings import get_settings` — тот же,
+     `from telegram_bot.core.config import get_settings` — тот же,
      которым уже пользуется `__main__.py`). Бот уже имеет глобальный
      `AuthMiddleware`, который пропускает только сообщения от
      `settings.allowed_user_ids` (загружается из operator-bot sops). Этот
@@ -168,7 +168,7 @@ HMAC-ошибок или unauthorized-кликов, бот публикует se
   ровно `f"Auto-published: {post_url}. Receipt: {attestation_hash}. Score: {score}."`
   (формат из tech-spec Decision 7).
 - `tests/test_publish_handlers.py::test_startup_asserts_operator_in_allowlist` —
-  патчим `telegram_bot.core.services.settings.get_settings` так, чтобы
+  патчим `telegram_bot.core.config.get_settings` так, чтобы
   `get_settings().allowed_user_ids` не содержал `OPERATOR_USER_ID` → startup
   падает с AssertionError; positive-кейс: при наличии в allowlist startup OK.
 
@@ -212,7 +212,7 @@ HMAC-ошибок или unauthorized-кликов, бот публикует se
 - [ ] Startup hook проверяет
   `OPERATOR_USER_ID in get_settings().allowed_user_ids`
   (где `get_settings` — импорт из
-  `telegram_bot.core.services.settings`, как и в `__main__.py`) и fail-loud
+  `telegram_bot.core.config`, как и в `__main__.py`) и fail-loud
   при несоответствии (защита от silent-drop сообщений оператора глобальным
   `AuthMiddleware`).
 - [ ] Sliding-window rejection counter: >5 HMAC-failures ИЛИ unauthorized-
@@ -311,7 +311,7 @@ HMAC-ошибок или unauthorized-кликов, бот публикует se
 - Бот's `AuthMiddleware` сидит на dispatcher-level и **глобально** фильтрует
   все входящие `Update` по `settings.allowed_user_ids` (sops-encrypted список
   из operator-bot конфига; читается через
-  `from telegram_bot.core.services.settings import get_settings`). Этот фильтр
+  `from telegram_bot.core.config import get_settings`). Этот фильтр
   срабатывает **раньше** нашего topic-handler-а — значит, если
   `OPERATOR_USER_ID` не в `settings.allowed_user_ids`, сообщения оператора в
   `📝 blogger-prompts` будут отброшены до того, как наш router их увидит, и
