@@ -1,0 +1,72 @@
+{
+  "task": "Task 3 — Ansible role content-publisher scaffold",
+  "commit": "25ec80f",
+  "round": 1,
+  "reviewer": "code-reviewer",
+  "verdict": "approved_with_minor",
+  "summary": "Solid implementation. Decision 10 (RequiresMountsFor with concrete path), Decision 11 (import-surface + signature assert), and Decision 12 (--require-hashes) are all faithfully implemented. Hardening directives are present and post-render verified. Three minor issues found: a secrets-leak risk in the deploy.yml vars block bypassing the vault_* abstraction layer, a missing `ConditionPathIsMountPoint` that the user-spec requires, and a handler guard condition that could silently skip restarts in Wave 2.",
+  "issues": [
+    {
+      "id": "T3-1",
+      "severity": "minor",
+      "dimension": "Security Considerations / Architectural Patterns",
+      "file": "infrastructure/ansible/playbooks/deploy.yml",
+      "lines": "321-328",
+      "title": "Content-publisher role vars bypass vault_* abstraction layer — direct sops. references",
+      "description": "The Phase 7.5 vars block reads directly from `sops.*` for all new keys (e.g. `sops.blogger_telegram_bot_token`, `sops.publish_callback_hmac_secrets`) rather than using the `vault_*` facts that Task 1 carefully set up in the pre_tasks set_fact block. All other role var blocks in deploy.yml (fabric-services, telegram-ai-agent, mnemonic-mcp) use the `vault_*` indirection. This creates two inconsistencies: (1) if a key changes in sops, it now needs updating in TWO places (vault_* mapping + this vars block); (2) the `vault_blogger_repo_ref` double-lookup at line 318 (`vault_blogger_repo_ref | default(sops.blogger_repo_ref | default(''))`) is the right pattern but is only used for repo_ref, not the other keys.\n\nSpecifically: lines 321-328 should use `vault_blogger_telegram_bot_token`, `vault_blogger_telegram_channel`, `vault_blogger_prompts_topic_id`, `vault_publish_callback_hmac_secrets`, `vault_publish_mode`, `vault_publish_auto_mode_token`, `vault_publish_min_score`, `vault_publish_approval_timeout_min` (all already mapped in the pre_tasks set_fact by Task 1).",
+      "recommendation": "Replace all `sops.*` references in the Phase 7.5 vars block with the corresponding `vault_*` facts that Task 1 established. Example:\n  blogger_telegram_bot_token: \"{{ vault_blogger_telegram_bot_token }}\"\n  blogger_prompts_topic_id: \"{{ vault_blogger_prompts_topic_id }}\"\n  publish_callback_hmac_secrets: \"{{ vault_publish_callback_hmac_secrets }}\"\netc. Keep `no_log: true` on the play level (already present on the set_fact task) — role vars aren't individually marked no_log, but the vault_* indirection avoids an extra sops.* expansion in the play output.",
+      "impact": "Maintainability: if a sops key is renamed, it must be updated in two places. No runtime correctness bug since sops.* and vault_* carry the same values, but it breaks the single-source-of-truth pattern established by Task 1."
+    },
+    {
+      "id": "T3-2",
+      "severity": "minor",
+      "dimension": "Separation of Concerns / Resource Management",
+      "file": "infrastructure/ansible/roles/content-publisher/templates/content-publisher.service.j2",
+      "lines": "10",
+      "title": "Missing ConditionPathIsMountPoint= that user-spec AC15 and Риск 9 require",
+      "description": "The user-spec (line 92) and AC15 (line 82) explicitly require both `RequiresMountsFor=` AND `ConditionPathIsMountPoint=/mnt/HC_Volume_*` in the systemd unit. The tech-spec Decision 10 also references both. The service.j2 template implements `RequiresMountsFor=` correctly but is missing `ConditionPathIsMountPoint=`.\n\nThe difference matters in a specific failure mode: `RequiresMountsFor` creates an ordering dependency (service won't start until the mount unit is active), but `ConditionPathIsMountPoint` is a pre-start condition check — if the mount path exists as a regular directory (not a real mount), `RequiresMountsFor` passes but `ConditionPathIsMountPoint` fails, preventing the service from silently writing to root disk. This is the exact scenario Риск 9 and AC15 guard against.",
+      "recommendation": "Add `ConditionPathIsMountPoint={{ content_publisher_volume_mount }}` on the line after `RequiresMountsFor=` in the [Unit] section. The Ansible post-render assert task (lines 255-263 in tasks/main.yml) should also be extended to verify this line is present.",
+      "impact": "If the volume mount disappears but the directory remains (e.g. after an unmount without cleanup), the service starts and the queue JSONL is written to root disk. This silently breaks AC8 (scheduled job persists across VM restart) and AC15 explicitly. Low probability but the spec requires the guard."
+    },
+    {
+      "id": "T3-3",
+      "severity": "minor",
+      "dimension": "Error Handling / Separation of Concerns",
+      "file": "infrastructure/ansible/roles/content-publisher/handlers/main.yml",
+      "lines": "14-15",
+      "title": "Restart handler guard on content_publisher_systemd_state may silently skip restarts in Wave 2",
+      "description": "The `Restart content-publisher` handler has `when: content_publisher_systemd_state == 'started'`. This is correct for Wave 1. However, in Wave 2/Task 7 when `content_publisher_systemd_state` is set to `started`, if the operator redeploys the content-publisher role to rotate a secret (triggering the `notify: Restart content-publisher` on the blogger.env template), the restart will fire — which is correct. But if the role is called without explicitly passing `content_publisher_systemd_state: started` in the vars block (relying on the default `stopped` from defaults/main.yml), the restart is silently skipped even though the service is actively running.\n\nThe guard condition conflates 'what state to put the unit in on deploy' with 'whether to restart a running service on config change'. These are separate concerns.",
+      "recommendation": "Replace the `when` guard with a more robust check that queries the actual service state: `when: ansible_facts.services[content_publisher_systemd_unit].state | default('inactive') == 'running'`. This lets the restart fire when the service is actually running regardless of what state the role was asked to deploy into. Alternatively, remove the guard entirely (Wave 1 deployer will attempt a restart of an inactive service, which is a no-op) and let systemd handle it — `state: restarted` on an inactive service with a bad ExecStart will fail-loop, but that is already the Wave 1 state anyway.",
+      "impact": "In Wave 2, a secret rotation via redeploy would leave the running service with the old env-file loaded in memory until the next natural restart. This is unlikely to be noticed but breaks the rotation runbook's implied guarantee."
+    }
+  ],
+  "positive_observations": [
+    "Decision 10 is implemented precisely: `ansible_facts.mounts | selectattr('device', 'equalto', hetzner_volume_device)` with a fail-loud assertion and a secondary sanity check that the resolved path contains no wildcards or unrendered Jinja. No literal '*' can reach RequiresMountsFor=.",
+    "The post-render hardening assert (tasks/main.yml lines 244-264) is an excellent defensive check — it verifies all four required directives are present in the on-disk unit file and that no Jinja template variables remain unrendered. This is above spec.",
+    "The Wave 1 contract (enabled/inactive) is enforced at multiple layers: defaults.main.yml pins content_publisher_systemd_state=stopped, the handler guard respects it, and a README acceptance check documents the expected state.",
+    "blogger.env.j2 correctly omits defaults for secrets (bot token, HMAC secrets) so Jinja will raise UndefinedError on missing sops keys — consistent with the fail-loud strategy.",
+    "The `flush_handlers` meta task before the hardening assert ensures daemon_reload runs before the grep — correct ordering.",
+    "requirements.locked.txt ships with a fail-closed placeholder that makes `pip install --require-hashes` fail immediately rather than silently succeed without real hashes. The comments are clear about the regeneration requirement.",
+    "The README runbooks for HMAC rotation, auto-mode switching, and publisher-bot token rotation are accurate, complete, and correctly reference the two-location binding requirement from Decision 7.",
+    "The systemd unit includes ProtectHome=true, PrivateTmp=true, and ReadWritePaths= beyond what the spec requires — good defence-in-depth.",
+    "mnemonic_mcp_binary is correctly consumed as a host fact set by the mnemonic-mcp role (Task 2) — no explicit passing needed in deploy.yml vars and the comment on lines 334-336 documents this correctly.",
+    "The 40-char SHA preflight assert (tasks/main.yml lines 16-25) will correctly reject empty defaults and tags/branch refs, enforcing Decision 11."
+  ],
+  "ac_coverage": {
+    "role_structure_complete": "PASS — all required files present",
+    "pinned_sha_clone": "PASS — version: set to SHA vars; preflight rejects non-40-char values",
+    "pip_require_hashes": "PASS — --require-hashes flag present; placeholder file forces fail-closed",
+    "import_surface_assert_decision_11": "PASS — inline Python assert covers all 5 imports + signature + keyword-only + Platform.TELEGRAM.value",
+    "blogger_env_mode_0600_root_root": "PASS — template task has owner:root group:root mode:0600",
+    "blogger_env_all_vars": "PASS — all 13 vars from tech-spec lines 411-428 present",
+    "blogger_mcp_json_rendered": "PASS — mnemonic_mcp_binary substituted from fact",
+    "systemd_unit_RequiresMountsFor_concrete": "PASS — concrete path, no wildcards",
+    "systemd_unit_LimitCORE_ProtectSystem_NoNewPrivileges": "PASS — all three present",
+    "ConditionPathIsMountPoint": "FAIL — missing (AC15 / user-spec line 92 require it)",
+    "role_inserted_in_deploy_yml": "PASS — Phase 7.5 between fabric-services and telegram-ai-agent",
+    "readme_three_runbooks": "PASS — HMAC rotation, PUBLISH_MODE=auto, publisher-bot token all present",
+    "enabled_inactive_wave1": "PASS — state: stopped in defaults, systemd task uses that var",
+    "ansible_syntax_check": "PASS — reported by implementer",
+    "no_regression_existing_roles": "PASS — insertion point correct, no existing role vars modified"
+  }
+}

@@ -1,0 +1,79 @@
+{
+  "task": 3,
+  "round": 2,
+  "commit": "bb0e0e2",
+  "auditor": "security-auditor",
+  "date": "2026-06-06",
+  "verdict": "APPROVED — CLOSED",
+  "summary": "All round 1 findings correctly addressed. The MEDIUM finding (T3-SEC-001) is fixed by two complementary layers: deploy.yml now uses vault_* facts with no default fallback, and tasks/main.yml adds explicit length asserts before the env-file render. The LOW findings (T3-SEC-002, T3-SEC-003) and INFO finding (T3-SEC-007) are all addressed. Additionally, ConditionPathIsMountPoint= was added to the systemd unit and verified in the post-render assert, which is a correct defense-in-depth hardening improvement. Task 3 is clear for merge.",
+  "round1_findings_resolution": [
+    {
+      "id": "T3-SEC-001",
+      "round1_severity": "MEDIUM",
+      "resolution": "FIXED — two-layer defense",
+      "verification": "Layer A (deploy.yml): `blogger_telegram_bot_token` and `publish_callback_hmac_secrets` now use `{{ vault_blogger_telegram_bot_token }}` and `{{ vault_publish_callback_hmac_secrets }}` with NO `| default('')` fallback. An empty or missing vault_* fact will cause an Ansible UndefinedError at role binding, before any task runs. Confirmed by reading the diff at lines 321-324 of deploy.yml.\n\nLayer B (tasks/main.yml): Two assert tasks added before the blogger.env render: (1) `blogger_telegram_bot_token | length >= 30` with fail_msg pointing to the rotation runbook; (2) `publish_callback_hmac_secrets | length >= 64` with fail_msg pointing to the HMAC rotation runbook. The 30-char threshold for bot tokens is reasonable (BotFather tokens are 46 chars; the guard catches empty/placeholder values while tolerating format drift). The 64-char threshold for HMAC matches the `openssl rand -hex 32` contract from T1-SEC-002 fix.\n\nBoth layers are independent and complementary: Layer A catches missing vault facts early, Layer B catches empty-string vault facts that passed Layer A (e.g. a vault_* fact that was set to an empty string via sops placeholder).",
+      "residual_risk": "None. The two-layer approach closes both the undefined-var path and the empty-string path."
+    },
+    {
+      "id": "T3-SEC-002",
+      "round1_severity": "LOW",
+      "resolution": "FIXED",
+      "verification": "New conditional assert task in tasks/main.yml: `publish_auto_mode_token | length >= 64` gated on `when: publish_mode == 'auto'`. This prevents the `'' == ''` match scenario in the worker's two-location binding check. The assert is correctly skipped in approval mode (the default), so it does not break first-deploy flows with empty placeholder values. The 64-char threshold matches the `openssl rand -hex 32` contract."
+    },
+    {
+      "id": "T3-SEC-003",
+      "round1_severity": "LOW",
+      "resolution": "MITIGATED via documentation",
+      "verification": "The `EnvironmentFile=-/etc/blogger.env` leading dash is correctly retained for Wave 1 (the unit is enabled-but-inactive; the env-file may not exist between role steps). A `# TASK 7 TODO` comment was added explaining that the dash should be removed in Task 7 when the unit becomes active. This is the correct mitigation for a Wave 1 constraint — the technical debt is now documented in the template rather than implicit."
+    },
+    {
+      "id": "T3-SEC-007",
+      "round1_severity": "INFO",
+      "resolution": "ADDRESSED",
+      "verification": "blogger.env.j2 now quotes the four sensitive/variable values: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHANNEL`, `CALLBACK_HMAC_SECRETS`, `PUBLISH_AUTO_MODE_TOKEN` are all wrapped in double quotes. The comment explains the defense-in-depth rationale (future token format with spaces or '#'). The non-sensitive numeric and path values (`PUBLISH_MODE`, `PUBLISH_APPROVAL_TIMEOUT_MIN`, etc.) are correctly left unquoted — these do not benefit from quoting and systemd handles them fine as bare values."
+    },
+    {
+      "id": "T3-SEC-004",
+      "round1_severity": "INFO",
+      "resolution": "NO ACTION REQUIRED — confirmed correct and unchanged"
+    },
+    {
+      "id": "T3-SEC-005",
+      "round1_severity": "INFO",
+      "resolution": "NO ACTION REQUIRED — confirmed correct and unchanged"
+    },
+    {
+      "id": "T3-SEC-006",
+      "round1_severity": "INFO",
+      "resolution": "NO ACTION REQUIRED — confirmed correct and unchanged"
+    },
+    {
+      "id": "T3-SEC-008",
+      "round1_severity": "INFO",
+      "resolution": "NO ACTION REQUIRED — confirmed correct and unchanged"
+    }
+  ],
+  "additional_observations": [
+    {
+      "id": "T3-R2-OBS-001",
+      "severity": "INFO",
+      "title": "ConditionPathIsMountPoint= added — correct and stronger than RequiresMountsFor= alone",
+      "description": "The round 2 diff adds `ConditionPathIsMountPoint={{ content_publisher_volume_mount }}` to the systemd unit, which was not a round 1 finding but is a correct security/reliability improvement. RequiresMountsFor= handles startup ordering (waits for the mount unit), but systemd evaluates it against the unit dependency graph, not the actual filesystem state at the moment of unit activation. A regular directory at the same path (e.g. created by the Ansible role before the volume is mounted) would satisfy RequiresMountsFor= but NOT ConditionPathIsMountPoint=. The latter refuses to start if the path is not an actual mountpoint, providing a hard guard against the silent root-disk fallback scenario described in User-spec Риск 9 and AC15.\n\nThe post-render assert in tasks/main.yml was correctly extended to verify ConditionPathIsMountPoint= is present in the on-disk unit file. The grep pattern is now `'^(RequiresMountsFor|ConditionPathIsMountPoint|LimitCORE|ProtectSystem|NoNewPrivileges)='` and the assert checks for `'ConditionPathIsMountPoint=' in cp_unit_grep.stdout`. Both are correct.",
+      "action": "None. This is an unasked improvement that is strictly correct."
+    },
+    {
+      "id": "T3-R2-OBS-002",
+      "severity": "INFO",
+      "title": "Phase 7.5 vars migration to vault_* is consistent and correct",
+      "description": "All 12 role inputs in deploy.yml Phase 7.5 now use `vault_*` facts (mapped from sops in pre_tasks at lines 62-116). Verified that `vault_telegram_forum_chat_id` is mapped at pre_tasks line 74 (`{{ sops.telegram_forum_chat_id }}`), which means the Phase 7.5 usage at line 335 is correctly sourced. The migration is consistent with the project convention used by other roles (Phase 8 telegram-ai-agent uses vault_* throughout). The only exception is `telegram_ai_agent_allowed_user_ids` which retains `| default([])` — this is safe because an empty list causes IndexError at the template's `[0]` access, which is the intended fail-loud behavior."
+    },
+    {
+      "id": "T3-R2-OBS-003",
+      "severity": "INFO",
+      "title": "Handler restart guard updated to probe actual unit state",
+      "description": "The 'Restart content-publisher' handler now uses a two-task pattern: first probe the actual systemd unit state via `ansible.builtin.systemd`, then restart only if `ActiveState == 'active'`. This correctly handles the case where a running service needs a config-rotation bounce even when `content_publisher_systemd_state` is still 'stopped' (Wave 1 default). The previous approach (checking the role var) would silently skip restarts on config rotations in Wave 2 unless the operator remembered to set the state var. No security impact, but correct operational behavior."
+    }
+  ],
+  "new_findings": [],
+  "task_status": "CLOSED — no further security review needed for Task 3"
+}

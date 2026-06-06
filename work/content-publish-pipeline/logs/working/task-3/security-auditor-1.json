@@ -1,0 +1,133 @@
+{
+  "task": 3,
+  "round": 1,
+  "commit": "25ec80f",
+  "auditor": "security-auditor",
+  "date": "2026-06-06",
+  "verdict": "APPROVED with MEDIUM fix required",
+  "summary": "The role's systemd hardening, file modes, supply-chain pinning, volume resolution, and secret-no-default strategy are all correctly implemented. One MEDIUM finding: deploy.yml passes `blogger_telegram_bot_token` and `publish_callback_hmac_secrets` with `default('')` guards, defeating the fail-loud intent of having no defaults in the template. Two LOW findings: `publish_auto_mode_token` also gets a silent empty default in deploy.yml, and the EnvironmentFile=-/etc/blogger.env leading-dash suppresses load errors that should be loud.",
+  "findings": [
+    {
+      "id": "T3-SEC-001",
+      "severity": "MEDIUM",
+      "title": "deploy.yml passes `default('')` for security-critical secrets, defeating fail-loud intent",
+      "description": "The role's blogger.env.j2 correctly has NO defaults for `blogger_telegram_bot_token` and `publish_callback_hmac_secrets` — so Jinja raises UndefinedError if the operator forgot to fill sops. However, deploy.yml Phase 7.5 vars block wraps both with `default('')`:\n  blogger_telegram_bot_token: \"{{ sops.blogger_telegram_bot_token | default('') }}\"\n  publish_callback_hmac_secrets: \"{{ sops.publish_callback_hmac_secrets | default('') }}\"\nThis means a missing or empty sops key silently renders an empty string into /etc/blogger.env, producing `TELEGRAM_BOT_TOKEN=` and `CALLBACK_HMAC_SECRETS=`. The worker would then start with a blank bot token (all Telegram API calls fail at runtime rather than at deploy time) and with no HMAC key (callback validation may blow up or, worse, silently accept all callbacks if the worker reads an empty HMAC list as \"no keys configured\"). The fail-loud strategy from Decision 12 and tasks/main.yml comment is bypassed entirely at the playbook layer.",
+      "files": [
+        "infrastructure/ansible/playbooks/deploy.yml:321",
+        "infrastructure/ansible/playbooks/deploy.yml:324"
+      ],
+      "owasp": "A05:2021 Security Misconfiguration",
+      "recommendation": "Remove the `| default('')` fallbacks for `blogger_telegram_bot_token` and `publish_callback_hmac_secrets` in the Phase 7.5 vars block:\n  blogger_telegram_bot_token: \"{{ sops.blogger_telegram_bot_token }}\"\n  publish_callback_hmac_secrets: \"{{ sops.publish_callback_hmac_secrets }}\"\nIf `sops.blogger_telegram_bot_token` is an empty string in the encrypted file (as it is in the placeholder commit), Ansible will still pass an empty string — which is a separate issue. The right guard is the preflight assert pattern already used in tasks/main.yml: add an assert task early in the role that checks `blogger_telegram_bot_token | length > 0` (or more precisely `> 20` to catch clearly bogus tokens) and fails with a clear message. Same for `publish_callback_hmac_secrets`. The existing SHA-length assert on line 19-24 of tasks/main.yml is a good model.",
+      "blocks_merge": true
+    },
+    {
+      "id": "T3-SEC-002",
+      "severity": "LOW",
+      "title": "deploy.yml passes `default('')` for `publish_auto_mode_token`, undermining two-location binding",
+      "description": "Similarly, deploy.yml line 326: `publish_auto_mode_token: \"{{ sops.publish_auto_mode_token | default('') }}\"`. The two-location integrity binding (Decision 7) requires that when `PUBLISH_MODE=auto`, the worker compares the env-file token against the sops-stored value. If both the sops key AND the env-file render are empty strings (because the operator set `publish_mode=auto` but forgot `publish_auto_mode_token`), the comparison becomes `'' == ''` — which passes, silently enabling auto-mode without any meaningful binding. The worker startup check in Task 6 will need to guard against the empty-auto-mode case, but the Ansible layer should not make empty-string pass unnoticed. This is a LOW (not MEDIUM) because: (a) auto-mode defaults to `approval` so this only matters when publish_mode=auto is explicitly set; (b) the worker Task 6 is supposed to abort on startup — the Ansible layer is defense-in-depth here.",
+      "files": [
+        "infrastructure/ansible/playbooks/deploy.yml:326"
+      ],
+      "owasp": "A05:2021 Security Misconfiguration",
+      "recommendation": "In tasks/main.yml, add an assert: when `publish_mode == 'auto'`, assert that `publish_auto_mode_token | length >= 64` (matching the 32-byte/64-hex-char requirement from T1-SEC-002 fix). This ensures the Ansible layer enforces the binding independently of the worker runtime check.",
+      "blocks_merge": false
+    },
+    {
+      "id": "T3-SEC-003",
+      "severity": "LOW",
+      "title": "EnvironmentFile=-/etc/blogger.env: leading dash silently ignores missing env-file",
+      "description": "The systemd unit template (line 21) uses `EnvironmentFile=-/etc/blogger.env` — the leading `-` tells systemd to ignore a missing file rather than failing. The comment says 'Leading `-` so Ansible reordering between deploy steps doesn't trap the unit in a permanent failed state before the env file exists.' This is a reasonable Wave-1 trade-off (the role always creates the file at deploy time), but it creates a subtle risk: if the file is accidentally deleted on the VM after deploy, the service restarts successfully with no secrets loaded — all env vars are blank. The service then attempts to run with `TELEGRAM_BOT_TOKEN=` and `CALLBACK_HMAC_SECRETS=` which may behave unpredictably.\n\nAdditionally, the leading dash means that if the Ansible template step fails silently (e.g. permissions race on /etc/), the service would start with an empty environment — this is an operational rather than security risk at deploy time, but combines with T3-SEC-001 to create a path where the service starts with blank credentials.",
+      "files": [
+        "infrastructure/ansible/roles/content-publisher/templates/content-publisher.service.j2:21"
+      ],
+      "owasp": "A05:2021 Security Misconfiguration",
+      "recommendation": "Once Wave 2 is complete and the unit is expected to be active, consider removing the leading dash: `EnvironmentFile=/etc/blogger.env`. The role always creates the file; the only legitimate reason for the dash is the Wave-1 enabled-but-inactive state, and Task 7 can remove it then. For now, document in the template comment that the dash must be removed in Task 7 when the unit becomes active.",
+      "blocks_merge": false
+    },
+    {
+      "id": "T3-SEC-004",
+      "severity": "INFO",
+      "title": "PLACEHOLDER requirements.locked.txt is correctly fail-closed",
+      "description": "The placeholder lockfile contains a bogus entry `PLACEHOLDER-NOT-A-REAL-PACKAGE==0.0.0 --hash=sha256:000...0` which will cause `pip install --require-hashes` to fail immediately on the real package resolution step. This is correctly fail-closed: the role cannot be deployed successfully with the placeholder in place, forcing the operator to regenerate the lockfile before production deploy. The README 'How to regenerate' section documents the procedure. This is a sound trade-off (confirmed correct per the task description) — a placeholder that fails loudly is better than an empty lockfile that might succeed silently.",
+      "files": [
+        "infrastructure/ansible/roles/content-publisher/requirements.locked.txt"
+      ],
+      "owasp": "A08:2021 Software and Data Integrity Failures",
+      "recommendation": "None. The fail-closed placeholder strategy is correct. No action needed.",
+      "blocks_merge": false
+    },
+    {
+      "id": "T3-SEC-005",
+      "severity": "INFO",
+      "title": "Systemd hardening directives verified correct",
+      "description": "service.j2 contains: LimitCORE=0 (no core dumps; article text cannot leak to disk), ProtectSystem=strict (no writes to /usr, /boot, /etc — ReadWritePaths= correctly scopes to worktree + queue dir), NoNewPrivileges=true (no setuid escalation), ProtectHome=true (home dirs inaccessible), PrivateTmp=true (isolated /tmp). PATH env is explicitly set (no PATH injection via inherited shell). RequiresMountsFor= is rendered with concrete path (no literal *). Post-render grep assert in tasks/main.yml:244-264 verifies all four mandatory directives are concrete in the on-disk file. The assert itself is correct (checks for '{{' substring using the escaped Jinja form).",
+      "files": [
+        "infrastructure/ansible/roles/content-publisher/templates/content-publisher.service.j2"
+      ],
+      "owasp": "N/A",
+      "recommendation": "None. Hardening is complete and correctly validated.",
+      "blocks_merge": false
+    },
+    {
+      "id": "T3-SEC-006",
+      "severity": "INFO",
+      "title": "File modes match spec (blogger.env 0600, blogger.mcp.json 0640)",
+      "description": "tasks/main.yml correctly renders /etc/blogger.env with mode 0600 owner root:root (line 219) and /etc/blogger.mcp.json with mode 0640 owner root:op (line 229). The MCP config is non-sensitive (just the binary path and 'mcp-stdio' arg) so 0640 is correct — the service user `op` can read it. Queue + worktree dirs are 0750 op:op. The README table matches the implemented modes. No drift between spec, implementation, and README.",
+      "files": [
+        "infrastructure/ansible/roles/content-publisher/tasks/main.yml:219",
+        "infrastructure/ansible/roles/content-publisher/tasks/main.yml:229"
+      ],
+      "owasp": "N/A",
+      "recommendation": "None. Correct.",
+      "blocks_merge": false
+    },
+    {
+      "id": "T3-SEC-007",
+      "severity": "INFO",
+      "title": "blogger.env.j2: CALLBACK_HMAC_SECRETS and TELEGRAM_BOT_TOKEN rendered without quoting",
+      "description": "In blogger.env.j2, secrets are rendered as bare values:\n  TELEGRAM_BOT_TOKEN={{ blogger_telegram_bot_token }}\n  CALLBACK_HMAC_SECRETS={{ publish_callback_hmac_secrets }}\nFor a systemd EnvironmentFile=, bare values (no quotes) are correct — systemd reads the file as key=value pairs and does not do shell-style quote stripping. The values are read verbatim. However, if a token ever contains special characters (spaces, #, \\n), an unquoted render could truncate the value at the first space or treat # as a comment. Bot tokens from @BotFather are alphanumeric+colon and will never contain these characters. HMAC secrets generated via `openssl rand -hex 32` are pure hex. So the risk is theoretical for current value formats, but it is good practice to note for future maintainers.",
+      "files": [
+        "infrastructure/ansible/roles/content-publisher/templates/blogger.env.j2:8",
+        "infrastructure/ansible/roles/content-publisher/templates/blogger.env.j2:21"
+      ],
+      "owasp": "A05:2021 Security Misconfiguration",
+      "recommendation": "Optionally wrap token values in double quotes in the template to be defensive: `TELEGRAM_BOT_TOKEN=\"{{ blogger_telegram_bot_token }}\"`. systemd EnvironmentFile= supports quoted values. This is not a current vulnerability given the expected value formats, but a minor hardening improvement.",
+      "blocks_merge": false
+    },
+    {
+      "id": "T3-SEC-008",
+      "severity": "INFO",
+      "title": "Volume resolution: path sanity assert covers the right attack surface",
+      "description": "tasks/main.yml lines 59-67 assert the resolved volume mount path: length > 1, starts with '/', no '*', no '{{'. The only realistic path for a bad value is a misconfigured hetzner_volume_device var pointing to a different device. The Jinja `selectattr` filter is used (not a shell command), so there is no command injection risk here. The `regex_replace` for the mount unit name is purely cosmetic (affects the After= dependency name, not the RequiresMountsFor= path). No injection risk via the regex patterns.",
+      "files": [
+        "infrastructure/ansible/roles/content-publisher/tasks/main.yml:59-67"
+      ],
+      "owasp": "N/A",
+      "recommendation": "None. Correct.",
+      "blocks_merge": false
+    }
+  ],
+  "owasp_checklist": {
+    "A01_broken_access_control": "PASS — file modes correct; no world-readable secrets; service runs as non-root op user",
+    "A02_cryptographic_failures": "PASS — LimitCORE=0 prevents core dumps; 0600 env-file protects HMAC secrets at rest",
+    "A03_injection": "PASS — no shell tasks for secret operations; git clone uses ansible.builtin.git; pip uses ansible.builtin.pip; volume resolution uses Jinja selectattr (not shell)",
+    "A04_insecure_design": "PASS — two-location auto-mode binding documented in README; HMAC rotation runbook present; publisher-bot isolation documented",
+    "A05_security_misconfiguration": "MEDIUM — deploy.yml default('') on secrets defeats fail-loud (T3-SEC-001); LOW — EnvironmentFile leading dash (T3-SEC-003)",
+    "A06_vulnerable_components": "PASS — pip --require-hashes enforced; fail-closed placeholder lockfile; pinned commit SHAs with length assert; import surface verified at install",
+    "A07_auth_failures": "MEDIUM — see T3-SEC-001: empty CALLBACK_HMAC_SECRETS could silently disable HMAC validation at runtime",
+    "A08_data_integrity": "PASS — supply-chain hardening complete; placeholder lockfile is fail-closed",
+    "A09_logging_failures": "PASS — no no_log needed in this role (no secret-printing tasks); journald captures all unit output",
+    "A10_ssrf": "N/A — no user-controlled URLs processed in this role"
+  },
+  "project_specific_checks": {
+    "subprocess_argv_env_hygiene": "PASS — EnvironmentFile= (not Environment= argv); PATH explicitly set; no secrets in ExecStart argv",
+    "path_traversal": "PASS — all paths assembled from Ansible facts (ansible_facts.mounts), not user input; UUID validation is a worker concern (Task 4)",
+    "callback_hmac_format": "MEDIUM — T3-SEC-001: default('') in deploy.yml could deliver empty HMAC key to worker",
+    "sops_env_leakage": "PASS — EnvironmentFile mode 0600 root:root; LimitCORE=0; no env vars leaked via argv (EnvironmentFile= not Environment=)",
+    "publisher_token_leakage": "PASS — token in EnvironmentFile only; LimitCORE=0; ProtectSystem=strict; excepthook scrub is Task 6's responsibility",
+    "attestation_content_binding": "N/A — Ansible scaffold only; MCP-stdio call is Task 6",
+    "auto_mode_two_location_integrity": "LOW — T3-SEC-002: empty-string pass-through in deploy.yml could make '' == '' match; role-level assert needed",
+    "topic_filter_correctness": "N/A — bot handler is Task 8; T1-SEC-006 already noted for Task 8"
+  },
+  "blocking_findings_summary": "T3-SEC-001 is MEDIUM and blocks merge. The deploy.yml Phase 7.5 vars block passes `default('')` for both `blogger_telegram_bot_token` and `publish_callback_hmac_secrets`, silently delivering empty credentials to the service instead of failing at deploy time. This defeats the core fail-loud intent of the role's secret handling strategy. Fix: remove `| default('')` from these two vars AND add an explicit assert task in tasks/main.yml that checks their length > 0 before rendering the env-file. All other findings are LOW/INFO and do not block merge."
+}

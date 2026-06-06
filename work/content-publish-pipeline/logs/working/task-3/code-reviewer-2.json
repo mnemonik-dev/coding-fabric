@@ -1,0 +1,69 @@
+{
+  "task": "Task 3 — Ansible role content-publisher scaffold",
+  "commit": "bb0e0e2",
+  "round": 2,
+  "reviewer": "code-reviewer",
+  "verdict": "approved",
+  "summary": "All three round-1 issues are resolved correctly. The vault_* migration is clean and removes every sops.* reference from the Phase 7.5 block. ConditionPathIsMountPoint= is present in the template and verified by the post-render assert. The handler probe/restart split is functionally correct. One informational note on handler ordering: both probe and restart listen on the same event name, which works because Ansible fires handlers in definition order — this is correct but worth a comment to prevent future reordering.",
+  "issues": [],
+  "round1_resolution": {
+    "T3-1": {
+      "status": "FIXED",
+      "verified": "deploy.yml Phase 7.5 now uses vault_blogger_telegram_bot_token, vault_blogger_telegram_channel, vault_blogger_prompts_topic_id, vault_publish_callback_hmac_secrets, vault_publish_mode, vault_publish_auto_mode_token, vault_publish_min_score, vault_publish_approval_timeout_min, vault_telegram_forum_chat_id — zero sops.* references remain. Sensitive vars (bot token, HMAC secrets, repo refs) deliberately have no | default() fallback, consistent with the fail-loud strategy and the role's preflight asserts."
+    },
+    "T3-2": {
+      "status": "FIXED",
+      "verified": "content-publisher.service.j2 line 13 now has ConditionPathIsMountPoint={{ content_publisher_volume_mount }}. The post-render grep in tasks/main.yml updated to '^(RequiresMountsFor|ConditionPathIsMountPoint|LimitCORE|ProtectSystem|NoNewPrivileges)=' and the assert block extended with \"'ConditionPathIsMountPoint=' in cp_unit_grep.stdout\". Comment in the template accurately explains the RequiresMountsFor vs ConditionPathIsMountPoint distinction."
+    },
+    "T3-3": {
+      "status": "FIXED",
+      "verified": "handlers/main.yml now has two entries listening on 'Restart content-publisher': (1) Probe task that calls ansible.builtin.systemd to read unit state and registers cp_unit_state; (2) Restart task conditioned on cp_unit_state.status.ActiveState | default('inactive') == 'active'. Ansible fires handlers in definition order, so probe runs before restart — the condition is evaluated with the correct value. Wave 1 inactive service: probe returns inactive, restart is skipped (no fail-loop). Wave 2 running service: probe returns active, restart fires."
+    }
+  },
+  "bonus_improvements": [
+    {
+      "title": "Preflight asserts for bot token, HMAC secret, and auto-mode token",
+      "description": "Three assert tasks added at the top of tasks/main.yml guard against empty or too-short values reaching the env-file render. Token >= 30 chars catches empty/placeholder; HMAC >= 64 chars enforces the openssl rand -hex 32 minimum; auto-mode token >= 64 chars only when publish_mode == 'auto'. These are good additions that make the fail-loud strategy concrete at deploy time rather than waiting for a runtime 401 or a silent '' == '' comparison.",
+      "verdict": "good"
+    },
+    {
+      "title": "Quoted token values in blogger.env.j2",
+      "description": "TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL, CALLBACK_HMAC_SECRETS, and PUBLISH_AUTO_MODE_TOKEN are now quoted. Comment explains the defense-in-depth rationale (word-splitting on hypothetical future format). Correct and matches Task 1's template pattern.",
+      "verdict": "good"
+    },
+    {
+      "title": "TASK 7 TODO comment for EnvironmentFile= leading dash",
+      "description": "The TODO correctly identifies that the leading `-` should be dropped when the unit goes active (Task 7). This is a helpful handoff note for Task 7's implementer.",
+      "verdict": "good"
+    }
+  ],
+  "informational_notes": [
+    {
+      "id": "T3-INFO-1",
+      "severity": "informational",
+      "file": "infrastructure/ansible/roles/content-publisher/handlers/main.yml",
+      "title": "Handler ordering relies on definition order — add a comment to prevent accidental reordering",
+      "description": "The 'Probe whether content-publisher is currently active' handler has `listen: Restart content-publisher`, and the 'Restart content-publisher' handler is triggered by its name matching the notification. Ansible fires handlers in the order they are defined in the file, so the probe runs before the restart — this is correct. However, there is no comment explaining this ordering dependency. A future contributor who swaps the two handler blocks would silently break the guard (restart fires before cp_unit_state is populated, condition evaluates against undefined).",
+      "recommendation": "Add a one-line comment before the Restart task: '# Must run AFTER the Probe handler above (Ansible fires handlers in definition order).' No code change required."
+    }
+  ],
+  "ac_coverage": {
+    "role_structure_complete": "PASS",
+    "pinned_sha_clone": "PASS",
+    "pip_require_hashes": "PASS",
+    "import_surface_assert_decision_11": "PASS",
+    "blogger_env_mode_0600_root_root": "PASS",
+    "blogger_env_all_vars": "PASS",
+    "blogger_mcp_json_rendered": "PASS",
+    "systemd_unit_RequiresMountsFor_concrete": "PASS",
+    "systemd_unit_ConditionPathIsMountPoint": "PASS — T3-2 fixed",
+    "systemd_unit_LimitCORE_ProtectSystem_NoNewPrivileges": "PASS",
+    "role_inserted_in_deploy_yml": "PASS",
+    "deploy_yml_vault_star_only": "PASS — T3-1 fixed",
+    "readme_three_runbooks": "PASS",
+    "enabled_inactive_wave1": "PASS",
+    "handler_restart_on_running_service": "PASS — T3-3 fixed",
+    "ansible_syntax_check": "PASS",
+    "preflight_asserts_for_secrets": "PASS — bonus"
+  }
+}
