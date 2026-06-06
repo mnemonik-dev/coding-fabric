@@ -24,6 +24,50 @@
       (Decision 11 — never pin to a tag or branch).
     quiet: true
 
+- name: Assert publisher bot token is configured (fail loud on empty sops key)
+  # An empty token would silently render into /etc/blogger.env and the
+  # service would start with TELEGRAM_BOT_TOKEN="" — every publish would
+  # 401 against Bot API, surfacing only when the operator clicks approve.
+  # BotFather tokens are 46 chars; require >= 30 to leave room for format
+  # drift while still catching empty / placeholder values.
+  # (security-auditor T3-SEC-001)
+  ansible.builtin.assert:
+    that:
+      - blogger_telegram_bot_token | length >= 30
+    fail_msg: >-
+      blogger_telegram_bot_token is missing or too short. Set it in sops
+      before deploy — see role README "Rotate publisher bot token".
+    quiet: true
+
+- name: Assert HMAC callback secret(s) are configured (>= 64 hex chars)
+  # publish_callback_hmac_secrets is "current" or "current,previous".
+  # 64 hex chars = openssl rand -hex 32. An empty value would let the
+  # worker's HMAC validator accept anything (or crash on first click,
+  # depending on Task 8's implementation) — refuse at deploy time.
+  # (security-auditor T3-SEC-001)
+  ansible.builtin.assert:
+    that:
+      - publish_callback_hmac_secrets | length >= 64
+    fail_msg: >-
+      publish_callback_hmac_secrets is missing or shorter than 64 chars.
+      Generate via `openssl rand -hex 32` and store in sops — see role
+      README "Rotate HMAC callback secret".
+    quiet: true
+
+- name: Assert auto-mode token is configured when PUBLISH_MODE=auto
+  # Decision 7's two-location integrity binding: the worker compares the
+  # env-file value to the sops-bound value at startup. Both must be
+  # non-empty, otherwise '' == '' silently passes the check.
+  # (security-auditor T3-SEC-002)
+  ansible.builtin.assert:
+    that:
+      - publish_auto_mode_token | length >= 64
+    fail_msg: >-
+      PUBLISH_MODE=auto requires publish_auto_mode_token (>= 64 hex chars)
+      to be set in sops — see role README "Switch PUBLISH_MODE to auto".
+    quiet: true
+  when: publish_mode == 'auto'
+
 # --- Resolve hetzner_volume_id from mounts (Decision 10) -------------------
 
 - name: Collect mounts matching the configured Hetzner volume device
@@ -242,12 +286,16 @@
   ansible.builtin.meta: flush_handlers
 
 - name: Assert systemd unit contains required hardening directives
-  # Post-render assertion guards against template regression: the four
+  # Post-render assertion guards against template regression: the five
   # mandatory directives must reach the on-disk unit file with concrete
   # values (no '*' wildcards, no unrendered Jinja).
   become: true
   ansible.builtin.command:
-    cmd: grep -E '^(RequiresMountsFor|LimitCORE|ProtectSystem|NoNewPrivileges)=' /etc/systemd/system/{{ content_publisher_systemd_unit }}
+    argv:
+      - grep
+      - -E
+      - '^(RequiresMountsFor|ConditionPathIsMountPoint|LimitCORE|ProtectSystem|NoNewPrivileges)='
+      - "/etc/systemd/system/{{ content_publisher_systemd_unit }}"
   register: cp_unit_grep
   changed_when: false
 
@@ -258,6 +306,7 @@
       - "'ProtectSystem=strict' in cp_unit_grep.stdout"
       - "'NoNewPrivileges=true' in cp_unit_grep.stdout"
       - "'RequiresMountsFor=' in cp_unit_grep.stdout"
+      - "'ConditionPathIsMountPoint=' in cp_unit_grep.stdout"
       - "'*' not in cp_unit_grep.stdout"
       - cp_unit_grep.stdout.find('{' + '{') == -1
     fail_msg: "content-publisher.service is missing or mis-rendering hardening directives"

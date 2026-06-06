@@ -312,24 +312,27 @@
       tags: [content-publisher, deploy]
       vars:
         base_operator_user: op
-        # Pinned upstream refs (Decision 11). Operator can override via
-        # sops to roll forward without a code commit; defaults in the
-        # role lock to a known-good revision.
-        blogger_repo_ref: "{{ vault_blogger_repo_ref | default(sops.blogger_repo_ref | default('')) }}"
-        claude_blog_repo_ref: "{{ vault_claude_blog_repo_ref | default(sops.claude_blog_repo_ref | default('')) }}"
-        # Secrets / config from sops (added in Task 1).
-        blogger_telegram_bot_token: "{{ sops.blogger_telegram_bot_token | default('') }}"
-        blogger_telegram_channel: "{{ sops.blogger_telegram_channel | default('@mnemonik') }}"
-        blogger_prompts_topic_id: "{{ sops.blogger_prompts_topic_id | default('0') }}"
-        publish_callback_hmac_secrets: "{{ sops.publish_callback_hmac_secrets | default('') }}"
-        publish_mode: "{{ sops.publish_mode | default('approval') }}"
-        publish_auto_mode_token: "{{ sops.publish_auto_mode_token | default('') }}"
-        publish_min_score: "{{ sops.publish_min_score | default(80) }}"
-        publish_approval_timeout_min: "{{ sops.publish_approval_timeout_min | default(5) }}"
+        # All sensitive inputs use vault_* facts (mapped from sops in
+        # pre_tasks above). Fail-loud: the role's preflight asserts
+        # reject empty bot tokens, HMAC secrets, and 40-char SHAs —
+        # passing default('') here would silently degrade to runtime
+        # failures, so we DELIBERATELY do not add fallbacks.
+        # Pinned upstream refs (Decision 11).
+        blogger_repo_ref: "{{ vault_blogger_repo_ref }}"
+        claude_blog_repo_ref: "{{ vault_claude_blog_repo_ref }}"
+        # Publisher bot + HMAC + auto-mode secrets (Decisions 5, 7, 9).
+        blogger_telegram_bot_token: "{{ vault_blogger_telegram_bot_token }}"
+        blogger_telegram_channel: "{{ vault_blogger_telegram_channel }}"
+        blogger_prompts_topic_id: "{{ vault_blogger_prompts_topic_id }}"
+        publish_callback_hmac_secrets: "{{ vault_publish_callback_hmac_secrets }}"
+        publish_mode: "{{ vault_publish_mode }}"
+        publish_auto_mode_token: "{{ vault_publish_auto_mode_token }}"
+        publish_min_score: "{{ vault_publish_min_score }}"
+        publish_approval_timeout_min: "{{ vault_publish_approval_timeout_min }}"
         # Shared with telegram-ai-agent for operator-bot integration —
         # OPERATOR_USER_ID in /etc/blogger.env is the FIRST entry of this
         # list (Decision 13, tech-spec line 418).
-        telegram_forum_chat_id: "{{ sops.telegram_forum_chat_id | default('') }}"
+        telegram_forum_chat_id: "{{ vault_telegram_forum_chat_id }}"
         telegram_ai_agent_allowed_user_ids: "{{ vault_telegram_allowed_user_ids | default([]) }}"
         # mnemonic_mcp_binary is set as a fact by the mnemonic-mcp role
         # (Task 2) earlier in this play. The role's blogger.mcp.json.j2

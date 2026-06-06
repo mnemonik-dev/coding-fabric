@@ -4,12 +4,21 @@
   ansible.builtin.systemd:
     daemon_reload: true
 
+- name: Probe whether content-publisher is currently active
+  # Decides whether the "Restart content-publisher" handler should act.
+  # Tied to actual unit state, NOT to the role var content_publisher_
+  # systemd_state — Wave 2 might re-render /etc/blogger.env on a config
+  # rotation without setting state: started, and we still want to bounce
+  # a running service in that case. (code-reviewer T3-3)
+  become: true
+  ansible.builtin.systemd:
+    name: "{{ content_publisher_systemd_unit }}"
+  register: cp_unit_state
+  listen: Restart content-publisher
+
 - name: Restart content-publisher
   become: true
   ansible.builtin.systemd:
     name: "{{ content_publisher_systemd_unit }}"
     state: restarted
-  # On Wave 1 the service has no entrypoint yet — a restart attempt would
-  # only fail-loop. Skip the handler unless the operator explicitly opted
-  # in via content_publisher_systemd_state=started (Wave 2 / Task 7).
-  when: content_publisher_systemd_state == 'started'
+  when: cp_unit_state.status.ActiveState | default('inactive') == 'active'

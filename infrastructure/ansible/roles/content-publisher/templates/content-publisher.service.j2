@@ -8,6 +8,12 @@ Wants=network-online.target
 # (Decision 10). A literal '*' must never reach this line — empty
 # fact forces the role to fail loud before rendering.
 RequiresMountsFor={{ content_publisher_volume_mount }}/content-publisher
+# Defense-in-depth: RequiresMountsFor handles startup ordering, but a
+# regular directory at the same path (created after unmount) would still
+# satisfy it. ConditionPathIsMountPoint refuses to start unless the path
+# is an actual mount — blocks silent fallback to the root disk when the
+# volume is detached. (User-spec line 92, AC15, Риск 9)
+ConditionPathIsMountPoint={{ content_publisher_volume_mount }}
 
 [Service]
 Type=simple
@@ -18,6 +24,10 @@ WorkingDirectory={{ blogger_install_dir }}
 # Secrets via /etc/blogger.env (mode 0600 root:root, rendered from sops).
 # Leading `-` so Ansible reordering between deploy steps doesn't trap
 # the unit in a permanent failed state before the env file exists.
+# TASK 7 TODO (security-auditor T3-SEC-003): drop the leading dash when
+# the worker package is installed and the unit is flipped to active.
+# A missing env-file should hard-fail at that point, not start with a
+# blank environment.
 EnvironmentFile=-/etc/blogger.env
 Environment="PYTHONUNBUFFERED=1"
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
