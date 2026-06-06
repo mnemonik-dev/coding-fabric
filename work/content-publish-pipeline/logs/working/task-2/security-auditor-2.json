@@ -1,0 +1,59 @@
+{
+  "task": 2,
+  "round": 2,
+  "commit": "7057e43",
+  "auditor": "security-auditor",
+  "date": "2026-06-06",
+  "verdict": "APPROVED — CLOSED",
+  "summary": "Both round 1 findings correctly addressed. T2-SEC-001 fixed by removing --no-audit from npm ci. T2-SEC-002 fixed by eliminating the community.general.npm global install step and replacing it with a symlink from node_modules/.bin/ to /usr/local/bin/ — the binary on PATH is now the exact byte sequence the lockfile pinned, with no separate registry resolution. No new findings. Task 2 is clear for merge.",
+  "round1_findings_resolution": [
+    {
+      "id": "T2-SEC-001",
+      "round1_severity": "LOW",
+      "resolution": "FIXED",
+      "verification": "tasks/main.yml line changed from `cmd: npm ci --no-audit --no-fund` to `cmd: npm ci --no-fund`. The `--no-audit` flag is removed; the advisory check runs on each install. The task comment explicitly notes why: 'We keep --audit (no --no-audit) — the lockfile pins what we get, but the advisory check still surfaces CVE info worth seeing (security-auditor T2-SEC-001 round 1).' The `--no-fund` flag is retained, which is correct (fund notices are noise, not security signals). Finding closed."
+    },
+    {
+      "id": "T2-SEC-002",
+      "round1_severity": "LOW",
+      "resolution": "FIXED — exactly as recommended",
+      "verification": "The `community.general.npm: global=true` step is completely removed. In its place, a new `ansible.builtin.file` task creates a symlink: `src={{ mnemonik_mcp_install_dir }}/node_modules/.bin/mnemonik-mcp dest=/usr/local/bin/mnemonik-mcp state=link force=true`. This means: (1) the binary on PATH is the exact file installed by `npm ci` from the audited lockfile; (2) there is no second registry resolution; (3) the transitive dependency tree is identical between what was verified and what runs. The README was updated to describe this as 'single-step lockfile install' and explicitly states: 'The binary on PATH is the exact byte sequence the lockfile pinned.' Finding closed."
+    }
+  ],
+  "additional_observations": [
+    {
+      "id": "T2-R2-OBS-001",
+      "severity": "INFO",
+      "title": "npm ci now gated on lockfile/package.json change — correct idempotency improvement",
+      "description": "The npm ci step gained `when: mnemonik_lockfile_copy.changed or mnemonik_packagejson_copy.changed`. This means on re-runs where neither the lockfile nor package.json changed, npm ci is skipped entirely — correct idempotency. The `changed_when: mnemonik_npm_ci.rc == 0` (without the previous 'up to date' substring check) is also cleaner. One minor note: if the node_modules/ directory is partially corrupted (e.g. after a failed previous run), the `when` condition would skip npm ci even though a full reinstall is needed. The correct fix in that case is to delete node_modules/ manually and redeploy. This is an acceptable trade-off for the idempotency gain and is not a security concern.",
+      "action": "None. Correct."
+    },
+    {
+      "id": "T2-R2-OBS-002",
+      "severity": "INFO",
+      "title": "Stale binary cleanup is correctly idempotent with failed_when: false",
+      "description": "The `Remove stale descoped binary` task uses `ansible.builtin.file: path=/opt/mnemonic-mcp/bin/mnemonic-mcp state=absent failed_when: false`. The `failed_when: false` is correct here — the path may not exist on a fresh VM and `state: absent` on a non-existent path returns rc=0 anyway in Ansible, so this is belt-and-suspenders. The stale binary removal prevents the `which` cascade from picking up a lingering descoped binary before the symlink is created. No security concern.",
+      "action": "None. Correct."
+    },
+    {
+      "id": "T2-R2-OBS-003",
+      "severity": "INFO",
+      "title": "Disabled-role sentinel (mnemonic_mcp_binary: '') is correct downstream contract",
+      "description": "The new `Set empty mnemonic_mcp_binary sentinel when role is disabled` task sets `mnemonic_mcp_binary: ''` when `mnemonic_mcp_enabled: false`. This means Task 3's blogger.mcp.json.j2 renders `command: ''` instead of failing with a Jinja UndefinedError. The downstream service (content-publisher) will then fail at start with a clear 'command not found' or 'exec format error' rather than a cryptic deploy-time templating error. This is the correct failure mode — the empty sentinel is a defined contract, not a silent passthrough.",
+      "action": "None. Correct."
+    },
+    {
+      "id": "T2-R2-OBS-004",
+      "severity": "INFO",
+      "title": "Symlink uses force:true — safe given the controlled install path",
+      "description": "The symlink task uses `force: true`, which means an existing file or stale symlink at /usr/local/bin/mnemonik-mcp will be overwritten. This is correct for an idempotent install: on re-deploy the symlink should always point to the current lockfile-installed binary. If a different package had placed a file at that path, it would be overwritten — but /usr/local/bin/mnemonik-mcp is a project-specific path unlikely to be claimed by anything else. No security concern in this context.",
+      "action": "None. Correct."
+    }
+  ],
+  "new_findings": [],
+  "owasp_checklist_delta": {
+    "A06_vulnerable_components": "PASS — --no-audit removed; advisory check now runs at install time (T2-SEC-001 resolved)",
+    "A08_data_integrity": "PASS — single lockfile-based install; binary on PATH is the audited artifact (T2-SEC-002 resolved)"
+  },
+  "task_status": "CLOSED — no further security review needed for Task 2"
+}

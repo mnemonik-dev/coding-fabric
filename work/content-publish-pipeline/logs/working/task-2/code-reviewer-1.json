@@ -1,0 +1,69 @@
+{
+  "task": "Task 2 — Mnemonik MCP role npm rewrite + binary discovery",
+  "commit": "44011b0",
+  "round": 1,
+  "reviewer": "code-reviewer",
+  "verdict": "approved_with_minor",
+  "summary": "Clean, well-scoped rewrite. The binary discovery cascade, supply-chain double-pin (npm ci + global install), MCP-stdio smoke handshake, and all 8 contract tests are correctly implemented. Three minor issues found: a silent no-op path when mnemonic_mcp_enabled=false leaves mnemonic_mcp_binary undefined for downstream consumers; an idempotency gap in the npm ci step; and a potential `which` ambiguity on a VM with a stale descoped binary.",
+  "issues": [
+    {
+      "id": "T2-1",
+      "severity": "minor",
+      "dimension": "Error Handling / Cross-File Consistency",
+      "file": "infrastructure/ansible/roles/mnemonic-mcp/tasks/main.yml",
+      "lines": "9-168 (entire block)",
+      "title": "mnemonic_mcp_binary fact is never set when mnemonic_mcp_enabled=false — downstream Task 3 silently fails with UndefinedError",
+      "description": "The entire install block is guarded with `when: mnemonic_mcp_enabled | bool`. When this is false, the `set_fact: mnemonic_mcp_binary` task on line 117-118 is skipped, leaving `mnemonic_mcp_binary` undefined. The content-publisher role (Task 3) uses `{{ mnemonic_mcp_binary }}` in `blogger.mcp.json.j2` without a default, so if an operator disables the MCP role (e.g. rolling back) and redeploys, the content-publisher role will fail at template render with a Jinja `UndefinedError` on `mnemonic_mcp_binary`.\n\nAlthough `mnemonic_mcp_enabled` is now `true` by default, the existing deploy.yml comment on lines 248-255 explicitly anticipates operators disabling this role. The contract test `test_tasks_set_fact_for_binary_discovery` doesn't test the disabled-path.",
+      "recommendation": "Add a fallback set_fact outside the `when` block that sets `mnemonic_mcp_binary` to an empty string or sentinel when the role is disabled:\n\n- name: Set mnemonic_mcp_binary to empty sentinel when MCP is disabled\n  ansible.builtin.set_fact:\n    mnemonic_mcp_binary: \"\"\n  when: not (mnemonic_mcp_enabled | bool)\n\nThis makes the downstream failure in blogger.mcp.json.j2 explicit (empty command field) rather than a cryptic UndefinedError. Alternatively, add `| default('')` to the `{{ mnemonic_mcp_binary }}` reference in Task 3's template, but that silently produces a broken JSON config. The set_fact fallback is more correct.",
+      "impact": "If an operator ever flips mnemonic_mcp_enabled=false and redeploys the full playbook, the content-publisher role fails with an opaque UndefinedError mid-play. Not a current production risk (enabled=true), but breaks the fail-loud contract that the role explicitly advertises."
+    },
+    {
+      "id": "T2-2",
+      "severity": "minor",
+      "dimension": "Performance / Idempotency",
+      "file": "infrastructure/ansible/roles/mnemonic-mcp/tasks/main.yml",
+      "lines": "86-91",
+      "title": "npm ci idempotency: always reruns even when lockfile is unchanged",
+      "description": "The `npm ci` task (lines 86-91) has `changed_when: mnemonik_npm_ci.rc == 0 and 'up to date' not in (mnemonik_npm_ci.stdout | default(''))`. However, `npm ci` always performs a clean install (it deletes and reinstalls `node_modules`) — it never prints 'up to date'. This means the task is always marked `changed` on every playbook run, which: (1) makes Ansible diffs noisy (operators can't distinguish actual changes from re-runs), and (2) triggers unnecessary reinstalls on every deploy, adding 10-30s to the play.\n\nThe lockfile copy task does register `mnemonik_lockfile_copy`, but the npm ci task doesn't condition on `mnemonik_lockfile_copy.changed`.",
+      "recommendation": "Gate npm ci on lockfile change:\n  when: mnemonik_lockfile_copy.changed\n\nThis makes the step truly idempotent: if the checked-in lockfile hasn't changed (most redeploys), npm ci is skipped. If the lockfile was updated (version bump), npm ci runs. The global install step after it already has `state: present` idempotency via community.general.npm.",
+      "impact": "Extra ~10-30s on every deploy and noisy changed status in Ansible output. No correctness issue."
+    },
+    {
+      "id": "T2-3",
+      "severity": "minor",
+      "dimension": "Security / Resource Management",
+      "file": "infrastructure/ansible/roles/mnemonic-mcp/tasks/main.yml",
+      "lines": "107-114",
+      "title": "which cascade may resolve stale descoped binary from /opt/mnemonic-mcp/bin/ if it's on PATH",
+      "description": "The task spec (Details, Edge cases) acknowledges that the old descoped install may have left `/opt/mnemonic-mcp/bin/mnemonic-mcp` on the VM. If that directory is on PATH (e.g. from the previous role's Environment= in the systemd unit or from a leftover /etc/profile.d/ snippet), the `which mnemonic-mcp` fallback in the cascade will resolve to the OLD binary, not the newly npm-installed one. The `mnemonic_mcp_binary` fact would then point at a stale binary, and the systemd unit would launch the wrong process.\n\nThe task spec says this cleanup is 'optional' — but without it, the discovery is not trustworthy on VMs that ran the old role.",
+      "recommendation": "Add an explicit cleanup task before the discovery step:\n\n- name: Remove stale descoped binary to prevent which ambiguity\n  ansible.builtin.file:\n    path: /opt/mnemonic-mcp/bin/mnemonic-mcp\n    state: absent\n  failed_when: false\n\nAlternatively, use `npm bin -g` or `npm root -g` to construct the expected binary path deterministically rather than relying on PATH-based discovery. This is more robust and eliminates the ambiguity entirely.",
+      "impact": "On a VM that previously ran the descoped role, the service would launch the OLD (non-MCP-stdio) binary. The smoke handshake at the end of the role would catch this — it would fail — but the failure message would be confusing since the binary path in the fact would look correct."
+    }
+  ],
+  "positive_observations": [
+    "The two-layer supply-chain pin (npm ci from lockfile for transitive tree + community.general.npm for global binary placement) is well-designed and matches the task spec's R2-8 requirement. The separation of concerns is clear.",
+    "The MCP-stdio initialize handshake smoke test is correct and complete: JSON-RPC payload via stdin (nothing in argv), head -1 for the response, python3 inline parser asserting protocolVersion in result. This exactly matches Decision 3 + Architecture step 4.",
+    "The binary name is in `set_fact` without `cacheable: true` — correct for same-play fact propagation to Task 3. The README fact-propagation section explains this clearly.",
+    "test_no_sign_memory_anywhere is an excellent regression guard. It's a pattern that should be replicated for other 'this subcommand does not exist' invariants.",
+    "The `.ansible-lint` config skip list is minimal and each skip is documented with a rationale. The `role-name` skip is repo-wide consistent; the molecule/converge.yml exclusion is accurate (molecule isn't wired into CI).",
+    "All descoped artifacts are cleanly removed: templates/config.yml.j2, templates/protocol-qa.env.j2, templates/molyanov-mnemonic-hooks.yml.j2, templates/hooks/. The templates/ directory now contains only the one file it should.",
+    "The systemd unit hardening block is comprehensive — it goes well beyond what the spec required (CapabilityBoundingSet=, MemoryDenyWriteExecute=, ProtectKernelTunables= etc). LimitCORE= is not present (not required for this role), and the added UMask=0077 is appropriate.",
+    "The bump runbook in README correctly includes: regenerate lockfile offline, strict-pin the root dep, update defaults, commit + deploy, post-deploy sanity with doctor. The third-binary-spelling edge case is documented with the npm list -g alternative.",
+    "The Node.js prerequisite block correctly guards against re-running NodeSource setup when node is already present, avoiding unnecessary APT source modifications on existing VMs.",
+    "The README's 'What it does NOT install' section is valuable — it explicitly documents the Vaultwarden signing-key removal and the sign-memory absence, which prevents future contributors from re-introducing those paths."
+  ],
+  "ac_coverage": {
+    "npm_install_global": "PASS — community.general.npm with global:true and pinned version",
+    "npm_ci_from_lockfile": "PASS — npm ci from copied package-lock.json",
+    "mnemonic_mcp_binary_fact_set": "PASS (when enabled) / FAIL (when disabled — T2-1)",
+    "systemd_unit_uses_binary_fact": "PASS — ExecStart={{ mnemonic_mcp_binary }} mcp-stdio",
+    "blogger_mcp_json_cross_role_contract": "PASS — fact available to downstream templates in same play",
+    "mnemonic_mcp_enabled_true": "PASS — defaults/main.yml line 10",
+    "service_active_running": "PASS — enable + started + wait_for active",
+    "mcp_stdio_handshake_smoke": "PASS — JSON-RPC initialize handshake with python3 assertion",
+    "no_sign_memory_anywhere": "PASS — test_no_sign_memory_anywhere covers this + verified manually",
+    "readme_two_runbooks": "PASS — Runbook A (version bump) and Runbook B (publisher-bot token)",
+    "descoped_artifacts_removed": "PASS — verified filesystem and test_descoped_artifacts_removed",
+    "all_8_contract_tests_pass": "PASS — reported by implementer; tests correctly cover TDD anchor"
+  }
+}

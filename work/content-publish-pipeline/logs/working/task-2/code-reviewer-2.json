@@ -1,0 +1,60 @@
+{
+  "task": "Task 2 — Mnemonik MCP role npm rewrite + binary discovery",
+  "commit": "7057e43",
+  "round": 2,
+  "reviewer": "code-reviewer",
+  "verdict": "approved",
+  "summary": "All three round-1 issues are resolved correctly and cleanly. The disabled-role sentinel, npm ci idempotency gate, and stale-binary cleanup are all in place. The security-auditor-driven single-step supply-chain change (drop community.general.npm, use symlink) is architecturally sound and well-commented. One informational note: the contract tests do not cover the new symlink task or the removal of the global install — worth adding in a follow-up, but not blocking.",
+  "issues": [],
+  "round1_resolution": {
+    "T2-1": {
+      "status": "FIXED",
+      "verified": "tasks/main.yml lines 13-16: set_fact mnemonic_mcp_binary='' runs outside and before the install block, conditioned on `not (mnemonic_mcp_enabled | bool)`. Comment explains the empty-sentinel intent. Downstream Task 3's blogger.mcp.json.j2 will render an empty command field rather than UndefinedError."
+    },
+    "T2-2": {
+      "status": "FIXED",
+      "verified": "npm ci now gated on `when: mnemonik_lockfile_copy.changed or mnemonik_packagejson_copy.changed` (line 121). package.json copy registers mnemonik_packagejson_copy (line 99). The `changed_when: mnemonik_npm_ci.rc == 0` is correct — when the task runs, it always modifies node_modules (npm ci clean-install semantics), so marking it changed is accurate. When neither file changed, the task is skipped entirely, which is the desired idempotency."
+    },
+    "T2-3": {
+      "status": "FIXED",
+      "verified": "New task 'Remove stale descoped binary from prior install' (lines 71-75) uses state: absent on /opt/mnemonic-mcp/bin/mnemonic-mcp with failed_when: false. Runs inside the enabled block, before the discovery cascade. Comment explains the PATH ambiguity concern."
+    }
+  },
+  "security_auditor_changes_review": {
+    "T2-SEC-002_single_step_install": {
+      "verdict": "sound",
+      "assessment": "Dropping community.general.npm global install in favor of a symlink from /usr/local/bin/mnemonik-mcp to <install_dir>/node_modules/.bin/mnemonik-mcp is architecturally cleaner. With the old two-step approach, the global install could in theory resolve a different transitive tree than npm ci (e.g. if npm's cache was warm). The symlink ensures the binary on PATH is exactly the byte sequence installed by the lockfile. The symlink task uses state: link + force: true, which is idempotent and overwrites any stale link correctly.",
+      "note": "The symlink hardcodes the source path as node_modules/.bin/mnemonik-mcp (with K). If a future version ships the binary under the old mnemonic-mcp spelling, the symlink task will fail at creation time — which is intentional per the comment and the bump-runbook. The discovery cascade that follows the symlink task remains as defense-in-depth, which is correct."
+    },
+    "T2-SEC-001_drop_no_audit": {
+      "verdict": "correct",
+      "assessment": "Keeping --audit (removing --no-audit) means npm ci will report known CVEs in the advisory database. Since the lockfile pins exact versions, the audit output is informational and won't change what gets installed. This is the right trade-off: supply-chain pins what we get, audit tells us if what we pinned has known issues."
+    }
+  },
+  "informational_notes": [
+    {
+      "id": "T2-INFO-1",
+      "severity": "informational",
+      "file": "infrastructure/ansible/roles/mnemonic-mcp/tests/test_role_contract.py",
+      "title": "Contract tests do not cover the new symlink task or removal of community.general.npm",
+      "description": "The round 2 changes introduce a symlink step and remove the community.general.npm global install. The contract tests (test_tasks_set_fact_for_binary_discovery, test_package_lock_checked_in_and_valid_json) still pass because they test the binary-discovery contract and lockfile presence, which are unchanged. However, there is no test that: (a) verifies community.general.npm is NOT used (regression guard against future re-introduction), or (b) verifies the symlink task is present with the correct src/dest. The test_no_sign_memory_anywhere pattern is a good model for (a).",
+      "recommendation": "In a follow-up, add: test_no_global_npm_module() — assert 'community.general.npm' not in tasks_text; test_symlink_task_present() — find a task with ansible.builtin.file and state: link and dest: /usr/local/bin/mnemonik-mcp. Not blocking for this task."
+    }
+  ],
+  "ac_coverage": {
+    "npm_install": "PASS — npm ci from lockfile is the single install path",
+    "transitive_deps_via_lockfile": "PASS — npm ci with package-lock.json enforces all hashes",
+    "mnemonic_mcp_binary_fact_when_enabled": "PASS — set via which cascade after symlink",
+    "mnemonic_mcp_binary_fact_when_disabled": "PASS — T2-1 fixed; empty sentinel set before block",
+    "systemd_unit_uses_binary_fact": "PASS",
+    "mnemonic_mcp_enabled_true": "PASS",
+    "service_active_running": "PASS — enable + started + wait_for",
+    "mcp_stdio_handshake_smoke": "PASS — unchanged from round 1",
+    "no_sign_memory_anywhere": "PASS",
+    "readme_two_runbooks": "PASS — updated to reflect single-step install",
+    "descoped_artifacts_removed": "PASS",
+    "stale_binary_cleanup": "PASS — T2-3 fixed",
+    "npm_ci_idempotency": "PASS — T2-2 fixed; gated on file changes",
+    "all_8_contract_tests_pass": "PASS — reported by implementer"
+  }
+}

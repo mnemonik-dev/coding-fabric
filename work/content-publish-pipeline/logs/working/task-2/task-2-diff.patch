@@ -1,0 +1,2343 @@
+diff --git a/infrastructure/ansible/roles/mnemonic-mcp/.ansible-lint b/infrastructure/ansible/roles/mnemonic-mcp/.ansible-lint
+new file mode 100644
+index 0000000..933cde0
+--- /dev/null
++++ b/infrastructure/ansible/roles/mnemonic-mcp/.ansible-lint
+@@ -0,0 +1,20 @@
++---
++# Role-local ansible-lint config. Two pre-existing structural choices that we
++# explicitly opt out of, both of which are non-runtime defects.
++#
++# 1) role-name: every role in this repo uses kebab-case (mnemonic-mcp,
++#    telegram-ai-agent, ssh-hardening, fabric-services, ...). Renaming
++#    `mnemonic-mcp` requires touching the playbook, every inventory
++#    reference, every CI workflow grep, and the upstream role consumers.
++#    Out of scope here; tracked as a repo-wide concern.
++#
++# 2) syntax-check[specific] on `molecule/default/converge.yml`: molecule
++#    injects ANSIBLE_ROLES_PATH at runtime (`molecule test ...`), but
++#    `ansible-lint` runs the playbook stand-alone and can't resolve the
++#    role-by-name. The scenario isn't wired into CI as of 2026-06
++#    (see role README TODO).
++skip_list:
++  - role-name
++
++exclude_paths:
++  - molecule/default/converge.yml
+diff --git a/infrastructure/ansible/roles/mnemonic-mcp/README.md b/infrastructure/ansible/roles/mnemonic-mcp/README.md
+index 23a3a59..9a200c3 100644
+--- a/infrastructure/ansible/roles/mnemonic-mcp/README.md
++++ b/infrastructure/ansible/roles/mnemonic-mcp/README.md
+@@ -1,127 +1,182 @@
+ # Role: mnemonic-mcp
+ 
+-> **STATUS: DISABLED BY DEFAULT (descoped 2026-05).**
+-> The local Mnemonic MCP server is not yet production-ready. coding-fabric
+-> deploys cleanly without it. To re-enable, set `mnemonic_mcp_enabled: true`
+-> in inventory once the MCP server reaches v1.0+ and a signing-key generation
+-> procedure is in place. Re-introduction work is tracked in the backlog
+-> feature `work/mnemonic-attestation-integration/`.
+->
+-> When disabled, the role installs no-op stub hooks (5 scripts under
+-> `/etc/mnemonic-mcp/hooks/`) that exit 0 silently and log `attestation
+-> skipped (mnemonic-mcp disabled — see backlog)` to journald so downstream
+-> code paths invoking the hooks do not fail.
+-
+-Installs and configures the local Mnemonic MCP server with 5 trigger-point hook scripts that produce the per-feature DAG attestation lineage. Anchors user-spec AC11-AC16 and tech-spec §2.3 role 9, §2.6 D14.
+-
+-## Responsibilities
+-
+-1. **Binary Installation**: Downloads and verifies mnemonic-mcp server binary from GitHub releases (pinned version, SHA256 verified).
+-2. **systemd Unit**: Renders `/etc/systemd/system/mnemonic-mcp.service` with `LoadCredential` mechanism to load signing key from Vaultwarden vault (never writes key to disk).
+-3. **Configuration**: Renders `/etc/mnemonic-mcp/config.yml` binding to `127.0.0.1:7777` in local mode.
+-4. **Protocol QA**: Renders `/etc/mnemonic-mcp/protocol-qa.env` with `MNEMONIC_MODE=full` and Solana devnet + Arweave testnet credentials (mode 0600, owner `op`).
+-5. **Hook Scripts**: Installs 5 trigger-point hook scripts under `/etc/mnemonic-mcp/hooks/`:
+-   - `user-spec.sh` (root node)
+-   - `tech-spec.sh` (parent: user-spec)
+-   - `task-complete.sh` (parent: tech-spec)
+-   - `pre-deploy.sh` (parent: task-complete)
+-   - `post-deploy.sh` (parent: pre-deploy, final node)
+-6. **molyanov Integration**: Configures molyanov success paths to invoke hooks at phase completion.
+-7. **Healthcheck**: Smoke test via stub invocation of all 5 hooks; verifies DAG construction via `mnemonic_recall`.
++Installs the **Mnemonik MCP server** from the upstream-supported npm
++distribution channel (`@mnemonik-xyz/mcp`), discovers the actual binary
++name shipped by the pinned version, and runs the server under systemd
++as a `mcp-stdio` daemon. The discovered binary name is exposed as the
++Ansible fact `mnemonic_mcp_binary` and consumed downstream by the
++`content-publisher` role (`/etc/blogger.mcp.json` template) and by the
++content-publisher worker for attestation calls.
++
++Anchored to `work/content-publish-pipeline/tech-spec.md` Decision 3 +
++Architecture step 4.
++
++## Install path
++
++1. **Node.js prerequisite**: NodeSource setup_20.x → `apt install nodejs`
++   (pattern shared with the `telegram-ai-agent` role).
++2. **Local lockfile install** (supply-chain pin for the full tree,
++   per security R2-8): `npm ci` consumes the checked-in
++   `files/package-lock.json` in `{{ mnemonik_mcp_install_dir }}` (default
++   `/opt/mnemonik-mcp/`). Every transitive integrity hash is fixed.
++3. **Global install for PATH**: `community.general.npm` installs
++   `@mnemonik-xyz/mcp@{{ mnemonik_mcp_npm_version }}` globally, which
++   drops the bin at the npm global prefix (`/usr/local/bin/` on the
++   target VM).
++4. **Binary discovery**: `which mnemonik-mcp || which mnemonic-mcp`.
++   Upstream has shipped the bin under both spellings (current
++   `@mnemonik-xyz/mcp@0.2.4` ships `mnemonik-mcp` with K; older builds
++   shipped `mnemonic-mcp` without K). The cascade resolves whichever
++   spelling the pinned version actually shipped; the result lands in the
++   `mnemonic_mcp_binary` fact.
++5. **systemd unit**: `templates/mnemonic-mcp.service.j2` renders
++   `ExecStart={{ mnemonic_mcp_binary }} mcp-stdio` and inherits the
++   hardening block (`NoNewPrivileges`, `ProtectSystem=strict`,
++   `ProtectHome`, etc.).
++6. **Post-install smoke**: spawn `<mnemonic_mcp_binary> mcp-stdio`, feed
++   a JSON-RPC `initialize` envelope on stdin, assert `protocolVersion`
++   in the response. Replaces the bogus `--selftest` probe; this is the
++   real surface (see tech-spec Decision 3).
++
++## What it does *not* install
++
++- No Vaultwarden signing-key materialisation. The previous flow pulled
++  a key out of `bw`, mode-0600'd it under `/run/credentials/`, then
++  systemd `LoadCredential=`'d it. The new npm distribution channel
++  doesn't use the same on-disk signing-key contract; signing flows
++  through MCP JSON-RPC tools, not a bound-at-startup credential. The
++  `LoadCredential=` directive is gone from the unit.
++- No `--selftest` probe and no one-shot signing CLI subcommand.
++  Neither exists on the npm-shipped binary; both are bygone artefacts of
++  the descoped binary-download era. The npm-shipped binary only exposes
++  `install`, `mcp-stdio`, `doctor`; signing flows are reached via
++  JSON-RPC `tools/call`, not a one-shot CLI verb. The role asserts via
++  real MCP-stdio handshake instead.
++- No molyanov hook scripts, no `config.yml`, no `protocol-qa.env`. The
++  old role was attestation-DAG-hooks-shaped; this role is
++  long-running-stdio-server-shaped.
+ 
+ ## Variables
+ 
+ | Variable | Default | Description |
+ |----------|---------|-------------|
+-| `mnemonic_mcp_enabled` | `false` | Master switch (descoped 2026-05). When false, only no-op stub hooks are installed. |
+-| `mnemonic_mcp_version` | `0.1.0` | Binary version tag |
+-| `mnemonic_mcp_binary_sha256` | `changeme...` | SHA256 checksum for binary verification |
+-| `mnemonic_mcp_install_dir` | `/opt/mnemonic-mcp` | Installation directory |
+-| `mnemonic_mcp_config_dir` | `/etc/mnemonic-mcp` | Configuration directory |
+-| `mnemonic_mcp_service_user` | `op` | systemd service user |
+-| `mnemonic_mcp_mode` | `local` | Operation mode: `local` or `full` |
+-| `solana_devnet_rpc_url` | `https://api.devnet.solana.com` | Solana RPC endpoint (protocol-qa only) |
+-| `arweave_testnet_url` | `https://testnet.arweave.net` | Arweave testnet URL (protocol-qa only) |
++| `mnemonic_mcp_enabled` | `true` | Master switch (re-enabled after descope cleanup). |
++| `mnemonik_mcp_npm_package` | `@mnemonik-xyz/mcp` | Scoped package name. |
++| `mnemonik_mcp_npm_version` | `0.2.4` | Pinned root version. Bumping requires re-generating `files/package-lock.json`. |
++| `mnemonik_mcp_install_dir` | `/opt/mnemonik-mcp` | Where `package.json` + lockfile live; not the binary path. |
++| `mnemonic_mcp_systemd_unit` | `mnemonic-mcp.service` | systemd unit filename. |
++| `mnemonic_mcp_service_user` | `op` | User runs the daemon. |
++| `mnemonic_mcp_service_group` | `op` | Group. |
++
++## Facts exposed to downstream roles
++
++- `mnemonic_mcp_binary` (str): absolute path to the resolved binary
++  (e.g. `/usr/local/bin/mnemonik-mcp`). Set via `set_fact` without
++  `cacheable:`; lives for the rest of the same play on the same host —
++  no `hostvars[…]` lookup needed in downstream Jinja templates.
++
++## Runbooks
++
++### A. Bump `mnemonik-mcp` to a new version
++
++1. **Off-host: regenerate the lockfile.** In a clean throwaway dir on
++   your dev machine (so the lockfile inherits no host noise):
++   ```bash
++   mkdir /tmp/mnemonik-mcp-bump && cd /tmp/mnemonik-mcp-bump
++   npm init -y >/dev/null
++   npm install @mnemonik-xyz/mcp@<NEW_VERSION> \
++       --package-lock-only --no-audit --no-fund
++   ```
++2. **Strict-pin the root dep** in the new lockfile (replace `^X.Y.Z`
++   with `X.Y.Z` in `packages[""].dependencies`).
++3. **Copy** the new `package-lock.json` over
++   `infrastructure/ansible/roles/mnemonic-mcp/files/package-lock.json`.
++4. **Edit defaults**: bump `mnemonik_mcp_npm_version` in
++   `defaults/main.yml`.
++5. **Commit + deploy.**
++6. **Post-deploy sanity** (no edit needed even if upstream renamed the
++   binary; the discovery cascade handles `mnemonik-mcp` and
++   `mnemonic-mcp`):
++   ```bash
++   ssh root@<vm> journalctl -u mnemonic-mcp --since '5 minutes ago'
++   ssh root@<vm> "$mnemonic_mcp_binary doctor"
++   ```
++7. **If upstream introduces a THIRD binary spelling** (e.g.
++   `mnemonik-mcp-server`): extend the cascade in
++   `tasks/main.yml` → "Discover installed Mnemonik MCP binary name".
++   Alternative future-proofing: parse
++   `npm list -g @mnemonik-xyz/mcp --json` for the `bin` field.
++
++### B. Rotate the publisher-bot Telegram token
++
++Operator-side procedure; the content-publisher role consumes the token
++from sops. This runbook is reproduced here so it's discoverable from
++the role most directly responsible for the publishing path's runtime
++(content-publisher's README links back here).
++
++1. In `@BotFather` (Telegram): `/mybots` → `@mnemonik_publisher_bot`
++   → `API Token` → `Revoke current token`.
++2. `@BotFather` returns a fresh token. Copy it.
++3. On your dev machine:
++   ```bash
++   sops edit infrastructure/secrets/secrets.sops.yml
++   # bump the value of `blogger_telegram_bot_token`
++   ```
++4. Commit + deploy.
++5. `@BotFather` again: delete any orphan tokens still listed.
++
++A rotation does **not** affect `mnemonic_mcp_binary` or the MCP server —
++those are independent.
++
++## Smoke (manual, post-deploy)
+ 
+-## Dependencies
+-
+-- `base` (OS user management)
+-- `vaultwarden` (signing key source via systemd vault:// URI)
+-- `molyanov` (skill success path integration)
+-
+-## Security
+-
+-- Signing key never written to disk; loaded by systemd `LoadCredential` at unit startup
+-- protocol-qa.env mode 0600, owner `op`
+-- Service runs with `NoNewPrivileges=yes`, `ProtectSystem=strict`
+-- All hook scripts: `set -euo pipefail`, proper error handling
+-
+-## Hook Trigger Points & DAG Construction
+-
+-Each hook is invoked by molyanov at phase completion:
+-
+-| Hook | Phase | Parent | Output |
+-|------|-------|--------|--------|
+-| user-spec.sh | user-spec approved | none (root) | `work/<feature>/attestations.yml` |
+-| tech-spec.sh | tech-spec approved | user-spec attestation_id | appends to attestations.yml |
+-| task-complete.sh | all tasks passing | tech-spec attestation_id | appends (with optional Solana/Arweave txids in full mode) |
+-| pre-deploy.sh | pre-deploy QA pass | task-complete attestation_id | appends to attestations.yml |
+-| post-deploy.sh | deploy + verify | pre-deploy attestation_id | appends (DAG complete) |
+-
+-In `MNEMONIC_MODE=full` (protocol-qa topic only), task-complete and post-deploy hooks record Solana devnet + Arweave testnet transaction IDs.
+-
+-## Full Mode vs Local Mode
+-
+-- **Local** (default): Signs in-process, no network calls. All hooks work offline.
+-- **Full** (protocol-qa topic only): Anchors attestations to Solana devnet and Arweave testnet. If RPC outage, hook queues for retry; molyanov skill success is blocked until receipt.
+-
+-## Key Rotation
+-
+-To rotate the signing key:
++```bash
++ssh root@<vm> systemctl is-active mnemonic-mcp           # active
++ssh root@<vm> "$mnemonic_mcp_binary --help"              # lists mcp-stdio
++ssh root@<vm> 'printf "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"manual\",\"version\":\"0.1\"}}}\n" | "$mnemonic_mcp_binary" mcp-stdio | head -1 | python3 -c "import json,sys; r=json.loads(sys.stdin.read()); assert \"protocolVersion\" in r.get(\"result\",{}), r"'
++```
+ 
+-1. Update the secret in Vaultwarden at path `mnemonic/mcp-signing-key`
+-2. Reload systemd: `systemctl daemon-reload`
+-3. Restart service: `systemctl restart mnemonic-mcp`
+-4. Verify: `systemctl is-active mnemonic-mcp`
++Lockfile drift check:
+ 
+-No ansible re-run needed; systemd will load the new credential on next startup.
++```bash
++sha256sum /opt/mnemonik-mcp/package-lock.json
++# Compare to local files/package-lock.json sha256.
++```
+ 
+-## Healthcheck
++## Testing
+ 
+-Post-deployment, the role runs:
++Unit-style contract tests (no live VM, no docker):
+ 
+-1. `systemctl is-active mnemonic-mcp` → must be `active`
+-2. Synthetic invocation of all 5 hooks with stubbed parents
+-3. `mnemonic_recall --feature=stub` → must return 5-node DAG
++```bash
++pytest infrastructure/ansible/roles/mnemonic-mcp/tests/ -v
++```
+ 
+-If any check fails, task exits non-zero; ansible halt prevents broken deployments.
++These assert: npm package + version pinned; binary discovery cascade
++present with `failed_when rc != 0`; systemd unit uses the fact;
++`files/package-lock.json` is valid JSON with `lockfileVersion >= 2` and
++contains `@mnemonik-xyz/mcp`; descoped artefacts removed; no
++the descoped one-shot signing subcommand string anywhere; `ansible-lint` + playbook
++`--syntax-check` exit 0.
+ 
+-## Testing (Molecule)
++Molecule (local-only, not wired into CI as of 2026-06):
+ 
+ ```bash
+-molecule test -s mnemonic-mcp
++cd infrastructure/ansible/roles/mnemonic-mcp
++molecule test -s default
+ ```
+ 
+-Molecule scenario mocks the Mnemonic MCP server and validates:
+-- All hooks installed and executable
+-- Configuration templates rendered correctly
+-- systemd unit loads
+-- DAG construction smoke test
++**TODO** (follow-up, non-blocking): wire molecule into the
++`deploy-fabric.yml` workflow's pre-deploy stage. Tracked under the
++content-publish-pipeline feature dir.
+ 
+ ## Files
+ 
+-- `tasks/main.yml` — Installation, configuration, healthcheck
+-- `defaults/main.yml` — Variable defaults
+-- `handlers/main.yml` — systemd reload/restart handlers
+-- `templates/`:
+-  - `mnemonic-mcp.service.j2` — systemd unit
+-  - `config.yml.j2` — Server config
+-  - `protocol-qa.env.j2` — Full-mode env vars
+-  - `molyanov-mnemonic-hooks.yml.j2` — molyanov integration
+-  - `hooks/{user-spec,tech-spec,task-complete,pre-deploy,post-deploy}.sh.j2` — 5 hook scripts
+-
+-## Cross-Role Notes
+-
+-- molyanov role: Installs molyanov skills; this role registers hooks with success paths under `~/.fabric/molyanov/hooks.d/`
+-- vaultwarden role: Provides secret store; this role only references vault URI (never requests the key)
+-- (ruflo role removed 2026-05-20; hook wiring now flows directly through molyanov when this role is re-enabled.)
++- `tasks/main.yml` — install, discover binary, render unit, smoke.
++- `defaults/main.yml` — variable defaults.
++- `handlers/main.yml` — `reload mnemonic-mcp systemd`, `restart
++  mnemonic-mcp service`.
++- `templates/mnemonic-mcp.service.j2` — systemd unit.
++- `files/package-lock.json` — supply-chain pin for the npm transitive
++  tree (consumed by `npm ci`).
++- `tests/test_role_contract.py` — pytest contract tests.
++- `molecule/default/` — local-only docker scenario.
+diff --git a/infrastructure/ansible/roles/mnemonic-mcp/defaults/main.yml b/infrastructure/ansible/roles/mnemonic-mcp/defaults/main.yml
+index 71eac11..51d1e51 100644
+--- a/infrastructure/ansible/roles/mnemonic-mcp/defaults/main.yml
++++ b/infrastructure/ansible/roles/mnemonic-mcp/defaults/main.yml
+@@ -1,44 +1,26 @@
+ ---
+-# DESCOPED (Round 2, 2026-05). The Mnemonic MCP server is not yet
+-# production-ready, so this role is disabled by default. coding-fabric deploys
+-# cleanly without it; attestation integration moves to backlog feature
+-# `mnemonic-attestation-integration` (see work/mnemonic-attestation-integration/).
+-# To re-enable, set `mnemonic_mcp_enabled: true` once the MCP server reaches
+-# the v1.0+ release milestone and a real signing-key generation procedure is in
+-# place.
+-mnemonic_mcp_enabled: false
+-
+-operator_user: mnemonic-operator
+-operator_home: /home/mnemonic-operator
+-operator_group: "{{ operator_user }}"
+-
+-mnemonic_mcp_version: "0.1.0"
+-mnemonic_mcp_binary_url: "https://github.com/mnemonic-ai/mnemonic-mcp/releases/download/v{{ mnemonic_mcp_version }}/mnemonic-mcp-linux-x86_64"
+-mnemonic_mcp_binary_sha256: "REPLACE_WITH_REAL_SHA256_BEFORE_DEPLOY"
+-
+-mnemonic_mcp_install_dir: /opt/mnemonic-mcp
+-mnemonic_mcp_config_dir: /etc/mnemonic-mcp
+-mnemonic_mcp_hooks_dir: "{{ mnemonic_mcp_config_dir }}/hooks"
+-
+-mnemonic_mcp_bind_host: 127.0.0.1
+-mnemonic_mcp_bind_port: 7777
+-mnemonic_mcp_mode: "local"
+-
++# Mnemonik MCP server install + run. Distribution channel: scoped npm package
++# `@mnemonik-xyz/mcp`; the binary ships inside the package and is templated
++# everywhere via the discovered fact `mnemonic_mcp_binary` (see tasks/main.yml).
++#
++# The binary spelling has drifted across versions (`mnemonik-mcp` with K on
++# 0.2.4 — current upstream — vs `mnemonic-mcp` without K on older builds).
++# Don't hardcode it; the discovery cascade `which mnemonik-mcp || which
++# mnemonic-mcp` resolves whichever name the pinned version actually shipped.
++mnemonic_mcp_enabled: true
++
++# npm distribution channel — pinned to a specific version so the root package
++# is reproducible. Transitive dependencies are pinned via the checked-in
++# files/package-lock.json (consumed by `npm ci`).
++mnemonik_mcp_npm_package: "@mnemonik-xyz/mcp"
++mnemonik_mcp_npm_version: "0.2.4"
++
++# Where the role drops package.json + package-lock.json for the `npm ci` step.
++# The binary itself lands on PATH (npm global prefix, typically /usr/local/bin)
++# regardless of this path.
++mnemonik_mcp_install_dir: /opt/mnemonik-mcp
++
++# systemd identity
+ mnemonic_mcp_systemd_unit: mnemonic-mcp.service
+ mnemonic_mcp_service_user: op
+ mnemonic_mcp_service_group: op
+-
+-# Vaultwarden item that holds the mnemonic-mcp signing key (decrypted via bw at deploy time)
+-mnemonic_mcp_vault_item: "mnemonic/mcp-signing-key"
+-
+-# On-disk path where the Ansible pre-task materialises the signing key (mode 0600 root).
+-# systemd LoadCredential= expects a real file path on disk, NOT a custom vault:// URI scheme
+-# (Finding F-001 in T21 security-audit).  The file is placed under /run/credentials/...
+-# (tmpfs, ephemeral) and removed in an `always:` cleanup task after the service is started.
+-mnemonic_mcp_credential_dir: "/run/credentials/mnemonic-mcp.service"
+-mnemonic_mcp_credential_file: "{{ mnemonic_mcp_credential_dir }}/mnemonic-signing-key"
+-
+-solana_devnet_rpc_url: "https://api.devnet.solana.com"
+-arweave_testnet_url: "https://testnet.arweave.net"
+-
+-mnemonic_mcp_healthcheck_timeout: 10
+diff --git a/infrastructure/ansible/roles/mnemonic-mcp/files/package-lock.json b/infrastructure/ansible/roles/mnemonic-mcp/files/package-lock.json
+new file mode 100644
+index 0000000..988e4ae
+--- /dev/null
++++ b/infrastructure/ansible/roles/mnemonic-mcp/files/package-lock.json
+@@ -0,0 +1,98 @@
++{
++  "name": "mnemonik-mcp-lockgen",
++  "version": "1.0.0",
++  "lockfileVersion": 3,
++  "requires": true,
++  "packages": {
++    "": {
++      "name": "mnemonik-mcp-lockgen",
++      "version": "1.0.0",
++      "license": "ISC",
++      "dependencies": {
++        "@mnemonik-xyz/mcp": "0.2.4"
++      }
++    },
++    "node_modules/@isaacs/fs-minipass": {
++      "version": "4.0.1",
++      "resolved": "https://registry.npmjs.org/@isaacs/fs-minipass/-/fs-minipass-4.0.1.tgz",
++      "integrity": "sha512-wgm9Ehl2jpeqP3zw/7mo3kRHFp5MEDhqAdwy1fTGkHAwnkGOVsgpvQhL8B5n1qlb01jV3n/bI0ZfZp5lWA1k4w==",
++      "license": "ISC",
++      "dependencies": {
++        "minipass": "^7.0.4"
++      },
++      "engines": {
++        "node": ">=18.0.0"
++      }
++    },
++    "node_modules/@mnemonik-xyz/mcp": {
++      "version": "0.2.4",
++      "resolved": "https://registry.npmjs.org/@mnemonik-xyz/mcp/-/mcp-0.2.4.tgz",
++      "integrity": "sha512-w0yHPlYiwt0GSiCRVpVtSZalbUkdOh/Aq2iBiHYHnk1R2PbC9tAzTuVj773mejj+Tkj0VeoPZVxdZn11o6TSBg==",
++      "license": "Apache-2.0",
++      "dependencies": {
++        "tar": "^7.4.0"
++      },
++      "bin": {
++        "mnemonik-mcp": "dist/bin/mnemonik-mcp.js"
++      },
++      "engines": {
++        "node": ">=20"
++      }
++    },
++    "node_modules/chownr": {
++      "version": "3.0.0",
++      "resolved": "https://registry.npmjs.org/chownr/-/chownr-3.0.0.tgz",
++      "integrity": "sha512-+IxzY9BZOQd/XuYPRmrvEVjF/nqj5kgT4kEq7VofrDoM1MxoRjEWkrCC3EtLi59TVawxTAn+orJwFQcrqEN1+g==",
++      "license": "BlueOak-1.0.0",
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/minipass": {
++      "version": "7.1.3",
++      "resolved": "https://registry.npmjs.org/minipass/-/minipass-7.1.3.tgz",
++      "integrity": "sha512-tEBHqDnIoM/1rXME1zgka9g6Q2lcoCkxHLuc7ODJ5BxbP5d4c2Z5cGgtXAku59200Cx7diuHTOYfSBD8n6mm8A==",
++      "license": "BlueOak-1.0.0",
++      "engines": {
++        "node": ">=16 || 14 >=14.17"
++      }
++    },
++    "node_modules/minizlib": {
++      "version": "3.1.0",
++      "resolved": "https://registry.npmjs.org/minizlib/-/minizlib-3.1.0.tgz",
++      "integrity": "sha512-KZxYo1BUkWD2TVFLr0MQoM8vUUigWD3LlD83a/75BqC+4qE0Hb1Vo5v1FgcfaNXvfXzr+5EhQ6ing/CaBijTlw==",
++      "license": "MIT",
++      "dependencies": {
++        "minipass": "^7.1.2"
++      },
++      "engines": {
++        "node": ">= 18"
++      }
++    },
++    "node_modules/tar": {
++      "version": "7.5.16",
++      "resolved": "https://registry.npmjs.org/tar/-/tar-7.5.16.tgz",
++      "integrity": "sha512-56adEpPMouktRlBLXiaYFFzZ/3+JXa8P9n7WbR+ibIjtviN55mEaOkiysCnPnWm+7kkui1Dn8J9l+g6zV8731w==",
++      "license": "BlueOak-1.0.0",
++      "dependencies": {
++        "@isaacs/fs-minipass": "^4.0.0",
++        "chownr": "^3.0.0",
++        "minipass": "^7.1.2",
++        "minizlib": "^3.1.0",
++        "yallist": "^5.0.0"
++      },
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/yallist": {
++      "version": "5.0.0",
++      "resolved": "https://registry.npmjs.org/yallist/-/yallist-5.0.0.tgz",
++      "integrity": "sha512-YgvUTfwqyc7UXVMrB+SImsVYSmTS8X/tSrtdNZMImM+n7+QTriRXyXim0mBrTXNeqzVF0KWGgHPeiyViFFrNDw==",
++      "license": "BlueOak-1.0.0",
++      "engines": {
++        "node": ">=18"
++      }
++    }
++  }
++}
+diff --git a/infrastructure/ansible/roles/mnemonic-mcp/handlers/main.yml b/infrastructure/ansible/roles/mnemonic-mcp/handlers/main.yml
+index 3063485..5948b43 100644
+--- a/infrastructure/ansible/roles/mnemonic-mcp/handlers/main.yml
++++ b/infrastructure/ansible/roles/mnemonic-mcp/handlers/main.yml
+@@ -1,12 +1,12 @@
+ ---
+-- name: reload mnemonic-mcp systemd
+-  systemd:
+-    daemon_reload: yes
+-  listen: "reload mnemonic-mcp systemd"
++- name: Reload mnemonic-mcp systemd
++  ansible.builtin.systemd:
++    daemon_reload: true
++  listen: reload mnemonic-mcp systemd
+ 
+-- name: restart mnemonic-mcp service
+-  systemd:
++- name: Restart mnemonic-mcp service
++  ansible.builtin.systemd:
+     name: "{{ mnemonic_mcp_systemd_unit }}"
+     state: restarted
+-    enabled: yes
+-  listen: "restart mnemonic-mcp service"
++    enabled: true
++  listen: restart mnemonic-mcp service
+diff --git a/infrastructure/ansible/roles/mnemonic-mcp/molecule/default/converge.yml b/infrastructure/ansible/roles/mnemonic-mcp/molecule/default/converge.yml
+index 53473ee..66547ab 100644
+--- a/infrastructure/ansible/roles/mnemonic-mcp/molecule/default/converge.yml
++++ b/infrastructure/ansible/roles/mnemonic-mcp/molecule/default/converge.yml
+@@ -1,23 +1,17 @@
+ ---
++# Local-only scenario: not wired into CI as of 2026-06. Updates expected when
++# the npm install path is exercised inside the container.
+ - name: Converge
+   hosts: all
+   gather_facts: true
+   vars:
+     ansible_python_interpreter: /usr/bin/python3
+-    mnemonic_mcp_version: "0.1.0"
+-    # Real test binary SHA256 (64 hex chars for SHA256, not 32-char MD5)
+-    # This must be the actual SHA256 of the mnemonic-mcp test fixture binary
+-    mnemonic_mcp_binary_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+-    mnemonic_mcp_install_dir: /opt/mnemonic-mcp
+-    mnemonic_mcp_config_dir: /etc/mnemonic-mcp
+-    mnemonic_mcp_hooks_dir: "/etc/mnemonic-mcp/hooks"
++    mnemonic_mcp_enabled: true
++    mnemonik_mcp_npm_package: "@mnemonik-xyz/mcp"
++    mnemonik_mcp_npm_version: "0.2.4"
++    mnemonik_mcp_install_dir: /opt/mnemonik-mcp
+     mnemonic_mcp_service_user: op
+     mnemonic_mcp_service_group: op
+-    mnemonic_mcp_bind_host: 127.0.0.1
+-    mnemonic_mcp_bind_port: 7777
+-    mnemonic_mcp_mode: local
+-    operator_user: mnemonic-operator
+-    operator_home: /home/mnemonic-operator
+-    operator_group: mnemonic-operator
++    mnemonic_mcp_systemd_unit: mnemonic-mcp.service
+   roles:
+     - role: mnemonic-mcp
+diff --git a/infrastructure/ansible/roles/mnemonic-mcp/molecule/default/prepare.yml b/infrastructure/ansible/roles/mnemonic-mcp/molecule/default/prepare.yml
+index 54793c9..1725869 100644
+--- a/infrastructure/ansible/roles/mnemonic-mcp/molecule/default/prepare.yml
++++ b/infrastructure/ansible/roles/mnemonic-mcp/molecule/default/prepare.yml
+@@ -4,11 +4,11 @@
+   gather_facts: true
+   tasks:
+     - name: Install python3
+-      raw: apt-get update && apt-get install -y python3
++      ansible.builtin.raw: apt-get update && apt-get install -y python3
+       changed_when: false
+ 
+     - name: Install base packages
+-      apt:
++      ansible.builtin.apt:
+         name:
+           - curl
+           - wget
+@@ -16,34 +16,19 @@
+           - systemd
+           - sudo
+         state: present
+-        update_cache: yes
++        update_cache: true
+ 
+-    - name: Create operator user group
+-      group:
+-        name: mnemonic-operator
+-        state: present
+-
+-    - name: Create operator user
+-      user:
+-        name: mnemonic-operator
+-        group: mnemonic-operator
+-        home: /home/mnemonic-operator
+-        shell: /bin/bash
+-        createhome: yes
++    - name: Create op service group
++      ansible.builtin.group:
++        name: op
+         state: present
+ 
+     - name: Create op service user
+-      user:
++      ansible.builtin.user:
+         name: op
+         group: op
+         home: /var/lib/mnemonic-mcp
+         shell: /usr/sbin/nologin
+-        system: yes
+-        createhome: yes
++        system: true
++        createhome: true
+         state: present
+-
+-    - name: Install sudo (for become in tests)
+-      apt:
+-        name: sudo
+-        state: present
+-      changed_when: false
+diff --git a/infrastructure/ansible/roles/mnemonic-mcp/molecule/default/verify.yml b/infrastructure/ansible/roles/mnemonic-mcp/molecule/default/verify.yml
+index 7856c11..927a681 100644
+--- a/infrastructure/ansible/roles/mnemonic-mcp/molecule/default/verify.yml
++++ b/infrastructure/ansible/roles/mnemonic-mcp/molecule/default/verify.yml
+@@ -1,188 +1,73 @@
+ ---
++# Local-only assertions. Not wired into CI — see role README TODO.
+ - name: Verify
+   hosts: all
+   gather_facts: true
+   vars:
+-    mnemonic_mcp_config_dir: /etc/mnemonic-mcp
+-    mnemonic_mcp_hooks_dir: "/etc/mnemonic-mcp/hooks"
+-    mnemonic_mcp_install_dir: /opt/mnemonic-mcp
++    mnemonik_mcp_install_dir: /opt/mnemonik-mcp
+     mnemonic_mcp_service_user: op
+   tasks:
+     - name: Verify op user exists
+-      user:
++      ansible.builtin.user:
+         name: "{{ mnemonic_mcp_service_user }}"
+         state: present
+-      check_mode: yes
++      check_mode: true
+       register: op_user_check
+ 
+     - name: Assert op user exists
+-      assert:
++      ansible.builtin.assert:
+         that:
+-          - op_user_check.changed == false
+-        fail_msg: "op user does not exist"
++          - not op_user_check.changed
++        fail_msg: op user does not exist
+ 
+-    - name: Verify mnemonic-mcp binary exists and is executable
+-      stat:
+-        path: "{{ mnemonic_mcp_install_dir }}/bin/mnemonic-mcp"
+-      register: binary_stat
++    - name: Verify pinned package-lock.json present in install dir
++      ansible.builtin.stat:
++        path: "{{ mnemonik_mcp_install_dir }}/package-lock.json"
++      register: lockfile_stat
+ 
+-    - name: Assert binary is executable
+-      assert:
++    - name: Assert lockfile present
++      ansible.builtin.assert:
+         that:
+-          - binary_stat.stat.exists
+-          - binary_stat.stat.executable
+-          - binary_stat.stat.pw_name == mnemonic_mcp_service_user
+-        fail_msg: "Binary check failed"
++          - lockfile_stat.stat.exists
++        fail_msg: package-lock.json missing in install dir
+ 
+-    - name: Verify config directory exists
+-      stat:
+-        path: "{{ mnemonic_mcp_config_dir }}"
+-      register: config_dir_stat
+-
+-    - name: Assert config directory exists
+-      assert:
+-        that:
+-          - config_dir_stat.stat.exists
+-          - config_dir_stat.stat.isdir
+-        fail_msg: "Config directory check failed"
+-
+-    - name: Verify config.yml exists
+-      stat:
+-        path: "{{ mnemonic_mcp_config_dir }}/config.yml"
+-      register: config_yml_stat
+-
+-    - name: Assert config.yml exists
+-      assert:
+-        that:
+-          - config_yml_stat.stat.exists
+-        fail_msg: "config.yml check failed"
+-
+-    - name: Verify hooks directory exists
+-      stat:
+-        path: "{{ mnemonic_mcp_hooks_dir }}"
+-      register: hooks_dir_stat
+-
+-    - name: Assert hooks directory exists
+-      assert:
+-        that:
+-          - hooks_dir_stat.stat.exists
+-          - hooks_dir_stat.stat.isdir
+-        fail_msg: "Hooks directory check failed"
+-
+-    - name: Verify all 5 hooks exist and are executable
+-      stat:
+-        path: "{{ mnemonic_mcp_hooks_dir }}/{{ item }}.sh"
+-      loop:
+-        - user-spec
+-        - tech-spec
+-        - task-complete
+-        - pre-deploy
+-        - post-deploy
+-      register: hook_stat
++    - name: Verify Mnemonik MCP binary on PATH (cascade)
++      ansible.builtin.shell: |
++        set -euo pipefail
++        which mnemonik-mcp || which mnemonic-mcp
++      args:
++        executable: /bin/bash
++      register: which_check
++      changed_when: false
+ 
+-    - name: Assert all hooks are executable
+-      assert:
++    - name: Assert binary discoverable
++      ansible.builtin.assert:
+         that:
+-          - item.stat.exists
+-          - item.stat.executable
+-          - item.stat.pw_name == mnemonic_mcp_service_user
+-        fail_msg: "Hook {{ item.invocation.module_args.path }} check failed"
+-      loop: "{{ hook_stat.results }}"
++          - which_check.rc == 0
++          - (which_check.stdout | trim) | length > 0
++        fail_msg: neither mnemonik-mcp nor mnemonic-mcp on PATH
+ 
+     - name: Verify systemd unit exists
+-      stat:
++      ansible.builtin.stat:
+         path: /etc/systemd/system/mnemonic-mcp.service
+       register: service_stat
+ 
+     - name: Assert systemd unit exists
+-      assert:
++      ansible.builtin.assert:
+         that:
+           - service_stat.stat.exists
+-        fail_msg: "systemd unit check failed"
++        fail_msg: systemd unit check failed
+ 
+-    - name: Verify molyanov hooks config was rendered
+-      stat:
+-        path: /home/mnemonic-operator/.fabric/molyanov/hooks.d/mnemonic-hooks.yml
+-      register: molyanov_config_stat
+-
+-    - name: Assert molyanov config exists (may not exist in test env, skip if missing)
+-      debug:
+-        msg: "molyanov config check: exists={{ molyanov_config_stat.stat.exists }}"
+-
+-    # ------------------------------------------------------------------
+-    # Behavioural hook exercise (audit-fixer-reliability T22 remediation)
+-    # ------------------------------------------------------------------
+-    # Previously verify.yml only asserted file existence + executable bit.
+-    # The audit (test-audit.json suite_issues→mnemonic-mcp) noted that this
+-    # leaves AC11-AC16 covered only by the e2e DAG poll. We add a stub
+-    # mnemonic_sign_memory (returns a fixed attestation_id) on PATH and
+-    # invoke each hook with --feature/--artefact, asserting exit-code 0.
+-
+-    - name: Create stub mnemonic_sign_memory on PATH
+-      copy:
+-        dest: /usr/local/bin/mnemonic_sign_memory
+-        mode: "0755"
+-        content: |
+-          #!/bin/bash
+-          # Test stub used by Molecule verify.yml. Returns a deterministic
+-          # attestation_id in the format expected by hook scripts.
+-          echo "attestation_id=00000000-0000-0000-0000-000000000001"
+-          exit 0
+-
+-    - name: Create stub artefact file for hook tests
+-      copy:
+-        dest: /tmp/test-artefact.md
+-        mode: "0644"
+-        content: "stub artefact for hook behavioural test\n"
+-
+-    - name: Ensure mnemonic-mcp state dir exists for hook writes
+-      file:
+-        path: /var/lib/mnemonic-mcp
+-        state: directory
+-        owner: "{{ mnemonic_mcp_service_user }}"
+-        group: "{{ mnemonic_mcp_service_user }}"
+-        mode: "0750"
+-
+-    - name: Ensure mnemonic-mcp log dir exists for hook writes
+-      file:
+-        path: /var/log/mnemonic-mcp
+-        state: directory
+-        owner: "{{ mnemonic_mcp_service_user }}"
+-        group: "{{ mnemonic_mcp_service_user }}"
+-        mode: "0750"
+-
+-    - name: Invoke each hook with stub args
+-      shell: |
+-        export REPO_ROOT=/tmp
+-        export PATH=/usr/local/bin:/usr/bin:/bin
+-        "{{ mnemonic_mcp_hooks_dir }}/{{ item }}.sh" \
+-          --feature test-feature \
+-          --artefact /tmp/test-artefact.md
+-      args:
+-        executable: /bin/bash
+-      register: hook_exec
+-      loop:
+-        - user-spec
+-        - tech-spec
+-        - task-complete
+-        - pre-deploy
+-        - post-deploy
+-      changed_when: false
+-      # Hooks legitimately fail on subsequent invocations once the
+-      # attestations.yml entry already exists; capture the rc for the
+-      # assertion below rather than aborting on non-zero exit.
+-      failed_when: false
++    - name: Verify systemd unit ExecStart references discovered binary
++      ansible.builtin.lineinfile:
++        path: /etc/systemd/system/mnemonic-mcp.service
++        line: "ExecStart={{ which_check.stdout | trim }} mcp-stdio"
++        state: present
++      check_mode: true
++      register: execstart_check
+ 
+-    - name: Assert each hook either succeeded or reported a recoverable error
+-      assert:
++    - name: Assert ExecStart matches discovered binary
++      ansible.builtin.assert:
+         that:
+-          # Either rc 0 (success) OR the captured stdout contains an
+-          # attestation_id (proving the hook reached the signing step).
+-          - item.rc == 0 or 'attestation_id=' in (item.stdout | default(''))
+-        fail_msg: >-
+-          Hook {{ item.item }} did not invoke mnemonic_sign_memory.
+-          rc={{ item.rc }} stdout={{ item.stdout | default('') }}
+-          stderr={{ item.stderr | default('') }}
+-      loop: "{{ hook_exec.results }}"
+-      loop_control:
+-        label: "{{ item.item }}"
++          - not execstart_check.changed
++        fail_msg: ExecStart in unit does not reference the discovered binary
+diff --git a/infrastructure/ansible/roles/mnemonic-mcp/tasks/main.yml b/infrastructure/ansible/roles/mnemonic-mcp/tasks/main.yml
+index ca13354..7d70113 100644
+--- a/infrastructure/ansible/roles/mnemonic-mcp/tasks/main.yml
++++ b/infrastructure/ansible/roles/mnemonic-mcp/tasks/main.yml
+@@ -1,309 +1,167 @@
+ ---
+-# DESCOPED (Round 2, 2026-05): role disabled by default. The local Mnemonic
+-# MCP server is not yet production-ready; attestation integration moves to the
+-# backlog feature `mnemonic-attestation-integration`. See README and
+-# defaults/main.yml `mnemonic_mcp_enabled`.
++# Install + run the Mnemonik MCP server from the npm scoped package
++# `@mnemonik-xyz/mcp@<version>`. After install, discover the actual binary
++# name (drifted between `mnemonik-mcp` and `mnemonic-mcp` across versions)
++# and expose it as fact `mnemonic_mcp_binary` for downstream roles (Task 3
++# templates `/etc/blogger.mcp.json` from this fact).
+ 
+-- name: "mnemonic-mcp disabled — install no-op stub hooks"
+-  when: not (mnemonic_mcp_enabled | bool)
+-  block:
+-    - name: "mnemonic-mcp role is disabled — operator notice"
+-      ansible.builtin.debug:
+-        msg: |
+-          mnemonic-mcp role is DISABLED (mnemonic_mcp_enabled=false).
+-          Attestation integration is tracked in backlog feature
+-          work/mnemonic-attestation-integration/. Set mnemonic_mcp_enabled=true to
+-          re-enable once the local Mnemonic MCP server reaches v1.0+ production-ready.
+-
+-    - name: "Ensure hooks directory exists (for no-op stubs)"
+-      ansible.builtin.file:
+-        path: "{{ mnemonic_mcp_hooks_dir }}"
+-        state: directory
+-        owner: root
+-        group: root
+-        mode: '0755'
+-
+-    - name: "Install no-op stub hooks (descope mode)"
+-      ansible.builtin.copy:
+-        dest: "{{ mnemonic_mcp_hooks_dir }}/{{ item }}.sh"
+-        owner: root
+-        group: root
+-        mode: '0755'
+-        content: |
+-          #!/bin/bash
+-          # No-op stub: mnemonic-mcp is descoped (mnemonic_mcp_enabled=false).
+-          # See work/mnemonic-attestation-integration/ for the backlog feature
+-          # that re-introduces real attestation signing.
+-          logger -t mnemonic-mcp-stub -p user.info \
+-            "attestation skipped (mnemonic-mcp disabled — see backlog: mnemonic-attestation-integration) hook={{ item }}" || true
+-          exit 0
+-      loop:
+-        - user-spec
+-        - tech-spec
+-        - task-complete
+-        - pre-deploy
+-        - post-deploy
+-
+-- name: "mnemonic-mcp install + configure (gated by mnemonic_mcp_enabled)"
++- name: Mnemonik MCP install + configure
+   when: mnemonic_mcp_enabled | bool
+   block:
+-    - name: Ensure op system user exists
+-      user:
++    - name: Ensure op service user exists
++      ansible.builtin.user:
+         name: "{{ mnemonic_mcp_service_user }}"
+         group: "{{ mnemonic_mcp_service_group }}"
+         home: /var/lib/mnemonic-mcp
+         shell: /usr/sbin/nologin
+-        system: yes
+-        createhome: yes
+-      register: op_user_created
+-
+-    - name: Ensure mnemonic-mcp installation directory exists
+-      file:
+-        path: "{{ mnemonic_mcp_install_dir }}"
+-        state: directory
+-        owner: "{{ mnemonic_mcp_service_user }}"
+-        group: "{{ mnemonic_mcp_service_group }}"
+-        mode: '0755'
+-
+-    - name: Ensure mnemonic-mcp bin directory exists
+-      file:
+-        path: "{{ mnemonic_mcp_install_dir }}/bin"
+-        state: directory
+-        owner: "{{ mnemonic_mcp_service_user }}"
+-        group: "{{ mnemonic_mcp_service_group }}"
+-        mode: '0755'
++        system: true
++        createhome: true
+ 
+-    - name: Assert mnemonic_mcp_binary_sha256 is not a placeholder
+-      assert:
+-        that:
+-          - mnemonic_mcp_binary_sha256 is match('^[0-9a-f]{64}$')
+-        fail_msg: "mnemonic_mcp_binary_sha256 must be a 64-character hex SHA256; found '{{ mnemonic_mcp_binary_sha256 }}'. Override with real checksum before deploy."
+-
+-    - name: Download mnemonic-mcp binary
+-      get_url:
+-        url: "{{ mnemonic_mcp_binary_url }}"
+-        dest: "{{ mnemonic_mcp_install_dir }}/bin/mnemonic-mcp"
+-        owner: "{{ mnemonic_mcp_service_user }}"
+-        group: "{{ mnemonic_mcp_service_group }}"
+-        mode: '0755'
+-        checksum: "sha256:{{ mnemonic_mcp_binary_sha256 }}"
+-      register: mnemonic_mcp_binary_download
+-
+-    - name: Verify mnemonic-mcp binary is executable
+-      stat:
+-        path: "{{ mnemonic_mcp_install_dir }}/bin/mnemonic-mcp"
+-      register: mnemonic_mcp_binary_stat
+-
+-    - name: Assert binary downloaded and executable
+-      assert:
+-        that:
+-          - mnemonic_mcp_binary_stat.stat.exists
+-          - mnemonic_mcp_binary_stat.stat.executable
+-        fail_msg: "mnemonic-mcp binary download or permission setup failed"
+-
+-    - name: Ensure config directory exists
+-      file:
+-        path: "{{ mnemonic_mcp_config_dir }}"
+-        state: directory
+-        owner: "{{ mnemonic_mcp_service_user }}"
+-        group: "{{ mnemonic_mcp_service_group }}"
+-        mode: '0755'
+-
+-    - name: Ensure hooks directory exists
+-      file:
+-        path: "{{ mnemonic_mcp_hooks_dir }}"
++    - name: Ensure Mnemonik MCP install dir exists
++      ansible.builtin.file:
++        path: "{{ mnemonik_mcp_install_dir }}"
+         state: directory
+         owner: "{{ mnemonic_mcp_service_user }}"
+         group: "{{ mnemonic_mcp_service_group }}"
+-        mode: '0755'
+-
+-    - name: Render mnemonic-mcp config.yml
+-      template:
+-        src: config.yml.j2
+-        dest: "{{ mnemonic_mcp_config_dir }}/config.yml"
+-        owner: "{{ mnemonic_mcp_service_user }}"
+-        group: "{{ mnemonic_mcp_service_group }}"
+-        mode: '0640'
+-      notify: reload mnemonic-mcp systemd
++        mode: "0755"
++
++    # ------------------------------------------------------------------
++    # Node.js prerequisite (pattern lifted from
++    # roles/telegram-ai-agent/tasks/main.yml:63-88).
++    # ------------------------------------------------------------------
++    - name: Check whether node is already on PATH
++      ansible.builtin.command: node --version
++      register: mnemonik_node_check
++      changed_when: false
++      failed_when: false
+ 
+-    - name: Ensure attestations directory exists with strict permissions
+-      file:
+-        path: /var/lib/mnemonic-mcp/features
+-        state: directory
++    - name: Register NodeSource APT repository (setup_20.x)
++      ansible.builtin.shell: |
++        set -euo pipefail
++        curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
++      args:
++        executable: /bin/bash
++      when: mnemonik_node_check.rc != 0
++      changed_when: true
++
++    - name: Install Node.js (provides node + npm)
++      ansible.builtin.apt:
++        name: nodejs
++        state: present
++        update_cache: true
++      when: mnemonik_node_check.rc != 0
++
++    # ------------------------------------------------------------------
++    # Pin transitive deps via the checked-in lockfile, then global-install
++    # the scoped package at the pinned version. `npm ci` against the
++    # lockfile is the supply-chain hardening anchor (R2-8); the subsequent
++    # `community.general.npm` global install is what puts the binary on
++    # PATH at a system-wide location.
++    # ------------------------------------------------------------------
++    - name: Copy package.json into install dir
++      ansible.builtin.copy:
++        content: |
++          {
++            "name": "mnemonik-mcp-deploy",
++            "version": "1.0.0",
++            "private": true,
++            "dependencies": {
++              "{{ mnemonik_mcp_npm_package }}": "{{ mnemonik_mcp_npm_version }}"
++            }
++          }
++        dest: "{{ mnemonik_mcp_install_dir }}/package.json"
+         owner: "{{ mnemonic_mcp_service_user }}"
+         group: "{{ mnemonic_mcp_service_group }}"
+-        mode: '0750'
++        mode: "0644"
+ 
+-    - name: Render protocol-qa.env (MNEMONIC_MODE=full secrets)
+-      template:
+-        src: protocol-qa.env.j2
+-        dest: "{{ mnemonic_mcp_config_dir }}/protocol-qa.env"
++    - name: Copy pinned package-lock.json into install dir
++      ansible.builtin.copy:
++        src: package-lock.json
++        dest: "{{ mnemonik_mcp_install_dir }}/package-lock.json"
+         owner: "{{ mnemonic_mcp_service_user }}"
+         group: "{{ mnemonic_mcp_service_group }}"
+-        mode: '0600'
+-      no_log: true
+-      notify: reload mnemonic-mcp systemd
+-
+-    - name: Ensure systemd LoadCredential drop-dir exists (mode 0700 root)
+-      ansible.builtin.file:
+-        path: "{{ mnemonic_mcp_credential_dir }}"
+-        state: directory
+-        owner: root
+-        group: root
+-        mode: '0700'
+-
+-    - name: Materialise mnemonic-mcp signing key from Vaultwarden into /run/credentials/
+-      # systemd LoadCredential= expects a file path; the previous vault:// URI was invalid
+-      # (Finding F-001).  We decrypt the key from Vaultwarden at deploy time, write to
+-      # the systemd credential directory mode 0600 owner root, then point LoadCredential
+-      # at that on-disk path.  The directory lives on tmpfs (/run) so it is wiped at
+-      # reboot; the file is also explicitly removed in the `always:` cleanup below.
+-      ansible.builtin.shell:
+-        cmd: |
+-          set -euo pipefail
+-          install -m 0700 -o root -g root -d "{{ mnemonic_mcp_credential_dir }}"
+-          umask 077
+-          bw --session "$BW_SESSION" get password "{{ mnemonic_mcp_vault_item }}" \
+-            > "{{ mnemonic_mcp_credential_file }}.tmp"
+-          chmod 0600 "{{ mnemonic_mcp_credential_file }}.tmp"
+-          chown root:root "{{ mnemonic_mcp_credential_file }}.tmp"
+-          mv "{{ mnemonic_mcp_credential_file }}.tmp" "{{ mnemonic_mcp_credential_file }}"
++        mode: "0644"
++      register: mnemonik_lockfile_copy
++
++    - name: Install pinned tree via npm ci (local — supply-chain anchor)
++      ansible.builtin.command:
++        chdir: "{{ mnemonik_mcp_install_dir }}"
++        cmd: npm ci --no-audit --no-fund
++      register: mnemonik_npm_ci
++      changed_when: mnemonik_npm_ci.rc == 0 and 'up to date' not in (mnemonik_npm_ci.stdout | default(''))
++
++    - name: Install Mnemonik MCP globally (puts binary on PATH)
++      community.general.npm:
++        name: "{{ mnemonik_mcp_npm_package }}"
++        version: "{{ mnemonik_mcp_npm_version }}"
++        global: true
++        state: present
++
++    # ------------------------------------------------------------------
++    # Binary-name discovery. Cascade tolerates `mnemonik-mcp` (current,
++    # `@mnemonik-xyz/mcp@0.2.4`) and the older `mnemonic-mcp` spelling.
++    # The fact is consumed by the systemd template here and by
++    # `/etc/blogger.mcp.json` in the content-publisher role (Task 3).
++    # ------------------------------------------------------------------
++    - name: Discover installed Mnemonik MCP binary name
++      ansible.builtin.shell: |
++        set -euo pipefail
++        which mnemonik-mcp || which mnemonic-mcp
+       args:
+-        creates: "{{ mnemonic_mcp_credential_file }}"
+-      environment:
+-        BW_SESSION: "{{ bw_session_token }}"
+-      no_log: true
+-      register: signing_key_materialised
++        executable: /bin/bash
++      register: mnemonik_which
++      changed_when: false
++      failed_when: mnemonik_which.rc != 0
+ 
+-    - name: Render systemd service unit with LoadCredential
++    - name: Set mnemonic_mcp_binary fact for downstream roles
++      ansible.builtin.set_fact:
++        mnemonic_mcp_binary: "{{ mnemonik_which.stdout | trim }}"
++
++    - name: Render systemd unit for Mnemonik MCP
+       ansible.builtin.template:
+         src: mnemonic-mcp.service.j2
+         dest: /etc/systemd/system/{{ mnemonic_mcp_systemd_unit }}
+         owner: root
+         group: root
+-        mode: '0644'
++        mode: "0644"
+       notify: reload mnemonic-mcp systemd
+-      no_log: true
+-
+-    - name: Install user-spec.sh hook
+-      template:
+-        src: hooks/user-spec.sh.j2
+-        dest: "{{ mnemonic_mcp_hooks_dir }}/user-spec.sh"
+-        owner: "{{ mnemonic_mcp_service_user }}"
+-        group: "{{ mnemonic_mcp_service_group }}"
+-        mode: '0755'
+-
+-    - name: Install tech-spec.sh hook
+-      template:
+-        src: hooks/tech-spec.sh.j2
+-        dest: "{{ mnemonic_mcp_hooks_dir }}/tech-spec.sh"
+-        owner: "{{ mnemonic_mcp_service_user }}"
+-        group: "{{ mnemonic_mcp_service_group }}"
+-        mode: '0755'
+-
+-    - name: Install task-complete.sh hook
+-      template:
+-        src: hooks/task-complete.sh.j2
+-        dest: "{{ mnemonic_mcp_hooks_dir }}/task-complete.sh"
+-        owner: "{{ mnemonic_mcp_service_user }}"
+-        group: "{{ mnemonic_mcp_service_group }}"
+-        mode: '0755'
+-
+-    - name: Install pre-deploy.sh hook
+-      template:
+-        src: hooks/pre-deploy.sh.j2
+-        dest: "{{ mnemonic_mcp_hooks_dir }}/pre-deploy.sh"
+-        owner: "{{ mnemonic_mcp_service_user }}"
+-        group: "{{ mnemonic_mcp_service_group }}"
+-        mode: '0755'
+-
+-    - name: Install post-deploy.sh hook
+-      template:
+-        src: hooks/post-deploy.sh.j2
+-        dest: "{{ mnemonic_mcp_hooks_dir }}/post-deploy.sh"
+-        owner: "{{ mnemonic_mcp_service_user }}"
+-        group: "{{ mnemonic_mcp_service_group }}"
+-        mode: '0755'
+-
+-    - name: Verify all 5 hooks installed and executable
+-      stat:
+-        path: "{{ mnemonic_mcp_hooks_dir }}/{{ item }}.sh"
+-      loop:
+-        - user-spec
+-        - tech-spec
+-        - task-complete
+-        - pre-deploy
+-        - post-deploy
+-      register: hook_stat
+-
+-    - name: Assert all hooks are executable
+-      assert:
+-        that:
+-          - item.stat.exists
+-          - item.stat.executable
+-        fail_msg: "Hook installation failed"
+-      loop: "{{ hook_stat.results }}"
+-
+-    - name: Configure molyanov skill success paths to invoke hooks
+-      # NOTE 2026-05-20: previously rendered into ~/.fabric/ruflo/hooks.d/; with
+-      # ruflo dropped, hook wiring is owned by the backlog feature
+-      # `mnemonic-attestation-integration` (the broader re-enablement). This
+-      # role is descoped (mnemonic_mcp_enabled=false by default), so this step
+-      # only runs when the operator explicitly opts in.
+-      template:
+-        src: molyanov-mnemonic-hooks.yml.j2
+-        dest: "{{ operator_home }}/.fabric/molyanov/hooks.d/mnemonic-hooks.yml"
+-        owner: "{{ operator_user }}"
+-        group: "{{ operator_group }}"
+-        mode: '0644'
+-      become: true
+-      become_user: "{{ operator_user }}"
+ 
+     - name: Reload systemd daemon
+-      systemd:
+-        daemon_reload: yes
+-      notify: restart mnemonic-mcp service
++      ansible.builtin.systemd:
++        daemon_reload: true
+ 
+-    - name: Enable mnemonic-mcp service
+-      systemd:
++    - name: Enable + start mnemonic-mcp service
++      ansible.builtin.systemd:
+         name: "{{ mnemonic_mcp_systemd_unit }}"
+-        enabled: yes
++        enabled: true
+         state: started
+ 
+     - name: Wait for mnemonic-mcp to become active
+-      systemd:
++      ansible.builtin.systemd:
+         name: "{{ mnemonic_mcp_systemd_unit }}"
+-      register: mnemonic_mcp_status
+-      until: mnemonic_mcp_status.status.ActiveState == 'active'
++      register: mnemonik_active
++      until: mnemonik_active.status.ActiveState == 'active'
+       retries: 5
+       delay: 2
+ 
+-    - name: Verify mnemonic-mcp service is active
+-      command: systemctl is-active {{ mnemonic_mcp_systemd_unit }}
+-      changed_when: false
+-      register: mnemonic_mcp_active
+-      failed_when: mnemonic_mcp_active.rc != 0
+-
+-    - name: Healthcheck - verify binary responds to --selftest (no DAG pollution)
+-      command: "{{ mnemonic_mcp_install_dir }}/bin/mnemonic-mcp --selftest"
+-      changed_when: false
+-      register: healthcheck_selftest
+-      failed_when: healthcheck_selftest.rc != 0
+-      retries: 5
+-      delay: 2
+-
+-    - name: Verify service is active after startup
+-      systemd:
+-        name: "{{ mnemonic_mcp_systemd_unit }}"
+-      register: mnemonic_mcp_final_status
+-      failed_when: mnemonic_mcp_final_status.status.ActiveState != 'active'
++    # ------------------------------------------------------------------
++    # Smoke: MCP-stdio JSON-RPC initialize handshake. Replaces the bogus
++    # `--selftest` probe; this proves the binary actually speaks MCP over
++    # stdio (Decision 3 + Architecture step 4). Full payload via stdin —
++    # nothing of substance in argv (R2 — no `ps` leakage).
++    - name: Smoke MCP-stdio initialize handshake
++      ansible.builtin.shell: |
++        set -euo pipefail
++        payload='{"jsonrpc":"2.0","id":1,"method":"initialize",'
++        payload+='"params":{"protocolVersion":"2024-11-05",'
++        payload+='"capabilities":{},'
++        payload+='"clientInfo":{"name":"role-smoke","version":"0.1"}}}'
++        printf '%s\n' "$payload" \
++          | "{{ mnemonic_mcp_binary }}" mcp-stdio \
++          | head -1 \
++          | python3 -c 'import json,sys; r=json.loads(sys.stdin.read()); assert "protocolVersion" in r.get("result", {}), r'
++      args:
++        executable: /bin/bash
++      register: mnemonik_smoke
+       changed_when: false
+-
+-    - name: Wipe on-disk signing key after systemd has copied it into the credential namespace
+-      # Once systemd LoadCredential= has read the file at unit start, the on-disk copy is
+-      # redundant; systemd serves the key from its in-memory credential store to the unit.
+-      # Wiping reduces the post-start exposure window of the plaintext key on /run.
+-      ansible.builtin.file:
+-        path: "{{ mnemonic_mcp_credential_file }}"
+-        state: absent
+-      no_log: true
++      failed_when: mnemonik_smoke.rc != 0
+diff --git a/infrastructure/ansible/roles/mnemonic-mcp/templates/config.yml.j2 b/infrastructure/ansible/roles/mnemonic-mcp/templates/config.yml.j2
+deleted file mode 100644
+index 6c05e66..0000000
+--- a/infrastructure/ansible/roles/mnemonic-mcp/templates/config.yml.j2
++++ /dev/null
+@@ -1,27 +0,0 @@
+----
+-# Mnemonic MCP Server Configuration
+-
+-# Bind address and port
+-server:
+-  bind: "{{ mnemonic_mcp_bind_host }}:{{ mnemonic_mcp_bind_port }}"
+-  timeout: 30
+-
+-# Operation mode: "local" (default) or "full"
+-# "local": signs in-process, no network calls
+-# "full": anchors attestations to Solana devnet and Arweave testnet (requires credentials)
+-mode: "{{ mnemonic_mcp_mode }}"
+-
+-# Credential paths (only used in "full" mode)
+-credentials:
+-  solana_rpc: "{{ solana_devnet_rpc_url }}"
+-  arweave_endpoint: "{{ arweave_testnet_url }}"
+-
+-# Logging
+-logging:
+-  level: "info"
+-  format: "json"
+-
+-# DAG construction
+-dag:
+-  namespace: "mnemonic-protocol"
+-  store: "/var/lib/mnemonic-mcp/dag.db"
+diff --git a/infrastructure/ansible/roles/mnemonic-mcp/templates/hooks/_hook-validate.sh.j2 b/infrastructure/ansible/roles/mnemonic-mcp/templates/hooks/_hook-validate.sh.j2
+deleted file mode 100644
+index 63f287a..0000000
+--- a/infrastructure/ansible/roles/mnemonic-mcp/templates/hooks/_hook-validate.sh.j2
++++ /dev/null
+@@ -1,70 +0,0 @@
+-#!/bin/bash
+-
+-# _hook-validate.sh
+-# Shared validation helper for all 5 mnemonic-mcp hook scripts
+-# Provides input validation for FEATURE and ARTEFACT parameters
+-# Prevents path traversal, YAML injection, and log injection attacks
+-
+-set -euo pipefail
+-
+-# Validate FEATURE token
+-# Must match: ^[a-z][a-z0-9-]{1,40}$ (lowercase, alphanumeric + dash, 2-41 chars)
+-validate_feature() {
+-  local feature="$1"
+-  if [[ ! "$feature" =~ ^[a-z][a-z0-9-]{1,40}$ ]]; then
+-    echo "validate_feature: invalid feature '$feature' — must match [a-z][a-z0-9-]{1,40}" >&2
+-    return 2
+-  fi
+-}
+-
+-# Validate ARTEFACT file path
+-# Must: exist, be regular file, be under REPO_ROOT (no path traversal)
+-validate_artefact() {
+-  local artefact="$1"
+-  local repo_root="${2:-.}"
+-
+-  # Check file exists
+-  if [[ ! -f "$artefact" ]]; then
+-    echo "validate_artefact: file does not exist '$artefact'" >&2
+-    return 2
+-  fi
+-
+-  # Check it's a regular file (not symlink, device, etc)
+-  if [[ ! -f "$artefact" ]] || [[ -L "$artefact" ]]; then
+-    echo "validate_artefact: not a regular file '$artefact'" >&2
+-    return 2
+-  fi
+-
+-  # Canonicalize to absolute path
+-  local real_path
+-  real_path=$(readlink -f -- "$artefact") || {
+-    echo "validate_artefact: failed to resolve '$artefact'" >&2
+-    return 2
+-  }
+-
+-  # Compute relative path from repo root
+-  local rel_path
+-  rel_path=$(realpath --relative-to="$repo_root" "$real_path" 2>/dev/null) || {
+-    echo "validate_artefact: '$real_path' is outside repo root '$repo_root'" >&2
+-    return 2
+-  }
+-
+-  # Reject if it escapes repo root (starts with ..)
+-  if [[ "$rel_path" =~ ^\.\.(/|$) ]]; then
+-    echo "validate_artefact: path traversal detected '$artefact' -> '$real_path'" >&2
+-    return 2
+-  fi
+-}
+-
+-# Emit YAML-safe quoted value to avoid injection
+-# Encodes the input with single quotes and escapes any embedded quotes
+-yaml_quote() {
+-  local value="$1"
+-  # Use Python's yaml.safe_dump for robust escaping
+-  python3 -c "import yaml; print(yaml.safe_dump('$value'))" | tr -d '\n'
+-}
+-
+-# Export functions for use by sourcing scripts
+-export -f validate_feature
+-export -f validate_artefact
+-export -f yaml_quote
+diff --git a/infrastructure/ansible/roles/mnemonic-mcp/templates/hooks/post-deploy.sh.j2 b/infrastructure/ansible/roles/mnemonic-mcp/templates/hooks/post-deploy.sh.j2
+deleted file mode 100644
+index f764f90..0000000
+--- a/infrastructure/ansible/roles/mnemonic-mcp/templates/hooks/post-deploy.sh.j2
++++ /dev/null
+@@ -1,117 +0,0 @@
+-#!/bin/bash
+-
+-set -euo pipefail
+-
+-# post-deploy.sh
+-# Trigger point 5: deploy + post-deploy verification
+-# Invokes mnemonic_sign_memory to finalize feature attestation
+-# Parent: pre-deploy attestation
+-# Completion: final DAG node
+-
+-REPO_ROOT="${REPO_ROOT:-.}"
+-FEATURE=""
+-ARTEFACT=""
+-ARTEFACT_REAL=""
+-
+-# Source validation helper
+-source "$(dirname "$0")/_hook-validate.sh"
+-
+-while [[ $# -gt 0 ]]; do
+-  case $1 in
+-    --feature)
+-      FEATURE="$2"
+-      shift 2
+-      ;;
+-    --artefact)
+-      ARTEFACT="$2"
+-      shift 2
+-      ;;
+-    *)
+-      echo "Usage: $0 --feature <name> --artefact <path>" >&2
+-      exit 1
+-      ;;
+-  esac
+-done
+-
+-if [[ -z "$FEATURE" ]] || [[ -z "$ARTEFACT" ]]; then
+-  echo "post-deploy.sh: FEATURE and ARTEFACT required" >&2
+-  exit 1
+-fi
+-
+-# Validate inputs
+-if ! validate_feature "$FEATURE"; then
+-  exit 2
+-fi
+-
+-if ! validate_artefact "$ARTEFACT" "$REPO_ROOT"; then
+-  exit 2
+-fi
+-
+-ARTEFACT_REAL=$(readlink -f -- "$ARTEFACT")
+-
+-# Anchor work directory to absolute path
+-WORK_DIR="/var/lib/mnemonic-mcp/features/$FEATURE"
+-ATTESTATIONS_FILE="$WORK_DIR/attestations.yml"
+-LOCK_FILE="$WORK_DIR/.attestations.lock"
+-
+-# Use file locking to prevent concurrent corruption
+-{
+-  flock -x 9 || {
+-    echo "post-deploy.sh: failed to acquire lock" >&2
+-    exit 1
+-  }
+-
+-  # Verify parent (pre-deploy attestation) exists
+-  if [[ ! -f "$ATTESTATIONS_FILE" ]] || ! grep -q "pre_deploy:" "$ATTESTATIONS_FILE"; then
+-    echo "post-deploy.sh: parent attestation (pre_deploy) not found" >&2
+-    exit 1
+-  fi
+-
+-  PARENT_ID=$(grep -A1 "pre_deploy:" "$ATTESTATIONS_FILE" | grep "attestation_id:" | awk '{print $NF}')
+-  if [[ ! "$PARENT_ID" =~ ^[a-f0-9-]{36}$ ]]; then
+-    echo "post-deploy.sh: failed to extract valid parent attestation_id" >&2
+-    exit 1
+-  fi
+-
+-  # Invoke mnemonic_sign_memory with parent reference (final node)
+-  if ! ATTESTATION_OUTPUT=$(mnemonic_sign_memory \
+-    --content "deploy + post-deploy verified: $FEATURE" \
+-    --parent "$PARENT_ID" \
+-    --tags "post-deploy" "$FEATURE" 2>/var/log/mnemonic-mcp/hook-sign-err.log); then
+-    echo "post-deploy.sh: mnemonic_sign_memory failed" >&2
+-    exit 1
+-  fi
+-
+-  # Extract attestation_id from stdout only (strict validation)
+-  ATTESTATION_ID=$(echo "$ATTESTATION_OUTPUT" | grep -oP '^\s*attestation_id[=:]?\s*\K[a-f0-9-]{36}$' 2>/dev/null || echo "")
+-  if [[ ! "$ATTESTATION_ID" =~ ^[a-f0-9-]{36}$ ]]; then
+-    echo "post-deploy.sh: failed to extract valid attestation_id" >&2
+-    exit 1
+-  fi
+-
+-  # Write attestation with safe YAML (final node)
+-  python3 -c "
+-import yaml
+-
+-data = {
+-    'post_deploy': {
+-        'attestation_id': '$ATTESTATION_ID',
+-        'parent_id': '$PARENT_ID',
+-        'timestamp': '$(date -u +%Y-%m-%dT%H:%M:%SZ)',
+-        'artefact': '$ARTEFACT_REAL'
+-    }
+-}
+-
+-with open('$ATTESTATIONS_FILE', 'a') as f:
+-    yaml.safe_dump(data, f, default_flow_style=False)
+-" || {
+-    echo "post-deploy.sh: failed to write attestations.yml" >&2
+-    exit 1
+-  }
+-
+-  chmod 0640 "$ATTESTATIONS_FILE" 2>/dev/null || true
+-
+-} 9>"$LOCK_FILE"
+-
+-echo "post-deploy.sh: attestation created: $ATTESTATION_ID (parent: $PARENT_ID, DAG complete)"
+-exit 0
+diff --git a/infrastructure/ansible/roles/mnemonic-mcp/templates/hooks/pre-deploy.sh.j2 b/infrastructure/ansible/roles/mnemonic-mcp/templates/hooks/pre-deploy.sh.j2
+deleted file mode 100644
+index 1ec605f..0000000
+--- a/infrastructure/ansible/roles/mnemonic-mcp/templates/hooks/pre-deploy.sh.j2
++++ /dev/null
+@@ -1,116 +0,0 @@
+-#!/bin/bash
+-
+-set -euo pipefail
+-
+-# pre-deploy.sh
+-# Trigger point 4: pre-deploy QA pass
+-# Invokes mnemonic_sign_memory to attest pre-deploy verification
+-# Parent: task-complete attestation
+-
+-REPO_ROOT="${REPO_ROOT:-.}"
+-FEATURE=""
+-ARTEFACT=""
+-ARTEFACT_REAL=""
+-
+-# Source validation helper
+-source "$(dirname "$0")/_hook-validate.sh"
+-
+-while [[ $# -gt 0 ]]; do
+-  case $1 in
+-    --feature)
+-      FEATURE="$2"
+-      shift 2
+-      ;;
+-    --artefact)
+-      ARTEFACT="$2"
+-      shift 2
+-      ;;
+-    *)
+-      echo "Usage: $0 --feature <name> --artefact <path>" >&2
+-      exit 1
+-      ;;
+-  esac
+-done
+-
+-if [[ -z "$FEATURE" ]] || [[ -z "$ARTEFACT" ]]; then
+-  echo "pre-deploy.sh: FEATURE and ARTEFACT required" >&2
+-  exit 1
+-fi
+-
+-# Validate inputs
+-if ! validate_feature "$FEATURE"; then
+-  exit 2
+-fi
+-
+-if ! validate_artefact "$ARTEFACT" "$REPO_ROOT"; then
+-  exit 2
+-fi
+-
+-ARTEFACT_REAL=$(readlink -f -- "$ARTEFACT")
+-
+-# Anchor work directory to absolute path
+-WORK_DIR="/var/lib/mnemonic-mcp/features/$FEATURE"
+-ATTESTATIONS_FILE="$WORK_DIR/attestations.yml"
+-LOCK_FILE="$WORK_DIR/.attestations.lock"
+-
+-# Use file locking to prevent concurrent corruption
+-{
+-  flock -x 9 || {
+-    echo "pre-deploy.sh: failed to acquire lock" >&2
+-    exit 1
+-  }
+-
+-  # Verify parent (task-complete attestation) exists
+-  if [[ ! -f "$ATTESTATIONS_FILE" ]] || ! grep -q "task_complete:" "$ATTESTATIONS_FILE"; then
+-    echo "pre-deploy.sh: parent attestation (task_complete) not found" >&2
+-    exit 1
+-  fi
+-
+-  PARENT_ID=$(grep -A1 "task_complete:" "$ATTESTATIONS_FILE" | grep "attestation_id:" | awk '{print $NF}')
+-  if [[ ! "$PARENT_ID" =~ ^[a-f0-9-]{36}$ ]]; then
+-    echo "pre-deploy.sh: failed to extract valid parent attestation_id" >&2
+-    exit 1
+-  fi
+-
+-  # Invoke mnemonic_sign_memory with parent reference
+-  if ! ATTESTATION_OUTPUT=$(mnemonic_sign_memory \
+-    --content "pre-deploy QA passed: $FEATURE" \
+-    --parent "$PARENT_ID" \
+-    --tags "pre-deploy" "$FEATURE" 2>/var/log/mnemonic-mcp/hook-sign-err.log); then
+-    echo "pre-deploy.sh: mnemonic_sign_memory failed" >&2
+-    exit 1
+-  fi
+-
+-  # Extract attestation_id from stdout only (strict validation)
+-  ATTESTATION_ID=$(echo "$ATTESTATION_OUTPUT" | grep -oP '^\s*attestation_id[=:]?\s*\K[a-f0-9-]{36}$' 2>/dev/null || echo "")
+-  if [[ ! "$ATTESTATION_ID" =~ ^[a-f0-9-]{36}$ ]]; then
+-    echo "pre-deploy.sh: failed to extract valid attestation_id" >&2
+-    exit 1
+-  fi
+-
+-  # Write attestation with safe YAML
+-  python3 -c "
+-import yaml
+-
+-data = {
+-    'pre_deploy': {
+-        'attestation_id': '$ATTESTATION_ID',
+-        'parent_id': '$PARENT_ID',
+-        'timestamp': '$(date -u +%Y-%m-%dT%H:%M:%SZ)',
+-        'artefact': '$ARTEFACT_REAL'
+-    }
+-}
+-
+-with open('$ATTESTATIONS_FILE', 'a') as f:
+-    yaml.safe_dump(data, f, default_flow_style=False)
+-" || {
+-    echo "pre-deploy.sh: failed to write attestations.yml" >&2
+-    exit 1
+-  }
+-
+-  chmod 0640 "$ATTESTATIONS_FILE" 2>/dev/null || true
+-
+-} 9>"$LOCK_FILE"
+-
+-echo "pre-deploy.sh: attestation created: $ATTESTATION_ID (parent: $PARENT_ID)"
+-exit 0
+diff --git a/infrastructure/ansible/roles/mnemonic-mcp/templates/hooks/task-complete.sh.j2 b/infrastructure/ansible/roles/mnemonic-mcp/templates/hooks/task-complete.sh.j2
+deleted file mode 100644
+index dbfa951..0000000
+--- a/infrastructure/ansible/roles/mnemonic-mcp/templates/hooks/task-complete.sh.j2
++++ /dev/null
+@@ -1,144 +0,0 @@
+-#!/bin/bash
+-
+-set -euo pipefail
+-
+-# task-complete.sh
+-# Trigger point 3: task completion (all tasks passing)
+-# Invokes mnemonic_sign_memory with full-mode receipt if MNEMONIC_MODE=full
+-# Parent: tech-spec attestation
+-
+-REPO_ROOT="${REPO_ROOT:-.}"
+-FEATURE=""
+-ARTEFACT=""
+-ARTEFACT_REAL=""
+-
+-# Source validation helper
+-source "$(dirname "$0")/_hook-validate.sh"
+-
+-while [[ $# -gt 0 ]]; do
+-  case $1 in
+-    --feature)
+-      FEATURE="$2"
+-      shift 2
+-      ;;
+-    --artefact)
+-      ARTEFACT="$2"
+-      shift 2
+-      ;;
+-    *)
+-      echo "Usage: $0 --feature <name> --artefact <path>" >&2
+-      exit 1
+-      ;;
+-  esac
+-done
+-
+-if [[ -z "$FEATURE" ]] || [[ -z "$ARTEFACT" ]]; then
+-  echo "task-complete.sh: FEATURE and ARTEFACT required" >&2
+-  exit 1
+-fi
+-
+-# Validate inputs
+-if ! validate_feature "$FEATURE"; then
+-  exit 2
+-fi
+-
+-if ! validate_artefact "$ARTEFACT" "$REPO_ROOT"; then
+-  exit 2
+-fi
+-
+-ARTEFACT_REAL=$(readlink -f -- "$ARTEFACT")
+-
+-# Anchor work directory to absolute path
+-WORK_DIR="/var/lib/mnemonic-mcp/features/$FEATURE"
+-ATTESTATIONS_FILE="$WORK_DIR/attestations.yml"
+-LOCK_FILE="$WORK_DIR/.attestations.lock"
+-
+-# Use file locking to prevent concurrent corruption
+-{
+-  flock -x 9 || {
+-    echo "task-complete.sh: failed to acquire lock" >&2
+-    exit 1
+-  }
+-
+-  # Verify parent (tech-spec attestation) exists
+-  if [[ ! -f "$ATTESTATIONS_FILE" ]] || ! grep -q "tech_spec:" "$ATTESTATIONS_FILE"; then
+-    echo "task-complete.sh: parent attestation (tech_spec) not found" >&2
+-    exit 1
+-  fi
+-
+-  PARENT_ID=$(grep -A1 "tech_spec:" "$ATTESTATIONS_FILE" | grep "attestation_id:" | awk '{print $NF}')
+-  if [[ ! "$PARENT_ID" =~ ^[a-f0-9-]{36}$ ]]; then
+-    echo "task-complete.sh: failed to extract valid parent attestation_id" >&2
+-    exit 1
+-  fi
+-
+-  # Determine mode from config (not from env var to prevent spoofing)
+-  MODE="local"
+-  if [[ -f "{{ mnemonic_mcp_config_dir }}/protocol-qa.env" ]]; then
+-    if grep -q "MNEMONIC_MODE=full" "{{ mnemonic_mcp_config_dir }}/protocol-qa.env"; then
+-      MODE="full"
+-    fi
+-  fi
+-
+-  # Invoke mnemonic_sign_memory with parent reference
+-  if ! ATTESTATION_OUTPUT=$(mnemonic_sign_memory \
+-    --content "tasks completed: $FEATURE" \
+-    --parent "$PARENT_ID" \
+-    --tags "task-complete" "$FEATURE" 2>/var/log/mnemonic-mcp/hook-sign-err.log); then
+-    echo "task-complete.sh: mnemonic_sign_memory failed" >&2
+-    exit 1
+-  fi
+-
+-  # Extract attestation_id from stdout only (strict validation)
+-  ATTESTATION_ID=$(echo "$ATTESTATION_OUTPUT" | grep -oP '^\s*attestation_id[=:]?\s*\K[a-f0-9-]{36}$' 2>/dev/null || echo "")
+-  if [[ ! "$ATTESTATION_ID" =~ ^[a-f0-9-]{36}$ ]]; then
+-    echo "task-complete.sh: failed to extract valid attestation_id" >&2
+-    exit 1
+-  fi
+-
+-  # Build attestation data with optional full-mode fields
+-  DATA_DICT="
+-{
+-    'task_complete': {
+-        'attestation_id': '$ATTESTATION_ID',
+-        'parent_id': '$PARENT_ID',
+-        'timestamp': '$(date -u +%Y-%m-%dT%H:%M:%SZ)',
+-        'artefact': '$ARTEFACT_REAL',
+-        'mode': '$MODE'"
+-
+-  if [[ "$MODE" == "full" ]]; then
+-    SOLANA_TX=$(echo "$ATTESTATION_OUTPUT" | grep -oP '^\s*solana_tx[=:]?\s*\K[a-zA-Z0-9]+$' 2>/dev/null || echo "")
+-    ARWEAVE_TX=$(echo "$ATTESTATION_OUTPUT" | grep -oP '^\s*arweave_tx[=:]?\s*\K[a-zA-Z0-9]+$' 2>/dev/null || echo "")
+-    if [[ -n "$SOLANA_TX" ]]; then
+-      DATA_DICT+=",
+-        'solana_tx': '$SOLANA_TX'"
+-    fi
+-    if [[ -n "$ARWEAVE_TX" ]]; then
+-      DATA_DICT+=",
+-        'arweave_tx': '$ARWEAVE_TX'"
+-    fi
+-  fi
+-
+-  DATA_DICT+="
+-    }
+-}"
+-
+-  # Write attestation with safe YAML
+-  python3 -c "
+-import yaml
+-import ast
+-
+-data = ast.literal_eval(\"\"\"$DATA_DICT\"\"\")
+-with open('$ATTESTATIONS_FILE', 'a') as f:
+-    yaml.safe_dump(data, f, default_flow_style=False)
+-" || {
+-    echo "task-complete.sh: failed to write attestations.yml" >&2
+-    exit 1
+-  }
+-
+-  chmod 0640 "$ATTESTATIONS_FILE" 2>/dev/null || true
+-
+-} 9>"$LOCK_FILE"
+-
+-echo "task-complete.sh: attestation created: $ATTESTATION_ID (parent: $PARENT_ID, mode: $MODE)"
+-exit 0
+diff --git a/infrastructure/ansible/roles/mnemonic-mcp/templates/hooks/tech-spec.sh.j2 b/infrastructure/ansible/roles/mnemonic-mcp/templates/hooks/tech-spec.sh.j2
+deleted file mode 100644
+index f53e4d3..0000000
+--- a/infrastructure/ansible/roles/mnemonic-mcp/templates/hooks/tech-spec.sh.j2
++++ /dev/null
+@@ -1,116 +0,0 @@
+-#!/bin/bash
+-
+-set -euo pipefail
+-
+-# tech-spec.sh
+-# Trigger point 2: tech-spec approval
+-# Invokes mnemonic_sign_memory to attest tech-spec approval
+-# Parent: user-spec attestation
+-
+-REPO_ROOT="${REPO_ROOT:-.}"
+-FEATURE=""
+-ARTEFACT=""
+-ARTEFACT_REAL=""
+-
+-# Source validation helper
+-source "$(dirname "$0")/_hook-validate.sh"
+-
+-while [[ $# -gt 0 ]]; do
+-  case $1 in
+-    --feature)
+-      FEATURE="$2"
+-      shift 2
+-      ;;
+-    --artefact)
+-      ARTEFACT="$2"
+-      shift 2
+-      ;;
+-    *)
+-      echo "Usage: $0 --feature <name> --artefact <path>" >&2
+-      exit 1
+-      ;;
+-  esac
+-done
+-
+-if [[ -z "$FEATURE" ]] || [[ -z "$ARTEFACT" ]]; then
+-  echo "tech-spec.sh: FEATURE and ARTEFACT required" >&2
+-  exit 1
+-fi
+-
+-# Validate inputs
+-if ! validate_feature "$FEATURE"; then
+-  exit 2
+-fi
+-
+-if ! validate_artefact "$ARTEFACT" "$REPO_ROOT"; then
+-  exit 2
+-fi
+-
+-ARTEFACT_REAL=$(readlink -f -- "$ARTEFACT")
+-
+-# Anchor work directory to absolute path
+-WORK_DIR="/var/lib/mnemonic-mcp/features/$FEATURE"
+-ATTESTATIONS_FILE="$WORK_DIR/attestations.yml"
+-LOCK_FILE="$WORK_DIR/.attestations.lock"
+-
+-# Use file locking to prevent concurrent corruption
+-{
+-  flock -x 9 || {
+-    echo "tech-spec.sh: failed to acquire lock" >&2
+-    exit 1
+-  }
+-
+-  # Verify parent (user-spec attestation) exists
+-  if [[ ! -f "$ATTESTATIONS_FILE" ]] || ! grep -q "user_spec:" "$ATTESTATIONS_FILE"; then
+-    echo "tech-spec.sh: parent attestation (user_spec) not found" >&2
+-    exit 1
+-  fi
+-
+-  PARENT_ID=$(grep -A1 "user_spec:" "$ATTESTATIONS_FILE" | grep "attestation_id:" | awk '{print $NF}')
+-  if [[ ! "$PARENT_ID" =~ ^[a-f0-9-]{36}$ ]]; then
+-    echo "tech-spec.sh: failed to extract valid parent attestation_id" >&2
+-    exit 1
+-  fi
+-
+-  # Invoke mnemonic_sign_memory with parent reference
+-  if ! ATTESTATION_OUTPUT=$(mnemonic_sign_memory \
+-    --content "tech-spec approved: $FEATURE" \
+-    --parent "$PARENT_ID" \
+-    --tags "tech-spec" "$FEATURE" 2>/var/log/mnemonic-mcp/hook-sign-err.log); then
+-    echo "tech-spec.sh: mnemonic_sign_memory failed" >&2
+-    exit 1
+-  fi
+-
+-  # Extract attestation_id from stdout only (strict validation)
+-  ATTESTATION_ID=$(echo "$ATTESTATION_OUTPUT" | grep -oP '^\s*attestation_id[=:]?\s*\K[a-f0-9-]{36}$' 2>/dev/null || echo "")
+-  if [[ ! "$ATTESTATION_ID" =~ ^[a-f0-9-]{36}$ ]]; then
+-    echo "tech-spec.sh: failed to extract valid attestation_id" >&2
+-    exit 1
+-  fi
+-
+-  # Write attestation with safe YAML
+-  python3 -c "
+-import yaml
+-
+-data = {
+-    'tech_spec': {
+-        'attestation_id': '$ATTESTATION_ID',
+-        'parent_id': '$PARENT_ID',
+-        'timestamp': '$(date -u +%Y-%m-%dT%H:%M:%SZ)',
+-        'artefact': '$ARTEFACT_REAL'
+-    }
+-}
+-
+-with open('$ATTESTATIONS_FILE', 'a') as f:
+-    yaml.safe_dump(data, f, default_flow_style=False)
+-" || {
+-    echo "tech-spec.sh: failed to write attestations.yml" >&2
+-    exit 1
+-  }
+-
+-  chmod 0640 "$ATTESTATIONS_FILE" 2>/dev/null || true
+-
+-} 9>"$LOCK_FILE"
+-
+-echo "tech-spec.sh: attestation created: $ATTESTATION_ID (parent: $PARENT_ID)"
+-exit 0
+diff --git a/infrastructure/ansible/roles/mnemonic-mcp/templates/hooks/user-spec.sh.j2 b/infrastructure/ansible/roles/mnemonic-mcp/templates/hooks/user-spec.sh.j2
+deleted file mode 100644
+index 3e8eae7..0000000
+--- a/infrastructure/ansible/roles/mnemonic-mcp/templates/hooks/user-spec.sh.j2
++++ /dev/null
+@@ -1,111 +0,0 @@
+-#!/bin/bash
+-
+-set -euo pipefail
+-
+-# user-spec.sh
+-# Trigger point 1: user-spec approval
+-# Invokes mnemonic_sign_memory to attest user-spec approval
+-# Records attestation_id in work/<feature>/attestations.yml
+-# Parent: none (DAG root)
+-
+-REPO_ROOT="${REPO_ROOT:-.}"
+-FEATURE=""
+-ARTEFACT=""
+-ARTEFACT_REAL=""
+-
+-# Source validation helper
+-source "$(dirname "$0")/_hook-validate.sh"
+-
+-while [[ $# -gt 0 ]]; do
+-  case $1 in
+-    --feature)
+-      FEATURE="$2"
+-      shift 2
+-      ;;
+-    --artefact)
+-      ARTEFACT="$2"
+-      shift 2
+-      ;;
+-    *)
+-      echo "Usage: $0 --feature <name> --artefact <path>" >&2
+-      exit 1
+-      ;;
+-  esac
+-done
+-
+-if [[ -z "$FEATURE" ]] || [[ -z "$ARTEFACT" ]]; then
+-  echo "user-spec.sh: FEATURE and ARTEFACT required" >&2
+-  exit 1
+-fi
+-
+-# Validate inputs
+-if ! validate_feature "$FEATURE"; then
+-  exit 2
+-fi
+-
+-if ! validate_artefact "$ARTEFACT" "$REPO_ROOT"; then
+-  exit 2
+-fi
+-
+-ARTEFACT_REAL=$(readlink -f -- "$ARTEFACT")
+-
+-# Anchor work directory to absolute path
+-WORK_DIR="/var/lib/mnemonic-mcp/features/$FEATURE"
+-ATTESTATIONS_FILE="$WORK_DIR/attestations.yml"
+-LOCK_FILE="$WORK_DIR/.attestations.lock"
+-
+-# Create work directory if needed (mode 0750)
+-if [[ ! -d "$WORK_DIR" ]]; then
+-  mkdir -p "$WORK_DIR" 2>/dev/null || true
+-  chmod 0750 "$WORK_DIR" 2>/dev/null || true
+-fi
+-
+-# Use file locking to prevent concurrent corruption
+-{
+-  flock -x 9 || {
+-    echo "user-spec.sh: failed to acquire lock" >&2
+-    exit 1
+-  }
+-
+-  # Invoke mnemonic_sign_memory to create attestation
+-  if ! ATTESTATION_OUTPUT=$(mnemonic_sign_memory \
+-    --content "user-spec approved: $FEATURE" \
+-    --tags "user-spec" "$FEATURE" 2>/var/log/mnemonic-mcp/hook-sign-err.log); then
+-    echo "user-spec.sh: mnemonic_sign_memory failed" >&2
+-    exit 1
+-  fi
+-
+-  # Extract attestation_id from stdout only (strict validation)
+-  ATTESTATION_ID=$(echo "$ATTESTATION_OUTPUT" | grep -oP '^\s*attestation_id[=:]?\s*\K[a-f0-9-]{36}$' 2>/dev/null || echo "")
+-  if [[ ! "$ATTESTATION_ID" =~ ^[a-f0-9-]{36}$ ]]; then
+-    echo "user-spec.sh: failed to extract valid attestation_id" >&2
+-    exit 1
+-  fi
+-
+-  # Create attestations.yml atomically with safe mode
+-  python3 -c "
+-import yaml
+-import os
+-
+-data = {
+-    'user_spec': {
+-        'attestation_id': '$ATTESTATION_ID',
+-        'timestamp': '$(date -u +%Y-%m-%dT%H:%M:%SZ)',
+-        'artefact': '$ARTEFACT_REAL'
+-    }
+-}
+-
+-with open('$ATTESTATIONS_FILE', 'a') as f:
+-    yaml.safe_dump(data, f, default_flow_style=False)
+-" || {
+-    echo "user-spec.sh: failed to write attestations.yml" >&2
+-    exit 1
+-  }
+-
+-  # Set restrictive permissions (owner readable/writable, group readable)
+-  chmod 0640 "$ATTESTATIONS_FILE" 2>/dev/null || true
+-
+-} 9>"$LOCK_FILE"
+-
+-echo "user-spec.sh: attestation created: $ATTESTATION_ID"
+-exit 0
+diff --git a/infrastructure/ansible/roles/mnemonic-mcp/templates/mnemonic-mcp.service.j2 b/infrastructure/ansible/roles/mnemonic-mcp/templates/mnemonic-mcp.service.j2
+index c5e87eb..b0798f9 100644
+--- a/infrastructure/ansible/roles/mnemonic-mcp/templates/mnemonic-mcp.service.j2
++++ b/infrastructure/ansible/roles/mnemonic-mcp/templates/mnemonic-mcp.service.j2
+@@ -1,23 +1,18 @@
+ [Unit]
+-Description=Mnemonic MCP Local Server
+-Documentation=https://github.com/mnemonic-ai/mnemonic-mcp
++Description=Mnemonik MCP Local Server (stdio transport)
++Documentation=https://github.com/mnemonik-xyz/mcp
+ Wants=network-online.target
+ After=network-online.target
+ PartOf=multi-user.target
+ 
+ [Service]
+-Type=notify
++Type=simple
+ User={{ mnemonic_mcp_service_user }}
+ Group={{ mnemonic_mcp_service_group }}
+-WorkingDirectory={{ mnemonic_mcp_install_dir }}
+-ExecStart={{ mnemonic_mcp_install_dir }}/bin/mnemonic-mcp serve --config {{ mnemonic_mcp_config_dir }}/config.yml
++WorkingDirectory={{ mnemonik_mcp_install_dir }}
++ExecStart={{ mnemonic_mcp_binary }} mcp-stdio
+ 
+-# systemd LoadCredential= requires an on-disk path, not a URI scheme.
+-# {{ mnemonic_mcp_credential_file }} is materialised in /run (tmpfs, mode 0600 root)
+-# by the role's pre-task by decrypting from Vaultwarden via the bw CLI.
+-LoadCredential=mnemonic-signing-key:{{ mnemonic_mcp_credential_file }}
+-
+-Environment="PATH=/opt/mnemonic-mcp/bin:/usr/local/bin:/usr/bin:/bin"
++Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+ Environment="HOME=/var/lib/mnemonic-mcp"
+ 
+ Restart=on-failure
+@@ -29,7 +24,7 @@ NoNewPrivileges=yes
+ ProtectSystem=strict
+ ProtectHome=yes
+ PrivateTmp=yes
+-ReadWritePaths={{ mnemonic_mcp_install_dir }} {{ mnemonic_mcp_config_dir }} /var/lib/mnemonic-mcp
++ReadWritePaths={{ mnemonik_mcp_install_dir }} /var/lib/mnemonic-mcp
+ 
+ CapabilityBoundingSet=
+ AmbientCapabilities=
+diff --git a/infrastructure/ansible/roles/mnemonic-mcp/templates/molyanov-mnemonic-hooks.yml.j2 b/infrastructure/ansible/roles/mnemonic-mcp/templates/molyanov-mnemonic-hooks.yml.j2
+deleted file mode 100644
+index 4f3f5e1..0000000
+--- a/infrastructure/ansible/roles/mnemonic-mcp/templates/molyanov-mnemonic-hooks.yml.j2
++++ /dev/null
+@@ -1,50 +0,0 @@
+----
+-# molyanov-mnemonic-hooks.yml
+-# Registers 5 mnemonic MCP trigger-point hooks with molyanov success paths
+-# Each hook is invoked at successful completion of corresponding phase
+-
+-hooks:
+-  user-spec-approved:
+-    phase: user-spec
+-    command: "{{ mnemonic_mcp_hooks_dir }}/user-spec.sh"
+-    args:
+-      - "--feature={{ feature_name }}"
+-      - "--artefact={{ spec_path }}/user-spec.md"
+-    on_success: true
+-    fail_mode: exit
+-
+-  tech-spec-approved:
+-    phase: tech-spec
+-    command: "{{ mnemonic_mcp_hooks_dir }}/tech-spec.sh"
+-    args:
+-      - "--feature={{ feature_name }}"
+-      - "--artefact={{ spec_path }}/tech-spec.md"
+-    on_success: true
+-    fail_mode: exit
+-
+-  tasks-completed:
+-    phase: tasks
+-    command: "{{ mnemonic_mcp_hooks_dir }}/task-complete.sh"
+-    args:
+-      - "--feature={{ feature_name }}"
+-      - "--artefact={{ spec_path }}/tasks"
+-    on_success: true
+-    fail_mode: exit
+-
+-  pre-deploy-qa:
+-    phase: pre-deploy-qa
+-    command: "{{ mnemonic_mcp_hooks_dir }}/pre-deploy.sh"
+-    args:
+-      - "--feature={{ feature_name }}"
+-      - "--artefact={{ spec_path }}/pre-deploy-report.md"
+-    on_success: true
+-    fail_mode: exit
+-
+-  post-deploy-verification:
+-    phase: post-deploy
+-    command: "{{ mnemonic_mcp_hooks_dir }}/post-deploy.sh"
+-    args:
+-      - "--feature={{ feature_name }}"
+-      - "--artefact={{ spec_path }}/post-deploy-report.md"
+-    on_success: true
+-    fail_mode: exit
+diff --git a/infrastructure/ansible/roles/mnemonic-mcp/templates/protocol-qa.env.j2 b/infrastructure/ansible/roles/mnemonic-mcp/templates/protocol-qa.env.j2
+deleted file mode 100644
+index c056687..0000000
+--- a/infrastructure/ansible/roles/mnemonic-mcp/templates/protocol-qa.env.j2
++++ /dev/null
+@@ -1,7 +0,0 @@
+-# protocol-qa environment (MNEMONIC_MODE=full)
+-# Only loaded when running hooks under protocol-qa topic
+-# Source from sops secrets at deploy time
+-
+-MNEMONIC_MODE=full
+-SOLANA_DEVNET_RPC_URL="{{ solana_devnet_rpc_url }}"
+-ARWEAVE_TESTNET_URL="{{ arweave_testnet_url }}"
+diff --git a/infrastructure/ansible/roles/mnemonic-mcp/tests/__init__.py b/infrastructure/ansible/roles/mnemonic-mcp/tests/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/infrastructure/ansible/roles/mnemonic-mcp/tests/test_role_contract.py b/infrastructure/ansible/roles/mnemonic-mcp/tests/test_role_contract.py
+new file mode 100644
+index 0000000..6bbde3f
+--- /dev/null
++++ b/infrastructure/ansible/roles/mnemonic-mcp/tests/test_role_contract.py
+@@ -0,0 +1,188 @@
++"""Contract tests for the mnemonic-mcp Ansible role.
++
++Tests fix the contract documented in
++work/content-publish-pipeline/tasks/02-mnemonik-mcp-role-npm-rewrite.md
++(TDD Anchor). Each test reads role files directly; no live VM, no molecule.
++"""
++from __future__ import annotations
++
++import json
++import subprocess
++from pathlib import Path
++
++import pytest
++import yaml
++
++ROLE_DIR = Path(__file__).resolve().parents[1]
++ANSIBLE_DIR = ROLE_DIR.parents[1]
++REPO_ROOT = ANSIBLE_DIR.parents[1]
++PLAYBOOK = ANSIBLE_DIR / "playbooks" / "deploy.yml"
++
++
++def _load_yaml(path: Path):
++    with path.open() as fh:
++        return yaml.safe_load(fh)
++
++
++def _iter_tasks(blocks):
++    """Yield every task dict from a list that may contain blocks (recursively)."""
++    for item in blocks or []:
++        if not isinstance(item, dict):
++            continue
++        if "block" in item:
++            yield from _iter_tasks(item.get("block") or [])
++            yield from _iter_tasks(item.get("rescue") or [])
++            yield from _iter_tasks(item.get("always") or [])
++        else:
++            yield item
++
++
++def test_defaults_pin_npm_package_and_version():
++    defaults = _load_yaml(ROLE_DIR / "defaults" / "main.yml")
++    assert defaults.get("mnemonik_mcp_npm_package") == "@mnemonik-xyz/mcp"
++    version = defaults.get("mnemonik_mcp_npm_version")
++    assert isinstance(version, str) and version, "version must be a non-empty string"
++    assert defaults.get("mnemonic_mcp_enabled") is True
++    assert "mnemonic_mcp_binary_url" not in defaults
++    assert "mnemonic_mcp_binary_sha256" not in defaults
++
++
++def test_tasks_set_fact_for_binary_discovery():
++    tasks_root = _load_yaml(ROLE_DIR / "tasks" / "main.yml")
++    tasks = list(_iter_tasks(tasks_root))
++
++    # Find the set_fact task setting mnemonic_mcp_binary.
++    set_fact_tasks = [
++        t for t in tasks
++        if isinstance(t.get("set_fact") or t.get("ansible.builtin.set_fact"), dict)
++        and "mnemonic_mcp_binary" in (
++            t.get("set_fact") or t.get("ansible.builtin.set_fact") or {}
++        )
++    ]
++    assert set_fact_tasks, "expected a set_fact task defining mnemonic_mcp_binary"
++
++    # Find the discovery command — must reference both binary spellings + use
++    # failed_when on rc != 0.
++    discovery_candidates = []
++    for t in tasks:
++        for key in ("command", "shell", "ansible.builtin.command",
++                    "ansible.builtin.shell"):
++            spec = t.get(key)
++            if spec is None:
++                continue
++            text = spec if isinstance(spec, str) else json.dumps(spec)
++            if "mnemonik-mcp" in text and "mnemonic-mcp" in text:
++                discovery_candidates.append(t)
++                break
++
++    assert discovery_candidates, \
++        "expected a discovery task referencing both mnemonik-mcp and mnemonic-mcp"
++    discovery = discovery_candidates[0]
++    failed_when = discovery.get("failed_when", "")
++    assert "rc" in str(failed_when), \
++        "discovery task must set failed_when on rc"
++
++
++def test_no_sign_memory_anywhere():
++    """sign-memory subcommand does not exist; defend against regression."""
++    search_paths = [
++        ROLE_DIR / "tasks",
++        ROLE_DIR / "templates",
++        ROLE_DIR / "defaults",
++        ROLE_DIR / "handlers",
++        ROLE_DIR / "README.md",
++    ]
++    hits: list[str] = []
++    for path in search_paths:
++        if not path.exists():
++            continue
++        if path.is_file():
++            files = [path]
++        else:
++            files = [p for p in path.rglob("*") if p.is_file()]
++        for f in files:
++            try:
++                text = f.read_text(encoding="utf-8")
++            except UnicodeDecodeError:
++                continue
++            if "sign-memory" in text:
++                hits.append(str(f.relative_to(ROLE_DIR)))
++    assert hits == [], f"`sign-memory` must not appear; found in: {hits}"
++
++
++def test_systemd_template_uses_binary_fact():
++    unit = (ROLE_DIR / "templates" / "mnemonic-mcp.service.j2").read_text()
++    exec_lines = [
++        ln for ln in unit.splitlines() if ln.startswith("ExecStart=")
++    ]
++    assert exec_lines, "service unit must define ExecStart="
++    assert any(
++        "{{ mnemonic_mcp_binary }} mcp-stdio" in ln for ln in exec_lines
++    ), f"ExecStart must invoke `{{{{ mnemonic_mcp_binary }}}} mcp-stdio`; got {exec_lines}"
++    assert "LoadCredential=" not in unit, \
++        "LoadCredential should be removed (no Vaultwarden signing-key flow)"
++
++
++def test_package_lock_checked_in_and_valid_json():
++    lock_path = ROLE_DIR / "files" / "package-lock.json"
++    assert lock_path.exists(), "files/package-lock.json must be checked in"
++    data = json.loads(lock_path.read_text())
++    lock_version = data.get("lockfileVersion")
++    assert isinstance(lock_version, int) and lock_version >= 2, \
++        f"lockfileVersion must be >=2, got {lock_version!r}"
++
++    blob = json.dumps(data)
++    assert "@mnemonik-xyz/mcp" in blob, \
++        "lockfile must reference @mnemonik-xyz/mcp"
++
++
++def test_descoped_artifacts_removed():
++    must_not_exist = [
++        ROLE_DIR / "templates" / "config.yml.j2",
++        ROLE_DIR / "templates" / "protocol-qa.env.j2",
++        ROLE_DIR / "templates" / "molyanov-mnemonic-hooks.yml.j2",
++        ROLE_DIR / "templates" / "hooks",
++    ]
++    leftovers = [str(p.relative_to(ROLE_DIR)) for p in must_not_exist if p.exists()]
++    assert leftovers == [], f"descoped artifacts still present: {leftovers}"
++
++
++@pytest.mark.skipif(
++    subprocess.run(["which", "ansible-lint"], capture_output=True).returncode != 0,
++    reason="ansible-lint not installed",
++)
++def test_ansible_lint_clean():
++    # cwd=ROLE_DIR so the role-local `.ansible-lint` config is picked up
++    # (it skips two pre-existing structural items documented in the file).
++    result = subprocess.run(
++        ["ansible-lint", "."],
++        capture_output=True,
++        text=True,
++        cwd=ROLE_DIR,
++    )
++    assert result.returncode == 0, (
++        f"ansible-lint failed (rc={result.returncode}):\n"
++        f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
++    )
++
++
++@pytest.mark.skipif(
++    subprocess.run(["which", "ansible-playbook"], capture_output=True).returncode != 0,
++    reason="ansible-playbook not installed",
++)
++def test_ansible_syntax_check():
++    env = {
++        **__import__("os").environ,
++        "ANSIBLE_ROLES_PATH": str(ANSIBLE_DIR / "roles"),
++    }
++    result = subprocess.run(
++        ["ansible-playbook", "--syntax-check", str(PLAYBOOK)],
++        capture_output=True,
++        text=True,
++        cwd=ANSIBLE_DIR,
++        env=env,
++    )
++    assert result.returncode == 0, (
++        f"syntax-check failed (rc={result.returncode}):\n"
++        f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
++    )

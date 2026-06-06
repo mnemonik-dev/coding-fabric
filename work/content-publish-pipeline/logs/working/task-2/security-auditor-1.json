@@ -1,0 +1,130 @@
+{
+  "task": 2,
+  "round": 1,
+  "commit": "44011b0",
+  "auditor": "security-auditor",
+  "date": "2026-06-06",
+  "verdict": "APPROVED with LOW fixes recommended",
+  "summary": "The role rewrite is security-sound. Supply-chain pin via lockfileVersion:3 is correct; npm ci enforces integrity hashes. argv hygiene is clean: the binary receives only 'mcp-stdio' as its subcommand argument, all payload travels via stdin. Systemd hardening block is comprehensive and unchanged. Two LOW findings: the `npm ci` command uses `--no-audit` which suppresses advisory warnings at install time, and the `community.general.npm` global-install step runs without a lockfile anchor after `npm ci` already ran, creating a window for version drift. No blocking findings.",
+  "findings": [
+    {
+      "id": "T2-SEC-001",
+      "severity": "LOW",
+      "title": "npm ci runs with --no-audit, suppressing advisory warnings at install time",
+      "description": "tasks/main.yml line `cmd: npm ci --no-audit --no-fund` passes `--no-audit` to suppress npm's vulnerability advisory check. While the lockfile-based install pins exact versions and integrity hashes (so npm ci cannot install a different package), `--no-audit` also prevents npm from checking the installed package tree against the npm advisory database at install time. This means a CVE published against a pinned transitive dependency (e.g. `tar@7.5.16` which ships in the lockfile) would not surface at deploy time. The lockfile pin is a sound supply-chain control, but `--no-audit` removes a useful defense-in-depth signal layer. The impact is low because: (a) hashes prevent replacement; (b) CVE checking is advisory only; (c) the `tar` transitive here is bundled inside a JS runtime context, not a system binary.",
+      "files": [
+        "infrastructure/ansible/roles/mnemonic-mcp/tasks/main.yml: npm ci --no-audit --no-fund"
+      ],
+      "owasp": "A06:2021 Vulnerable and Outdated Components",
+      "recommendation": "Remove `--no-audit` from the `npm ci` invocation. Keep `--no-fund` (fund notices are noise). If the advisory check fails at deploy time due to a known CVE in a transitive dep, that is a signal worth acting on rather than suppressing. If the advisory check must be skipped (e.g. air-gapped deploy), document the reason in the task comment.",
+      "blocks_merge": false
+    },
+    {
+      "id": "T2-SEC-002",
+      "severity": "LOW",
+      "title": "community.general.npm global install runs after npm ci, potentially bypassing the lockfile pin",
+      "description": "The install sequence is: (1) `npm ci --no-audit --no-fund` in `mnemonik_mcp_install_dir` (lockfile-pinned, integrity-checked); then (2) `community.general.npm: name=... version=... global=true state=present` (npm install -g, which resolves from the npm registry, not from the local lockfile). Step (2) is what actually places the binary on PATH. If step (2) resolves a different version than what the lockfile pins (e.g. if the registry is slow, returns a stale index, or is compromised with a higher version), the binary on PATH could differ from the audited tree in the lockfile. The `version: {{ mnemonik_mcp_npm_version }}` pin in step (2) constrains the root package version, but the global install resolves its own transitive dependencies independently — it does NOT reuse the lockfile from step (1).\n\nIn practice the risk is mitigated by: (a) the version pin on the root package; (b) `@mnemonik-xyz/mcp@0.2.4` has minimal transitives (just `tar@^7.4.0`). But the two-step install creates a discrepancy between the audited tree (step 1) and the deployed binary tree (step 2) that is architecturally unsound.",
+      "files": [
+        "infrastructure/ansible/roles/mnemonic-mcp/tasks/main.yml: community.general.npm global install"
+      ],
+      "owasp": "A08:2021 Software and Data Integrity Failures",
+      "recommendation": "Consolidate to a single install path. Option A (preferred): install locally with `npm ci` in `mnemonik_mcp_install_dir`, then create a symlink: `ansible.builtin.file: src={{ mnemonik_mcp_install_dir }}/node_modules/.bin/mnemonik-mcp dest=/usr/local/bin/mnemonik-mcp state=link`. This way the binary on PATH is the exact binary installed from the audited lockfile, with no separate registry resolution. Option B: remove step (1) and rely solely on step (2) with explicit integrity args — but this abandons the full-tree lock. Option A is strictly better from a supply-chain perspective.",
+      "blocks_merge": false
+    },
+    {
+      "id": "T2-SEC-003",
+      "severity": "INFO",
+      "title": "Smoke handshake python3 -c injection surface: bounded, safe",
+      "description": "The smoke task (tasks/main.yml 'Smoke MCP-stdio initialize handshake') pipes the JSON-RPC payload via `printf '%s\\n' \"$payload\"` into the binary, then pipes stdout through `head -1` into `python3 -c 'import json,sys; r=json.loads(sys.stdin.read()); assert \"protocolVersion\" in r.get(\"result\", {}), r'`. The python3 -c argument is a static string literal, not assembled from any variable input. The `$payload` variable in the shell block is built from static string concatenation with no runtime-variable interpolation. The `r` (response JSON) goes only into `r.get(\"result\", {})` — its contents are never exec'd or eval'd. No injection surface found.",
+      "files": [
+        "infrastructure/ansible/roles/mnemonic-mcp/tasks/main.yml: Smoke MCP-stdio initialize handshake"
+      ],
+      "owasp": "A03:2021 Injection",
+      "recommendation": "None. Smoke handshake is clean.",
+      "blocks_merge": false
+    },
+    {
+      "id": "T2-SEC-004",
+      "severity": "INFO",
+      "title": "argv hygiene: no sensitive content in process args confirmed",
+      "description": "The role's subprocess invocations: (a) `npm ci --no-audit --no-fund` — no secrets in argv; (b) `community.general.npm` global install — no secrets in argv; (c) binary discovery: `which mnemonik-mcp || which mnemonic-mcp` — no secrets; (d) systemd ExecStart: `{{ mnemonic_mcp_binary }} mcp-stdio` — exactly two tokens, no payload, no secrets. Per tech-spec R2 / Architecture step 4: all MCP payload flows via stdin (JSON-RPC). Attestation content (`content`, `content_sha256`, `post_url`, etc.) never reaches argv. ps-visibility of the process is minimal. The Ansible tasks that construct the smoke payload use shell variable assembly (`payload='...'`), not Ansible `vars:`, so secrets are never rendered into the task display.",
+      "files": [
+        "infrastructure/ansible/roles/mnemonic-mcp/tasks/main.yml: all subprocess invocations",
+        "infrastructure/ansible/roles/mnemonic-mcp/templates/mnemonic-mcp.service.j2: ExecStart"
+      ],
+      "owasp": "A02:2021 Cryptographic Failures",
+      "recommendation": "None. Correct.",
+      "blocks_merge": false
+    },
+    {
+      "id": "T2-SEC-005",
+      "severity": "INFO",
+      "title": "Systemd hardening: comprehensive and correct after LoadCredential removal",
+      "description": "The unit retains: NoNewPrivileges=yes, ProtectSystem=strict, ProtectHome=yes, PrivateTmp=yes, CapabilityBoundingSet= (empty — drops all capabilities), AmbientCapabilities= (empty), RestrictAddressFamilies=AF_UNIX AF_INET, RestrictNamespaces=yes, LockPersonality=yes, ProtectKernelTunables/Modules/Logs=yes, ProtectClock=yes, ProtectHostname=yes, ProtectProc=invisible, SystemCallFilter=@system-service (allowlist), SystemCallErrorNumber=EPERM, MemoryDenyWriteExecute=yes, UMask=0077, PrivateDevices=yes.\n\nThe removal of LoadCredential= is correct: the new npm-based install does not use a Vaultwarden signing key. The credential file under /run/credentials/ no longer exists, so the LoadCredential= directive would fail at unit start. The removal is a security improvement (eliminates the bw CLI key materialisation path from /run/credentials).\n\nReadWritePaths is correctly scoped to mnemonik_mcp_install_dir and /var/lib/mnemonic-mcp only (the old config dir /etc/mnemonic-mcp is gone and correctly removed from the list).\n\nRestrictAddressFamilies=AF_UNIX AF_INET is appropriate for a stdio-transport process that also needs loopback connections for any internal HTTP (if it makes any). If the process is purely stdio with no outbound networking, AF_INET could be dropped for stricter isolation, but AF_UNIX AF_INET is an acceptable minimal set.",
+      "files": [
+        "infrastructure/ansible/roles/mnemonic-mcp/templates/mnemonic-mcp.service.j2"
+      ],
+      "owasp": "N/A",
+      "recommendation": "None. Hardening is comprehensive and correct.",
+      "blocks_merge": false
+    },
+    {
+      "id": "T2-SEC-006",
+      "severity": "INFO",
+      "title": "package-lock.json: lockfileVersion 3 with per-package integrity hashes, strict root pin",
+      "description": "Inspected files/package-lock.json: lockfileVersion=3 (npm>=7 format); all packages have `integrity` field (sha512 hashes); root package declares `\"@mnemonik-xyz/mcp\": \"0.2.4\"` (exact, no `^` semver range). The `@mnemonik-xyz/mcp` entry in `node_modules/@mnemonik-xyz/mcp` has `\"integrity\": \"sha512-w0yHPlYiwt0GSiCRVpVtSZalbUkdOh...\"` and `\"version\": \"0.2.4\"`. Transitive chain: tar@7.5.16 → @isaacs/fs-minipass@4.0.1 + chownr@3.0.0 + minipass@7.1.3 + minizlib@3.1.0 + yallist@5.0.0 — all have sha512 integrity hashes. `npm ci` will verify these hashes before installation.\n\nThe lockfile was generated with `--package-lock-only --no-audit --no-fund` per the README, meaning it was generated purely from the package manifest without downloading packages. This is the correct offline generation procedure.\n\nNote: the `tar` package (7.5.16) is a JS implementation, not the system `tar` binary — it is used by npm for `.tgz` extraction internally. No CVEs applicable to the system tar binary are relevant here.",
+      "files": [
+        "infrastructure/ansible/roles/mnemonic-mcp/files/package-lock.json"
+      ],
+      "owasp": "A08:2021 Software and Data Integrity Failures",
+      "recommendation": "None. Lockfile is correctly structured and strict-pinned.",
+      "blocks_merge": false
+    },
+    {
+      "id": "T2-SEC-007",
+      "severity": "INFO",
+      "title": "NodeSource setup_20.x: curl | bash pattern with no integrity check",
+      "description": "tasks/main.yml uses `curl -fsSL https://deb.nodesource.com/setup_20.x | bash -` to register the NodeSource APT repository. This pattern (pipe to bash) is a known supply-chain risk: the script from nodesource.com is executed with root privileges and no hash verification. This is the same pattern used by the existing `telegram-ai-agent` role (which the task references as the source of this pattern), and it is a de-facto standard for NodeSource distribution. The risk is: (a) if nodesource.com is compromised, the script could be malicious; (b) the script is fetched over HTTPS, so MITM is unlikely but not impossible.\n\nThis is an INFO rather than LOW because: (a) it is an existing project pattern (not introduced by this task); (b) NodeSource is a trusted source; (c) the `when: mnemonik_node_check.rc != 0` guard means it only runs on first deploy if node is absent; (d) after this step, `npm ci` enforces strict hash verification for the actual package.",
+      "files": [
+        "infrastructure/ansible/roles/mnemonic-mcp/tasks/main.yml: Register NodeSource APT repository"
+      ],
+      "owasp": "A08:2021 Software and Data Integrity Failures",
+      "recommendation": "No action required for this task (matching existing project pattern). As a future hardening suggestion, consider pinning the NodeSource setup script to a specific commit via a checked-in copy or using a Debian APT pinning mechanism with a signed keyring.",
+      "blocks_merge": false
+    },
+    {
+      "id": "T2-SEC-008",
+      "severity": "INFO",
+      "title": "test_no_sign_memory_anywhere: regression test correctly guards the sign-memory contract",
+      "description": "test_role_contract.py test_no_sign_memory_anywhere searches tasks/, templates/, defaults/, handlers/, and README.md for the substring 'sign-memory'. The test correctly asserts 0 matches. This prevents regression where a maintainer accidentally adds a `--sign-memory` CLI invocation that does not exist on the npm binary (which would silently fail at runtime). The search scope is appropriate — it covers all role code paths that could generate a subprocess invocation.",
+      "files": [
+        "infrastructure/ansible/roles/mnemonic-mcp/tests/test_role_contract.py: test_no_sign_memory_anywhere"
+      ],
+      "owasp": "N/A",
+      "recommendation": "None. Correct.",
+      "blocks_merge": false
+    }
+  ],
+  "owasp_checklist": {
+    "A01_broken_access_control": "PASS — service runs as non-root op user; /var/lib/mnemonic-mcp home; no world-readable credential files",
+    "A02_cryptographic_failures": "PASS — LoadCredential removed (no bw signing-key on disk); all payload via stdin not argv; UMask=0077",
+    "A03_injection": "PASS — smoke python3 -c is static; no user input in shell pipeline; binary discovery uses which (PATH-based, not shell-interpolated)",
+    "A04_insecure_design": "PASS — descoped Vaultwarden materialisation removed; stdio-transport is simpler and more auditable than bound-socket server",
+    "A05_security_misconfiguration": "PASS — hardening directives intact; ReadWritePaths scoped correctly",
+    "A06_vulnerable_components": "LOW — npm ci runs with --no-audit, suppressing advisory checks (T2-SEC-001)",
+    "A07_auth_failures": "N/A — this role installs a tool; auth is downstream (Task 6 MCP JSON-RPC)",
+    "A08_data_integrity": "LOW — two-step install creates lockfile/binary discrepancy window (T2-SEC-002); lockfile itself is correctly structured (T2-SEC-006)",
+    "A09_logging_failures": "PASS — StandardOutput=journal; SyslogIdentifier=mnemonic-mcp; no no_log needed (no secrets in tasks)",
+    "A10_ssrf": "N/A — no user-controlled URLs in this role"
+  },
+  "project_specific_checks": {
+    "supply_chain_npm_pin": "LOW — lockfile correct; global install step diverges from lockfile tree (T2-SEC-002)",
+    "argv_hygiene": "PASS — ExecStart has exactly 2 tokens (<binary> mcp-stdio); all payload via stdin per spec",
+    "privilege_boundaries": "PASS — full hardening block intact; LoadCredential removed cleanly; CapabilityBoundingSet= empty",
+    "smoke_python3_injection": "PASS — static string, no variable interpolation in python3 -c arg (T2-SEC-003)",
+    "lockfile_integrity": "PASS — lockfileVersion 3; sha512 per-package hashes; strict root version pin (T2-SEC-006)",
+    "sign_memory_regression": "PASS — test_no_sign_memory_anywhere covers all role files (T2-SEC-008)",
+    "nodesource_curl_pipe": "INFO — existing project pattern; acceptable risk (T2-SEC-007)"
+  },
+  "blocking_findings_summary": "No blocking findings. Two LOW findings: T2-SEC-001 recommends removing --no-audit from npm ci to preserve advisory signal; T2-SEC-002 recommends consolidating to a single lockfile-based install path (npm ci + symlink) to ensure the binary on PATH is the exact artifact whose hashes were verified. Both are defense-in-depth improvements rather than blocking defects."
+}
