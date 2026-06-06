@@ -49,10 +49,12 @@ HMAC-ошибок или unauthorized-кликов, бот публикует se
      `OPERATOR_USER_ID`, `CALLBACK_HMAC_SECRETS` из окружения (источник —
      `/etc/blogger.env`, render Task 3). Fail-loud при отсутствии.
    - В startup hook добавить assertion:
-     `assert OPERATOR_USER_ID in app.state.allowed_user_ids`. Бот уже имеет
-     глобальный `AuthMiddleware`, который пропускает только сообщения от
-     `allowed_user_ids` (загружается из operator-bot sops). Этот middleware
-     срабатывает **до** нашего topic-handler-а, поэтому
+     `assert OPERATOR_USER_ID in get_settings().allowed_user_ids` (импорт
+     `from telegram_bot.core.services.settings import get_settings` — тот же,
+     которым уже пользуется `__main__.py`). Бот уже имеет глобальный
+     `AuthMiddleware`, который пропускает только сообщения от
+     `settings.allowed_user_ids` (загружается из operator-bot sops). Этот
+     middleware срабатывает **до** нашего topic-handler-а, поэтому
      `OPERATOR_USER_ID` обязан быть в allowlist — иначе сообщения оператора в
      `📝 blogger-prompts` будут отброшены ДО того, как наш фильтр их увидит.
    - Topic-message handler с **точным** фильтром:
@@ -166,7 +168,8 @@ HMAC-ошибок или unauthorized-кликов, бот публикует se
   ровно `f"Auto-published: {post_url}. Receipt: {attestation_hash}. Score: {score}."`
   (формат из tech-spec Decision 7).
 - `tests/test_publish_handlers.py::test_startup_asserts_operator_in_allowlist` —
-  если `OPERATOR_USER_ID not in app.state.allowed_user_ids` → startup
+  патчим `telegram_bot.core.services.settings.get_settings` так, чтобы
+  `get_settings().allowed_user_ids` не содержал `OPERATOR_USER_ID` → startup
   падает с AssertionError; positive-кейс: при наличии в allowlist startup OK.
 
 ## Acceptance Criteria
@@ -206,9 +209,12 @@ HMAC-ошибок или unauthorized-кликов, бот публикует se
   `Auto-published: <link>. Receipt: <hash>. Score: <N>.` (`<link>` =
   `post_url`, `<hash>` = `attestation_hash`, `<N>` = итоговый score). Этот
   формат проверяется тестом и не должен расходиться с tech-spec.
-- [ ] Startup hook проверяет `OPERATOR_USER_ID in app.state.allowed_user_ids`
-  и fail-loud при несоответствии (защита от silent-drop сообщений
-  оператора глобальным `AuthMiddleware`).
+- [ ] Startup hook проверяет
+  `OPERATOR_USER_ID in get_settings().allowed_user_ids`
+  (где `get_settings` — импорт из
+  `telegram_bot.core.services.settings`, как и в `__main__.py`) и fail-loud
+  при несоответствии (защита от silent-drop сообщений оператора глобальным
+  `AuthMiddleware`).
 - [ ] Sliding-window rejection counter: >5 HMAC-failures ИЛИ unauthorized-
   кликов в 10мин → бот шлёт security-note в топик, окно сбрасывается.
 - [ ] `publish_router` зарегистрирован в `__main__.py` через
@@ -303,16 +309,21 @@ HMAC-ошибок или unauthorized-кликов, бот публикует se
 
 **AuthMiddleware (load-bearing assumption):**
 - Бот's `AuthMiddleware` сидит на dispatcher-level и **глобально** фильтрует
-  все входящие `Update` по `allowed_user_ids` (sops-encrypted список из
-  operator-bot конфига). Этот фильтр срабатывает **раньше** нашего
-  topic-handler-а — значит, если `OPERATOR_USER_ID` не в `allowed_user_ids`,
-  сообщения оператора в `📝 blogger-prompts` будут отброшены до того, как
-  наш router их увидит, и баг будет silent (нет логов в нашем модуле).
+  все входящие `Update` по `settings.allowed_user_ids` (sops-encrypted список
+  из operator-bot конфига; читается через
+  `from telegram_bot.core.services.settings import get_settings`). Этот фильтр
+  срабатывает **раньше** нашего topic-handler-а — значит, если
+  `OPERATOR_USER_ID` не в `settings.allowed_user_ids`, сообщения оператора в
+  `📝 blogger-prompts` будут отброшены до того, как наш router их увидит, и
+  баг будет silent (нет логов в нашем модуле).
 - Сейчас для publish-flow и общего бота — один и тот же оператор, так что в
   проде проблема не материализуется. Но добавляем startup-assertion
-  (`assert OPERATOR_USER_ID in app.state.allowed_user_ids`) как fail-loud
-  guard на будущее (например, если кто-то поменяет `OPERATOR_USER_ID`
-  отдельно от operator-bot allowlist).
+  (`assert OPERATOR_USER_ID in get_settings().allowed_user_ids`) как
+  fail-loud guard на будущее (например, если кто-то поменяет
+  `OPERATOR_USER_ID` отдельно от operator-bot allowlist). NB: aiogram-бот —
+  чистый dispatcher без FastAPI/Starlette, поэтому никакого `app.state`/
+  `app.state.allowed_user_ids` в этом процессе НЕТ. Источник truth для
+  allowlist — singleton `get_settings()`.
 
 **`find_by_prefix` — НЕ реимплементировать в handlers:**
 - Импортировать строго: `from content_publisher.queue import find_by_prefix`

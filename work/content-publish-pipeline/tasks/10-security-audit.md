@@ -19,7 +19,7 @@ teammate_name:
 
 Full-feature OWASP Top 10 security audit across all source files created or modified in Tasks 1–8 of the `content-publish-pipeline` feature. The audit is read-only — no code edits — and produces a structured findings report at `work/content-publish-pipeline/logs/audit/security-audit.json`. The audit must verify that the security decisions hardened during user-spec / tech-spec review rounds (round-1/2/3 security findings) actually landed in the implementation: subprocess argv/env hygiene, path traversal containment, HMAC + replay protection on callback flows, sops secret containment, topic-filter correctness, publisher bot token leakage controls, attestation content binding, auto-mode two-location integrity, and supply-chain pinning.
 
-The audit is the second of two audit-wave tasks (Task 9 = code audit, this = security audit, Task 11 = test audit). It runs after the entire implementation is integrated and before pre-deploy QA (Task 12). It has NO reviewers — its output IS the review.
+The audit is the second of three audit-wave tasks (Task 9 = code audit, this = security audit, Task 11 = test audit). It runs after the entire implementation is integrated and before pre-deploy QA (Task 12). It has NO reviewers — its output IS the review.
 
 ## What to do
 

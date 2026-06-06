@@ -502,7 +502,7 @@ Mock fixtures centralized in `fabric/content-publisher/tests/conftest.py`: `mock
 |------|-----------|
 | Mnemonik MCP binary name/subcommand differs after npm install | Task 2's binary discovery (`which mnemonik-mcp || which mnemonic-mcp`) + post-install MCP-stdio handshake test catches drift at deploy time |
 | `mnemonik_blogger` upstream signature shifts | Decision 11's `inspect.signature` check at install time asserts keyword-only `article`, `platforms`, `settings` are present; fail-loud with diff hint |
-| Operator forgets to create `📝 blogger-prompts` topic OR puts wrong topic_id in sops | Task 7's Ansible smoke calls `getForumTopicIconStickers` on the configured `BLOGGER_PROMPTS_TOPIC_ID` — fails clearly if the topic doesn't exist |
+| Operator forgets to create `📝 blogger-prompts` topic OR puts wrong topic_id in sops | No deploy-time smoke (the Bot API has no `getForumTopic` read endpoint that exists and takes a thread_id). Self-detected at first use: bot's topic-handler logs the mismatched `message_thread_id` to journald; operator debugs via `journalctl -u telegram-ai-agent | grep thread_id` within minutes. |
 | Concurrent queue writes from bot (topic-handler + callback) and worker | Shared `cas_status` via flock; worst case ~10ms wait |
 | Hetzner volume id varies | Ansible discovers via mounts fact, templates concrete int |
 | Mnemonik MCP role's npm install fails | Role exits non-zero with clear message; deploy fails fast |
@@ -598,7 +598,7 @@ User-spec AC1-15 inherited. AC1 (slash-command registration) reinterpreted per D
 - **Files to read:** `fabric/workspace-manager/main.py` (lifespan pattern)
 
 #### Task 7: Wire `content-publisher.service` to start on deploy + Ansible smoke
-- **Description:** Update Ansible role: install `fabric/content-publisher/` package into venv, enable+start the systemd unit. `wait_for` task asserts polling within 30s of start (log lines: `queue-poll started`, `deadline-checker started`, `cleanup-gc started`). Ansible task calls publisher-bot's `getChat` on @mnemonik AND `getForumTopicIconStickers` on the configured `BLOGGER_PROMPTS_TOPIC_ID` — fails clearly if topic doesn't exist or publisher-bot isn't admin.
+- **Description:** Update Ansible role: install `fabric/content-publisher/` package into venv, enable+start the systemd unit. `wait_for` task asserts polling within 30s of start (log lines: `queue-poll started`, `deadline-checker started`, `cleanup-gc started`). Ansible task calls publisher-bot's `getMe` (records bot_id) then `getChatMember(chat_id=@mnemonik, user_id=<bot_id>)` and asserts `result.status in {"administrator", "creator"}` — fails clearly if publisher-bot isn't admin of @mnemonik. NO topic-existence smoke (no real Bot API endpoint supports it); topic_id mismatch is self-detected at first use via journald.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer
 - **Verify-smoke:** ssh `systemctl is-active content-publisher` → `active`; `journalctl -u content-publisher --since "1 minute ago"` matches all 3 start lines; topic + channel smokes pass.
