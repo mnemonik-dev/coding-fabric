@@ -1,0 +1,391 @@
+# Interview Plan for Feature Planning
+#
+# Tracks progress of adaptive discovery interview for a new feature/bug/refactoring.
+# Updated after EACH user response with scoring, values, and remaining gaps.
+#
+# Scoring: 0-100% (how well we understand this aspect)
+# Status: pending → partial → complete
+# Required: true = must reach threshold, false = cover if relevant
+
+# ============================================================================
+# Interview Metadata (Session Recovery)
+# ============================================================================
+interview_metadata:
+  started: "2026-06-06 13:41:45"  # Timestamp (YYYY-MM-DD HH:MM:SS)
+  last_updated: "2026-06-06 14:20:36"
+  status: "in_progress"  # not_started | in_progress | completed
+  can_resume: true
+  current_question_num: 8
+  feature_size: "M"  # S | M | L
+
+# ============================================================================
+# Conversation History (for session recovery)
+# ============================================================================
+# Preserves complete Q&A. Update after EVERY user response.
+#
+conversation_history:
+- question_num: 1
+  timestamp: "2026-06-06 13:50:55"
+  topic: "trigger + source + platforms + dryrun_policy"
+  agent_question: |
+    Q1 trigger (manual TG / Kaneo state / GH webhook)?
+    Q2 article source (separate blog-content repo / per-task repo / external)?
+    Q3 platforms — which are real-launch vs placeholder?
+    Q4 dry-run default in prod?
+  user_answer: |
+    Q1: user writes a prompt in TG defining scope + aim of an article (typically "raise Mnemonik trust, explain why it is needed").
+    Q2: claude-blog produces the article from that prompt.
+    Q3: tokens exist for all platforms, but X requires expensive paid tier — MVP = Telegram channel only. Other platforms must be foreseen as easy-add later.
+    Q4: prefer approval flow — bot messages operator in TG with preview, operator approves → publish. AUTOMATIC flow should also exist as an option.
+  summary: "Trigger = TG prompt. Writer = claude-blog. MVP platform = Telegram. Default mode = approval; auto mode is also a path."
+
+- question_num: 2
+  timestamp: "2026-06-06 13:58:21"
+  topic: "trigger_command + storage + preview + auto_vs_approval"
+  agent_question: |
+    Q5 how does bot recognize a publish task vs code task (slash / prefix / LLM / Kaneo column)?
+    Q6 where do article.md + attestations live (ephemeral worktree / blog-content repo / hybrid)?
+    Q7 preview format (raw markdown / rendered final post / summary)?
+    Q8 auto-vs-approval policy (per-task flag / global / timeout / score-based)?
+  user_answer: |
+    Q5 (A) — explicit slash command.
+    Q6 — MAJOR ARCH CHANGE: also need to publish to OUR WEBAPP BLOG PAGE (new platform, not in blogger today). And Kaneo/Symphony are TOTALLY REDUNDANT for this flow. Run a separate flow: research → approve → publish, OR research → publish. Also: scheduled publish task execution required.
+    Q7 (B) — rendered exactly as it will appear in TG channel.
+    Q8 (C) — approval with timeout, then auto-publish (like the existing auto-merge veto pattern from #16).
+  summary: "/publish-content slash. Separate pipeline (NOT Kaneo/Symphony). Webapp blog is a new target. Scheduled execution needed. Preview = final rendered. Approval+timeout default."
+
+- question_num: 3
+  timestamp: "2026-06-06 14:03:01"
+  topic: "scope_clarification_arch_simplification"
+  agent_question: |
+    Pushed back on whether removing Kaneo+Symphony complicates the work, since this is
+    a key architectural change. User confirmed: it does NOT complicate, simplifies.
+    Also: webapp blog adapter is OUT OF SCOPE for this iteration. MVP = TG-only.
+  user_answer: |
+    Removing Kaneo+Symphony is correct simplification. Site connector (webapp) is out of scope.
+  summary: "MVP narrowed to TG-only. Kaneo/Symphony decisively excluded from publish pipeline. Webapp deferred to a later iteration."
+
+- question_num: 4
+  timestamp: "2026-06-06 14:17:57"
+  topic: "runner_arch + scheduling + attestation + timeout + retry_on_low_score + staging_channel"
+  agent_question: |
+    Q9 webapp blog: scope or defer?
+    Q10 where claude-blog runs (in-bot / separate poller / subprocess)?
+    Q11 scheduling shape?
+    Q12 attestation storage?
+    Q13 approval timeout default?
+    Q14 schedule = one-shot or recurring?
+    Q15 quality-gate failure behavior?
+    Q16 staging vs real channel?
+  user_answer: |
+    Q9 DEFER to work/blogger-site-connector/.
+    Q10 (B) separate content-publisher.service systemd unit (poller).
+    Q11 scheduling configurable. Initial mode = approval-needed; after quality validated, switch to autonomous bot.
+    Q12 YES use Mnemonik MCP for attestation. KEY VALUE: articles become recallable via mnemonic_recall — eating own dogfood, product use-case.
+    Q13 (A) 5 minutes default timeout.
+    Q14 (A) one-shot --at <ISO> only for MVP.
+    Q15 (C) self-rewrite loop: worker re-spawns claude with analyze_blog feedback until score passes.
+    Q16 dismiss staging. Real @mnemonik channel + operator approval IS the safety net.
+  summary: "Site connector deferred. Separate poller service. Mnemonik MCP attestation = product diff. 5-min timeout. One-shot scheduling. Self-rewrite-on-low-score. No staging — approval is safety."
+
+- question_num: 5
+  timestamp: "2026-06-06 14:18:26"
+  topic: "additional_platform_request"
+  agent_question: |
+    (none — user volunteered)
+  user_answer: |
+    Please also add LinkedIn to list of potential platforms.
+  summary: "LinkedIn added to deferred-platforms list. Not in MVP; not in upstream blogger adapters — needs custom OAuth adapter."
+
+- question_num: 6
+  timestamp: "2026-06-06 14:19:50"
+  topic: "publisher_bot_identity"
+  agent_question: |
+    Q17 separate publisher bot vs reuse @mnemonik_fabric_bot?
+  user_answer: |
+    Q17 (B) separate.
+  summary: "Separate Telegram bot for publishing (created via @BotFather). Operator-bot != publisher-bot. Cleaner privilege scope."
+
+- question_num: 7
+  timestamp: "2026-06-06 14:20:36"
+  topic: "claude_spawn_failure_handling"
+  agent_question: |
+    Q18 if claude+claude-blog spawn fails (missing files / OOM / network): A=fail+notify (no retry), B=exp backoff retry, C=hybrid?
+  user_answer: |
+    Q18 (A) — fail + notify, no retry. Structural failures shouldn't be retried.
+  summary: "Spawn failures = hard fail + operator notification with traceback. Simpler, doesn't mask bugs."
+
+# Format:
+# - question_num: 1
+#   timestamp: "2025-11-12 15:20:33"
+#   topic: "user_problem"
+#   agent_question: |
+#     [Full question text]
+#   user_answer: |
+#     [Full answer text]
+#   summary: "Brief summary"
+
+# ============================================================================
+# Phase 1: High-Level Feature Understanding
+# ============================================================================
+# Interview Cycle 1 scope
+phase1_feature_overview:
+
+  feature_name:
+    score: 100
+    status: "complete"
+    value: "content-publish-pipeline"
+    gaps: "None"
+    required: true
+
+  feature_description:
+    score: 95
+    status: "complete"
+    value: "Separate publish pipeline (NOT Kaneo/Symphony). MVP = Telegram channel @mnemonik ONLY (webapp adapter deferred). Operator types /publish-content <prompt> in TG (optionally with --at <ISO> for scheduled) -> bot spawns claude with claude-blog skill -> writes article.md to /tmp -> bot renders TG preview with inline buttons -> approve (or N-min timeout auto) -> mnemonik-blogger CLI publishes to @mnemonik -> attestation via Mnemonik MCP. Scheduled jobs persisted on volume + systemd timer fires due jobs."
+    gaps: "None"
+    required: true
+
+  work_type:
+    score: 100
+    status: "complete"
+    value: "feature"
+    gaps: "New integration — extends fabric pipeline with publish stage"
+    required: true
+
+  user_problem:
+    score: 80
+    status: "complete"
+    value: "Operator wants autonomous content publication for Mnemonik protocol awareness. Current: each post is manual writing+formatting+posting. Goal: brief in TG → publishable post in channel with quality gate."
+    gaps: "None"
+    required: true
+
+  target_users:
+    score: 80
+    status: "complete"
+    value: "Single operator (bogdan.sivochkin@gmail.com); audience of posts is Mnemonik community on Telegram channel @mnemonik (plus future Discord/Farcaster)."
+    gaps: "None"
+    required: false
+
+  success_criteria:
+    score: 92
+    status: "complete"
+    value: "1) /publish-content <prompt> in TG -> within 60s of claude finishing, operator sees rendered TG-post preview in personal chat with [Publish]/[Reject] inline buttons. 2) [Publish] OR 5-min timeout -> post to @mnemonik + Mnemonik MCP attestation (mnemonic_sign_memory) recorded within 30s; bot replies with post link + receipt hash. 3) /publish-content --at <ISO> <prompt> -> job persists on volume, fires within 60s of scheduled time across bot/VM restart. 4) Quality score < min_score -> worker re-spawns claude with analyze_blog feedback (max 3 retries); after retries exhausted, operator notified with last draft + failure reasons."
+    gaps: "None"
+    required: true
+
+  constraints:
+    score: 95
+    status: "complete"
+    value: "1) Hetzner VM NOT destroyed each deploy (#24/#25 pending). 2) blogger stateless. 3) MVP platform = Telegram channel @mnemonik. 4) DEFERRED platforms (see work/blogger-extra-platforms/ + work/blogger-site-connector/): webapp blog, LinkedIn, Discord, X, Farcaster. 5) X paid tier blocks Twitter. 6) Pipeline SEPARATE from Kaneo/Symphony. 7) Scheduled jobs must survive bot/VM restart (persistent volume). 8) Default = approval+timeout (not full-auto)."
+    gaps: "None"
+    required: true
+
+  testing_strategy:
+    score: 80
+    status: "complete"
+    value: "Local: mnemonik-blogger preview (dry-run). Integration: scheduled-job persistence test (write, kill poller, restart, fire). E2E: real /publish-content with --reject button click, then again with timeout-approve, on real @mnemonik channel. Safety = operator approval, no staging channel needed."
+    gaps: "None"
+    required: true
+
+# ============================================================================
+# Phase 2: User Experience & Scenarios
+# ============================================================================
+# Interview Cycle 2 scope (together with Phase 3)
+phase2_user_experience:
+
+  user_stories:
+    score: 90
+    status: "complete"
+    value: "Single user story: Operator types /publish-content <brief> in TG -> sees preview -> approves or lets timeout -> post lands in @mnemonik + recallable via Mnemonik MCP. Variant: /publish-content --at <ISO> for scheduled. After validation period operator may switch to autonomous mode (no approval)."
+    gaps: "None"
+    required: true
+
+  acceptance_criteria:
+    score: 85
+    status: "complete"
+    value: "AC1: /publish-content <text> -> Kaneo NOT touched (verify via Kaneo API: no new tasks created). AC2: Worker spawns claude with claude-blog skill in /var/lib/content-publisher/work/<id>/. AC3: analyze_blog called pre-publish; score < min_score triggers re-spawn (capped at 3). AC4: Preview msg in operator personal chat has inline buttons [Publish]/[Reject]. AC5: [Publish] OR 5-min silence -> mnemonik-blogger post --from-file ... --platforms telegram --live succeeds; bot replies with post link. AC6: Mnemonik MCP mnemonic_sign_memory called with article body; recallable via mnemonic_recall. AC7: /publish-content --at <ISO> persists job to /mnt/HC_Volume_*/content-publisher/queue.jsonl; survives VM destroy-recreate; fires within 60s of <ISO>. AC8: PUBLISH_MODE=auto skips approval step entirely."
+    gaps: "None"
+    required: true
+
+  edge_cases:
+    score: 88
+    status: "complete"
+    value: "1) Bot down at scheduled fire time: poller catches up when bot restarts, fires overdue jobs with 'late by Xmin' annotation. 2) Self-rewrite loop never converges: max 3 retries then operator notified with last draft + reasons. 3) Mnemonik MCP unreachable AFTER successful TG post: post committed (cannot rollback), attestation queued for retry. 4) Operator clicks Reject AFTER auto-publish fired: bot replies 'too late, post already published, link: ...'. 5) /publish-content --at <past ISO>: bot rejects with 'time must be future'. 6) Multiple /publish-content stacked: queue serial; each gets own preview msg. 7) claude+claude-blog spawn fails (missing files / OOM): job marked failed, operator notified with traceback. NO RETRY on structural failures."
+    gaps: "None"
+    required: true
+
+  error_scenarios:
+    score: 75
+    status: "partial"
+    value: "1) TG API failure during publish: blogger retries 3x w/ backoff; if still fails, attestation NOT recorded, operator notified with error + draft .md path for manual review. 2) Quality gate analyze_blog.py errors (broken analyze_blog): fail-CLOSED, block publish, notify operator. 3) Bot subprocess for claude fails to start: queue marks job failed, notify operator. 4) Volume not mounted at /mnt/HC_Volume_*: poller refuses to start (asserts mount on systemd start). 5) Mnemonik MCP unreachable: see edge case 3."
+    gaps: "None"
+    required: true
+
+  verification_strategy:
+    score: 80
+    status: "complete"
+    value: "Pre-deploy: pytest of poller queue persistence, analyze_blog gate logic (with mocked claude). Post-deploy: invoke /publish-content with a known-good prompt on the live VM, verify TG message arrives in @mnemonik, verify mnemonic_recall returns the post."
+    gaps: "None"
+    required: true
+
+  ui_ux_requirements:
+    score: 80
+    status: "complete"
+    value: "TG personal-chat preview = rendered final post (with formatting, links, line-breaks exactly as it will appear in @mnemonik). Inline keyboard below: [✓ Publish] [✗ Reject]. After approve/timeout, bot edits preview message to 'Published — post link: <url>, receipt: <hash>'. After reject, bot edits to 'Rejected. Draft kept at /var/lib/.../article.md for X hours then deleted.'."
+    gaps: "None"
+    required: false
+
+  risks:
+    score: 70
+    status: "partial"
+    value: "R1: Mnemonik MCP signing has unexpected latency -> publish completes but attestation queued; resolve with retry queue. R2: claude-blog skill files lag behind upstream and break analyze_blog calls -> pin claude-blog at a known-good ref in Ansible role. R3: Operator misses timeout while AFK -> unwanted post published; mitigation = 5min is too short for AFK, may need configurable longer default per persona. R4: Self-rewrite loop wastes Claude credits -> hard cap 3 retries, alert if >50% jobs hit cap."
+    gaps: "R5? — race between operator click and timeout firing."
+    required: true
+
+  technical_decisions:
+    score: 80
+    status: "complete"
+    value: "1) Separate systemd unit content-publisher.service (NOT Symphony). 2) Queue = JSONL on /mnt/HC_Volume_*/content-publisher/queue.jsonl (atomic append). 3) Claude-blog cloned to /opt/claude-blog, MNEMONIK_CLAUDE_BLOG_PATH=/opt/claude-blog. 4) Blogger installed as venv at /opt/blogger/venv, CLI symlinked to /usr/local/bin. 5) /etc/blogger.env rendered from sops. 6) Attestation via Mnemonik MCP mnemonic_sign_memory (article body + post URL as payload). 7) Bot's MCP server gets new tool publish_content_enqueue(prompt, fire_at?) that writes to queue."
+    gaps: "None"
+    required: false
+
+  deploy_approach:
+    score: 80
+    status: "complete"
+    value: "Ansible role 'content-publisher' new in infrastructure/ansible/roles/. Clones blogger + claude-blog repos, builds venv, renders env from sops, installs systemd unit + timer. Idempotent — survives VM destroy-recreate (queue is on volume). #24/#25 (persistent VM) NOT blocking — feature works either way."
+    gaps: "None"
+    required: false
+
+  manual_user_actions:
+    score: 92
+    status: "complete"
+    value: "1) Create NEW Telegram bot via @BotFather (e.g. @mnemonik_publisher_bot) -> save token. 2) Promote NEW publisher bot to ADMIN of @mnemonik channel (Manage Posts permission). 3) Add to sops: blogger_telegram_bot_token (new bot), blogger_telegram_channel='@mnemonik'. 4) Decide PUBLISH_MODE env (approval default)."
+    gaps: "None"
+    required: false
+
+# ============================================================================
+# Phase 3: Integration & Technical Context
+# ============================================================================
+# Interview Cycle 2 scope (together with Phase 2)
+phase3_integration:
+
+  integration_points:
+    score: 85
+    status: "complete"
+    value: "Bot (telegram-ai-agent.service): NEW slash /publish-content + NEW preview-keyboard handler + NEW publish_content_enqueue MCP tool. content-publisher.service (NEW). blogger CLI (mnemonik-dev/blogger). claude-blog (mnemonik-dev/claude-blog skill suite + analyze_blog.py). Mnemonik MCP (mnemonic_sign_memory, mnemonic_recall)."
+    gaps: "None"
+    required: true
+
+  dependencies:
+    score: 85
+    status: "complete"
+    value: "External: mnemonik-dev/blogger (pin ref), mnemonik-dev/claude-blog (pin ref), Mnemonik MCP server (already in bot's MCP runtime). Internal: telegram-ai-agent (slash command registration), Ansible role pattern (mirror fabric-services structure). Python: aiogram (inline buttons — bot already uses aiogram)."
+    gaps: "None"
+    required: false
+
+  technical_constraints:
+    score: 92
+    status: "complete"
+    value: "1) blogger upstream has TG/Discord/X/Farcaster adapters — webapp + LinkedIn DEFERRED to separate features. 2) Mnemonik MCP must be reachable from poller process. 3) Persistent volume must be mounted before poller starts. 4) Bot subprocess for claude already works (ProtectHome=no fix applied). 5) Aiogram inline-keyboard handlers required for preview UI."
+    gaps: "None"
+    required: false
+
+  data_requirements:
+    score: 80
+    status: "complete"
+    value: "Queue schema (JSONL): {id, created_at, fire_at|null, prompt, mode=approval|auto, status, retries, article_path, last_score, post_url|null, receipt_hash|null}. State transitions: queued -> writing -> scoring -> preview-sent -> publishing -> published | rejected | failed. Persisted on /mnt/HC_Volume_*/content-publisher/."
+    gaps: "None"
+    required: false
+
+  migration_needs:
+    score: 100
+    status: "complete"
+    value: "None — greenfield feature. Existing fabric (Symphony/Kaneo) untouched."
+    gaps: "None"
+    required: false
+
+# ============================================================================
+# Phase 4: Completion
+# ============================================================================
+phase4_completion:
+  userspec_file: ""  # work/{feature}/user-spec.md
+  status: "pending"  # pending | created | approved
+
+# ============================================================================
+# Decision Rules
+# ============================================================================
+decision_rules:
+
+  required_threshold: 85
+  optional_threshold: 50
+
+  # Stop criteria (BOTH must be true to exit a cycle)
+  stop_criteria:
+    - "All required items in current cycle scope score >= 85%"
+    - "Structural: every required item has non-empty value, no TBD, gaps empty or conscious limitations"
+
+  priority_order:
+    - "Required items with score < 85% (lowest score first)"
+    - "Optional items mentioned by user in context"
+    - "Other optional items if user seems knowledgeable"
+
+  question_strategy:
+    - "3-4 questions per batch about different gaps"
+    - "Run as many batches as needed — batch size is NOT cycle limit"
+    - "Propose solutions based on PK, not just ask questions"
+    - "Challenge with substance: counterexamples, code references, unexplored scenarios"
+    - "After each response: update scores, values, gaps, conversation_history, save"
+
+# ============================================================================
+# Interview Progress
+# ============================================================================
+progress:
+  current_phase: "phase4_completion"
+  questions_asked: 18
+  last_question: ""
+  total_required_score: 0
+  total_optional_score: 0
+  completion_estimate: "0%"
+  user_detail_level: "unknown"  # brief | moderate | detailed
+
+# ============================================================================
+# Notes
+# ============================================================================
+notes: |
+  Free-form notes:
+  - Important insights
+  - Areas of uncertainty
+  - Pivot points
+  - Scope changes
+
+# ============================================================================
+# USAGE INSTRUCTIONS
+# ============================================================================
+#
+# 1. INIT: Created by init-feature-folder.sh at work/{feature}/logs/userspec/interview.yml
+#    Set metadata.started, metadata.status: in_progress
+#
+# 2. INITIAL SCORING: After user's free-form description, score ALL items
+#    Detailed 80-95%, brief 50-70%, vague 20-40%, not mentioned 0%
+#
+# 3. INTERVIEW LOOP (save after EVERY response):
+#    a) Find required items with score < 85% in current cycle scope
+#    b) Ask 3-4 questions about different gaps
+#    c) Propose solutions based on PK
+#    d) User answers
+#    e) Update: conversation_history, scores, values, gaps, metadata
+#    f) Save immediately
+#    g) Check stop criteria (score >= 85% AND structural: value filled, no TBD, gaps resolved)
+#    h) Not done → repeat. Done → next cycle.
+#
+# 4. CYCLES:
+#    Cycle 1: phase1_feature_overview items
+#    Cycle 2: phase2_user_experience + phase3_integration items
+#    Cycle 3: ALL items still below threshold (cleanup pass)
+#
+# 5. RESUME: If metadata.status is "in_progress"
+#    Load, show conversation summary, resume from current state
+#
+# 6. COMPLETION: After user approves user-spec.md
+#    Set phase4_completion.status: approved
+#    Set metadata.status: completed
