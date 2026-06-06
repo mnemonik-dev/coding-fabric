@@ -204,7 +204,7 @@ TG /publish_content      ┌─────────────────�
 
 **Race: concurrent click + timeout fire** — `content_publisher.queue.cas_status(job_id, expected, target)` uses `fcntl.flock(LOCK_EX)` + read-modify-write + `os.replace()`. BOTH bot callback handler AND worker deadline-checker MUST go through this shared module (no ad-hoc writes). Winner sets `publishing`; loser reads current state, returns "too late, status: <X>" via `answerCallbackQuery`.
 
-**Multi-segment thread**: a long article (>4096 chars) produces `RenderedPost.segments = [seg0, seg1, ...]` — Telegram emits them as a reply chain. Preview to operator shows all segments joined with `\n— — —\n` visual separators in a single message (or threaded if very long). `mnemonik_blogger`'s `run_campaign_from_article` posts them as a chain internally; `result.posts[0]` is the first message in the thread (used for the URL).
+**Multi-segment thread**: a long article (>4096 chars) produces `RenderedPost.segments = [seg0, seg1, ...]` — Telegram emits them as a reply chain. Preview to operator shows all segments joined with `\n— — —\n` visual separators in a single message (or threaded if very long). `mnemonik_blogger`'s `run_campaign_from_article` posts them as a chain internally; `result.results[0]` is the PublishResult for the Telegram platform — `.primary_url` is the URL of the first message in the thread; `.ids` is the list of all Telegram message IDs in the chain (used for crash recovery and channel-history lookups).
 
 ### Shared resources
 
@@ -525,7 +525,7 @@ Mock fixtures centralized in `fabric/content-publisher/tests/conftest.py`: `mock
 
 ### E2E tests
 
-- `tests/e2e/test_publish_smoke.sh` — post-deploy live: `/publish_content TEST_FIXTURE_PROMPT` → preview within 90s → click `[✓]` → post in @mnemonik within 30s → `mnemonic-mcp recall <hash>` returns article body. Teardown: script prints chat_id + message_id; operator deletes manually. (Scripted deletion via Bot API `deleteMessage` is a stretch goal — out of MVP scope.)
+- `tests/e2e/test_publish_smoke.sh` — post-deploy live: `/publish_content TEST_FIXTURE_PROMPT` → preview within 90s → click `[✓]` → post in @mnemonik within 30s → spawn `<mnemonic_mcp_binary> mcp-stdio`, send MCP `tools/call mnemonic_recall {"id": "<receipt_hash>"}` over stdin, parse tool response for body → assert body matches article. Teardown: script prints chat_id + message_id; operator deletes manually. (Scripted deletion via Bot API `deleteMessage` is a stretch goal — out of MVP scope.)
 
 ## Agent Verification Plan
 
@@ -539,7 +539,7 @@ Per-task `Verify-smoke:` in each Implementation Task. The Final Wave's post-depl
 
 - `bash` + `curl` — Bot API: `getMyCommands`, `getUpdates`, `answerCallbackQuery`, `getChat`.
 - `ssh` — `journalctl -u content-publisher`, `journalctl -u telegram-ai-agent`, `cat /mnt/HC_Volume_<id>/content-publisher/queue.jsonl`.
-- `mnemonic-mcp recall <hash>` — for AC7.
+- MCP-stdio handshake (bash one-liner): `printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize",...}' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"mnemonic_recall","arguments":{"id":"<hash>"}}}' | <mnemonic_mcp_binary> mcp-stdio` — for AC7. (No `mnemonic-mcp recall` CLI subcommand exists.)
 - `Telegram MCP` (optional) — operator click simulation.
 
 ## Risks
