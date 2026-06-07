@@ -21,12 +21,82 @@ import hmac
 import logging
 import os
 import sys
+import traceback
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import TracebackType
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+_SENSITIVE_ENV_NAMES = (
+    "TELEGRAM_BOT_TOKEN",
+    "CALLBACK_HMAC_SECRETS",
+    "PUBLISH_AUTO_MODE_TOKEN",
+    "PUBLISH_AUTO_MODE_TOKEN_CONFIRM",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+)
+_SENSITIVE_LABELS = (
+    "article_text",
+    "prompt",
+    "TELEGRAM_BOT_TOKEN",
+    "CALLBACK_HMAC_SECRETS",
+    "PUBLISH_AUTO_MODE_TOKEN",
+    "PUBLISH_AUTO_MODE_TOKEN_CONFIRM",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+)
+
+
+def scrub_traceback_text(text: str) -> str:
+    """Redact known secret values and payload labels from traceback text."""
+    scrubbed = text
+    for name in _SENSITIVE_ENV_NAMES:
+        value = os.environ.get(name)
+        if value:
+            scrubbed = scrubbed.replace(value, "[REDACTED]")
+    for label in _SENSITIVE_LABELS:
+        scrubbed = scrubbed.replace(label, "[REDACTED]")
+    return scrubbed
+
+
+def format_scrubbed_exception(exc: BaseException) -> str:
+    return scrub_traceback_text(
+        "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    )
+
+
+def _scrubbing_excepthook(
+    exc_type: type[BaseException], exc: BaseException, tb: TracebackType | None
+) -> None:
+    text = scrub_traceback_text("".join(traceback.format_exception(exc_type, exc, tb)))
+    sys.stderr.write(text)
+    if not text.endswith("\n"):
+        sys.stderr.write("\n")
+
+
+def install_exception_redaction_hooks(loop: asyncio.AbstractEventLoop | None = None) -> None:
+    """Install process and asyncio exception hooks that redact publish secrets."""
+    sys.excepthook = _scrubbing_excepthook
+    if loop is None:
+        return
+
+    def _loop_exception_handler(
+        _event_loop: asyncio.AbstractEventLoop, context: dict[str, Any]
+    ) -> None:
+        exc = context.get("exception")
+        if isinstance(exc, BaseException):
+            logger.error(
+                "Unhandled asyncio exception:\n%s",
+                format_scrubbed_exception(exc),
+            )
+            return
+        message = str(context.get("message", "Unhandled asyncio exception"))
+        logger.error("%s", scrub_traceback_text(message))
+
+    loop.set_exception_handler(_loop_exception_handler)
 
 
 def assert_auto_mode_token_match_or_exit() -> None:
@@ -90,8 +160,8 @@ async def queue_poll_loop() -> None:
                         await worker.run_writing_to_preview(job)
                     elif job.status.value == "publishing":
                         await publish.publish_step(job_id=job.id)
-            except Exception:  # noqa: BLE001
-                logger.exception("queue-poll tick failed")
+            except Exception as exc:  # noqa: BLE001
+                logger.error("queue-poll tick failed\n%s", format_scrubbed_exception(exc))
             await asyncio.sleep(interval)
     except asyncio.CancelledError:
         logger.info("queue-poll cancelled")
@@ -103,6 +173,7 @@ async def lifespan(app: object = None) -> AsyncIterator[None]:
     """FastAPI-compatible lifespan. Runs the boot order from the module docstring."""
     from content_publisher import cleanup, deadline, recovery
 
+    install_exception_redaction_hooks(asyncio.get_running_loop())
     assert_auto_mode_token_match_or_exit()
 
     qp = _queue_path()
@@ -144,6 +215,7 @@ def create_app() -> Any:
 def main() -> int:
     """Entry point invoked by ``python -m content_publisher`` or the systemd unit."""
     logging.basicConfig(level=logging.INFO)
+    install_exception_redaction_hooks()
     try:
         import uvicorn  # type: ignore[import-not-found]
 

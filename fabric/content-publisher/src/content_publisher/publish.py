@@ -130,7 +130,25 @@ async def publish_step(*, job_id: str) -> None:
         )
         return
     if not job.article_path:
+        reason = "missing article_path"
         logger.error("publish: job %s has no article_path", job_id)
+        try:
+            queue.cas_status(
+                QUEUE_PATH,
+                job_id,
+                expected=JobStatus.PUBLISHING,
+                target=JobStatus.PUBLISH_FAILED,
+                updates={
+                    "publish_error": reason,
+                    "notify_pending": True,
+                },
+            )
+        except queue.StaleStateError as exc:
+            logger.warning(
+                "publish: stale CAS publishing→failed for missing article_path on %s: %s",
+                job_id,
+                exc,
+            )
         return
 
     # 1) Rate-ceiling pre-check (security R2-9).
@@ -156,17 +174,12 @@ async def publish_step(*, job_id: str) -> None:
     # operator uses this timestamp to identify the duplicate in the channel.
     now = datetime.now(UTC)
     try:
-        queue.cas_status(
+        queue.update_job_fields(
             QUEUE_PATH,
             job_id,
-            expected=JobStatus.PUBLISHING,
-            target=JobStatus.PUBLISHING,  # in-place: not a graph transition
+            expected_status=JobStatus.PUBLISHING,
             updates={"tentative_publish_started_at": now.isoformat()},
         )
-    except queue.IllegalTransitionError:
-        # PUBLISHING → PUBLISHING is not in the graph. Write directly under the
-        # same flock pattern instead.
-        _mark_tentative(QUEUE_PATH, job_id, now)
     except queue.StaleStateError:
         # Lost the CAS to someone else — give up cleanly.
         return
@@ -223,41 +236,3 @@ async def publish_step(*, job_id: str) -> None:
             )
         except queue.StaleStateError as exc:
             logger.warning("publish: stale CAS publishing→failed for %s: %s", job_id, exc)
-
-
-def _mark_tentative(queue_path: Path, job_id: str, when: datetime) -> None:
-    """Write ``tentative_publish_started_at`` on an in-flight publishing job
-    without altering its status. Same flock pattern as cas_status.
-    """
-    from content_publisher.models import Job
-    from content_publisher.queue import _acquire, _lock_path, _read_lines, _release, _write_raw
-
-    lock = _acquire(_lock_path(queue_path))
-    try:
-        lines = _read_lines(queue_path)
-        entries: list[Job | str] = []
-        for raw in lines:
-            stripped = raw.strip()
-            if not stripped:
-                continue
-            try:
-                j = Job.model_validate_json(stripped)
-            except Exception:  # noqa: BLE001
-                entries.append(stripped)
-                continue
-            if j.id == job_id and j.status == JobStatus.PUBLISHING:
-                as_dict = j.model_dump(mode="json")
-                as_dict["tentative_publish_started_at"] = when.isoformat()
-                entries.append(Job.model_validate(as_dict))
-            else:
-                entries.append(j)
-
-        payload = (
-            "\n".join(
-                e.model_dump_json() if isinstance(e, Job) else e for e in entries
-            )
-            + "\n"
-        )
-        _write_raw(queue_path, payload.encode("utf-8"))
-    finally:
-        _release(lock)

@@ -91,6 +91,30 @@ async def test_publish_failure_transitions_to_publish_failed(
     assert refreshed.notify_pending is True
 
 
+async def test_missing_article_path_transitions_to_publish_failed(
+    tmp_queue_path: Path, make_job, monkeypatch
+) -> None:
+    from content_publisher import publish
+
+    monkeypatch.setattr(publish, "QUEUE_PATH", tmp_queue_path)
+    monkeypatch.setattr(publish, "POSTS_PER_HOUR_CEILING", 100)
+
+    job = make_job(status=JobStatus.PUBLISHING, article_path=None, score=90)
+    tmp_queue_path.write_text(job.model_dump_json() + "\n", encoding="utf-8")
+
+    with patch.object(
+        publish,
+        "_run_campaign_from_article",
+        side_effect=AssertionError("publish call must not run without article_path"),
+    ):
+        await publish.publish_step(job_id=job.id)
+
+    refreshed = queue.load(tmp_queue_path)[0]
+    assert refreshed.status == JobStatus.PUBLISH_FAILED
+    assert refreshed.publish_error == "missing article_path"
+    assert refreshed.notify_pending is True
+
+
 async def test_publish_uses_keyword_only_signature(
     tmp_queue_path: Path, tmp_path: Path, make_job, monkeypatch
 ) -> None:
