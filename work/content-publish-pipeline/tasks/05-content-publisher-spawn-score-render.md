@@ -1,5 +1,5 @@
 ---
-status: in_progress
+status: done
 depends_on: [3, 4]
 wave: 2
 skills: [code-writing]
