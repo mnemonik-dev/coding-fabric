@@ -373,6 +373,13 @@
         github_personal_access_token: "{{ vault_github_deploy_pat | default('') }}"
         telegram_ai_agent_workspace_manager_url: "http://{{ tailscale_ip }}:8080"
         telegram_ai_agent_per_topic_config: "{{ fabric_topic_matrix | default({}) }}"
+        fabric_target_dir: "/opt/fabric"
+        content_publisher_data_dir: "{{ content_publisher_volume_mount }}/content-publisher"
+        content_publisher_queue_path: "{{ content_publisher_volume_mount }}/content-publisher/queue.jsonl"
+        blogger_prompts_topic_id: "{{ telegram_topics['blogger-prompts'] | default(vault_blogger_prompts_topic_id) }}"
+        publish_callback_hmac_secrets: "{{ vault_publish_callback_hmac_secrets }}"
+        publish_min_score: "{{ vault_publish_min_score }}"
+        telegram_forum_chat_id: "{{ vault_telegram_forum_chat_id }}"
         # Operator allowlist. Without this, the bot's auth middleware
         # logs "Starting bot, allowed users: 0" and rejects every message
         # (run 26289095629 demonstrated the symptom). Source from sops; if

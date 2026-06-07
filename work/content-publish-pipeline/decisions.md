@@ -198,3 +198,17 @@ Review details — in JSON files via links. QA report — in logs/working/.
 
 **Follow-up (non-blocking, surfaced by code-reviewer round 2):**
 - Task 3's `infrastructure/ansible/roles/content-publisher/README.md` operator runbook for "Switching to PUBLISH_MODE=auto" should be updated to call out the new two-sops-key procedure (`publish_auto_mode_token` + `publish_auto_mode_token_confirm` both set to the same value via separate `sops edit` calls). Not blocking Task 6 — operators reading the `blogger.env.j2` comment will still get the right info — but the runbook is the canonical reference.
+
+## Task 8: Bot topic-handler + callbacks + preview dispatch
+
+**Status:** Done
+**Agent:** codex
+**Summary:** Added the operator-facing Telegram integration for content-publish-pipeline. The nested `telegram-ai-agent` repo now has `core/handlers/publish.py` with a `(chat, thread, operator)` topic filter, plain-text brief enqueue through shared `content_publisher.queue.append_job`, HMAC-signed approve/reject/retry callbacks, retry linkage through `regenerate_job`, a sliding invalid-callback security note, and a background preview/notify dispatch loop registered from `__main__.py` before the catch-all text router. The outer repo adds shared queue support for non-status field updates (`update_job_fields`) so bot bookkeeping can clear `preview_pending` / `notify_pending` without illegal self-transitions, plus deploy wiring so `telegram-ai-agent` gets only the publisher-control env vars it needs, installs the shared `content_publisher` package into its own venv, and has systemd write access to the queue directory without loading `/etc/blogger.env` or overriding the operator bot token.
+**Deviations:** The bot does not source `/etc/blogger.env` directly because that file contains `TELEGRAM_BOT_TOKEN` for the separate publisher bot. Instead the deploy renders the required control vars into `/etc/telegram-ai-agent/.env` under non-conflicting names.
+
+**Verification:**
+- `fabric/content-publisher/.venv/bin/python -m pytest fabric/content-publisher/tests -q` → 99 passed, 1 skipped.
+- `fabric/content-publisher/.venv/bin/python -m ruff check fabric/content-publisher/src/content_publisher/queue.py fabric/content-publisher/tests/test_retry_linkage.py` → clean.
+- `mnemonik-bridge-workspace/telegram-ai-agent/.venv/bin/python -m pytest -q` → 79 passed.
+- `mnemonik-bridge-workspace/telegram-ai-agent/.venv/bin/python -m ruff check src/telegram_bot/core/handlers/publish.py src/telegram_bot/__main__.py tests/test_publish_handlers.py tests/test_public_runtime.py` → clean.
+- `ansible-playbook --syntax-check infrastructure/ansible/playbooks/deploy.yml` → rc=0.

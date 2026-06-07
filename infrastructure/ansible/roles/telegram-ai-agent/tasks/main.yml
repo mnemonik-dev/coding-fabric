@@ -325,6 +325,33 @@
       register: venv_python
       failed_when: not venv_python.stat.exists
 
+    - name: Probe content-publisher shared package source
+      ansible.builtin.stat:
+        path: "{{ fabric_target_dir | default('/opt/fabric') }}/content-publisher/pyproject.toml"
+      register: tg_content_publisher_source
+      when: content_publisher_queue_path is defined
+
+    - name: Fail loud if content-publisher shared package is missing
+      ansible.builtin.fail:
+        msg: >-
+          {{ fabric_target_dir | default('/opt/fabric') }}/content-publisher/pyproject.toml
+          is missing. telegram-ai-agent publish handlers import
+          content_publisher.queue, so fabric-services must sync fabric/*
+          before telegram-ai-agent runs.
+      when:
+        - content_publisher_queue_path is defined
+        - not tg_content_publisher_source.stat.exists
+
+    - name: Install content-publisher shared queue package into bot venv
+      ansible.builtin.pip:
+        name: "."
+        chdir: "{{ fabric_target_dir | default('/opt/fabric') }}/content-publisher"
+        virtualenv: "{{ telegram_ai_agent_home }}/.venv"
+        extra_args: "--no-deps"
+      register: tg_content_publisher_pip
+      notify: Reload telegram-ai-agent
+      when: content_publisher_queue_path is defined
+
 - name: Load telegram-topics inventory
   tags: [telegram-ai-agent, config]
   block:

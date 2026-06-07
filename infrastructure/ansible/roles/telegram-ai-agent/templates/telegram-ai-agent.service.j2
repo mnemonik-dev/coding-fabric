@@ -54,7 +54,7 @@ ProtectKernelTunables=true
 
 # Whitelist of writable locations under ProtectSystem=strict.
 # /home/op/work is the operator's worktree root where claude is spawned.
-ReadWritePaths={{ telegram_ai_agent_home }} {{ telegram_ai_agent_config_dir }} /home/op/work
+ReadWritePaths={{ telegram_ai_agent_home }} {{ telegram_ai_agent_config_dir }} /home/op/work{% if content_publisher_data_dir is defined and content_publisher_data_dir | length > 0 %} {{ content_publisher_data_dir }}{% endif %}
 
 # Standard output / error logging
 StandardOutput=journal

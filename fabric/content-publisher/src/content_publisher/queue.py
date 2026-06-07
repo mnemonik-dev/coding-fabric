@@ -38,6 +38,8 @@ __all__ = [
     "cas_status",
     "find_by_prefix",
     "load",
+    "regenerate_job",
+    "update_job_fields",
 ]
 
 logger = logging.getLogger(__name__)
@@ -133,6 +135,157 @@ def append_job(
         _release(lock)
 
     return job
+
+
+def regenerate_job(
+    queue_path: Path,
+    job_id: str,
+    *,
+    feedback_for_retry: str | None = None,
+) -> tuple[Job, Job]:
+    """Atomically mark ``job_id`` regenerated and append its replacement.
+
+    The bot's retry callback needs one indivisible write: old job becomes
+    ``regenerated`` with ``regenerated_to=<new_id>``, and the replacement job is
+    appended with ``retries_of=<old_id>``. Keeping this in the shared queue
+    module avoids reimplementing the CAS/rewrite machinery in aiogram handlers.
+    """
+    expected = JobStatus.PREVIEW_SENT
+    target = JobStatus.REGENERATED
+    transitions = Job.allowed_transitions()
+    if target not in transitions.get(expected, set()):
+        raise IllegalTransitionError(
+            f"illegal transition {expected.value} -> {target.value}"
+        )
+
+    lock = _acquire(_lock_path(queue_path))
+    try:
+        lines = _read_lines(queue_path)
+        entries: list[Job | str] = []
+        idx_match: int | None = None
+        for raw in lines:
+            stripped = raw.strip()
+            if not stripped:
+                continue
+            try:
+                j = Job.model_validate_json(stripped)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "queue: preserving malformed line during regenerate (kept verbatim): %s",
+                    exc,
+                )
+                entries.append(stripped)
+                continue
+            if j.id == job_id and idx_match is None:
+                idx_match = len(entries)
+            entries.append(j)
+
+        if idx_match is None:
+            raise JobNotFoundError(job_id)
+
+        old_job = entries[idx_match]
+        assert isinstance(old_job, Job)
+        if old_job.status != expected:
+            raise StaleStateError(job_id, expected, old_job.status)
+
+        new_job = Job(
+            id=str(uuid.uuid4()),
+            created_at=datetime.now(UTC),
+            fire_at=old_job.fire_at,
+            prompt=old_job.prompt,
+            feedback_for_retry=feedback_for_retry,
+            mode=old_job.mode,
+            status=JobStatus.QUEUED,
+            chat_id=old_job.chat_id,
+            thread_id=old_job.thread_id,
+            reply_to_message_id=old_job.reply_to_message_id,
+            retries_of=old_job.id,
+        )
+
+        old_dict = old_job.model_dump(mode="json")
+        old_dict["status"] = target.value
+        old_dict["regenerated_to"] = new_job.id
+        regenerated_old = Job.model_validate(old_dict)
+        entries[idx_match] = regenerated_old
+        entries.append(new_job)
+
+        payload = (
+            "\n".join(
+                e.model_dump_json() if isinstance(e, Job) else e for e in entries
+            )
+            + "\n"
+        )
+        _write_raw(queue_path, payload.encode("utf-8"))
+        return regenerated_old, new_job
+    finally:
+        _release(lock)
+
+
+def update_job_fields(
+    queue_path: Path,
+    job_id: str,
+    *,
+    expected_status: JobStatus | None = None,
+    updates: dict[str, Any],
+) -> Job:
+    """Atomically update non-status fields on one job.
+
+    Some bot-owned bookkeeping is not a state transition: after sending a
+    preview, the bot stores ``preview_message_id`` and clears
+    ``preview_pending`` while the job remains ``preview-sent``; after sending a
+    terminal notification, it clears ``notify_pending`` while preserving the
+    terminal status. ``cas_status`` intentionally refuses no-op transitions, so
+    those writes use this narrower primitive.
+    """
+    if "status" in updates:
+        raise ValueError("update_job_fields must not update status; use cas_status")
+
+    lock = _acquire(_lock_path(queue_path))
+    try:
+        lines = _read_lines(queue_path)
+        entries: list[Job | str] = []
+        idx_match: int | None = None
+        for raw in lines:
+            stripped = raw.strip()
+            if not stripped:
+                continue
+            try:
+                j = Job.model_validate_json(stripped)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "queue: preserving malformed line during field update "
+                    "(kept verbatim): %s",
+                    exc,
+                )
+                entries.append(stripped)
+                continue
+            if j.id == job_id and idx_match is None:
+                idx_match = len(entries)
+            entries.append(j)
+
+        if idx_match is None:
+            raise JobNotFoundError(job_id)
+
+        current = entries[idx_match]
+        assert isinstance(current, Job)
+        if expected_status is not None and current.status != expected_status:
+            raise StaleStateError(job_id, expected_status, current.status)
+
+        as_dict = current.model_dump(mode="json")
+        as_dict.update(updates)
+        updated_job = Job.model_validate(as_dict)
+        entries[idx_match] = updated_job
+
+        payload = (
+            "\n".join(
+                e.model_dump_json() if isinstance(e, Job) else e for e in entries
+            )
+            + "\n"
+        )
+        _write_raw(queue_path, payload.encode("utf-8"))
+        return updated_job
+    finally:
+        _release(lock)
 
 
 def load(queue_path: Path) -> list[Job]:
