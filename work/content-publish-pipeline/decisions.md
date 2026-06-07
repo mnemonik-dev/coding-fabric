@@ -212,3 +212,7 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - `mnemonik-bridge-workspace/telegram-ai-agent/.venv/bin/python -m pytest -q` → 79 passed.
 - `mnemonik-bridge-workspace/telegram-ai-agent/.venv/bin/python -m ruff check src/telegram_bot/core/handlers/publish.py src/telegram_bot/__main__.py tests/test_publish_handlers.py tests/test_public_runtime.py` → clean.
 - `ansible-playbook --syntax-check infrastructure/ansible/playbooks/deploy.yml` → rc=0.
+
+## Task 9: Code Audit
+
+Task 9 (Code Audit): Ruflo was started for an external review, but produced no artifact before this report was finalized; local audit found shared queue/subprocess handling mostly aligned, with one blocker in missing Python traceback redaction hooks, one major stuck-job error path, and one minor queue-helper drift; full report → [logs/audit/code-audit.json](logs/audit/code-audit.json). Counts: blockers=1, majors=1, minors=1, nits=0.

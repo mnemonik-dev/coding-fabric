@@ -1,0 +1,166 @@
+{
+  "task_number": 9,
+  "feature": "content-publish-pipeline",
+  "audited_at": "2026-06-07T16:40:18Z",
+  "summary": "Tasks 1-8 are integrated enough for the Telegram bot and worker to share the queue module, and all subprocess payload/env checks passed. The audit found one blocker: the worker lacks the required top-level traceback redaction hooks for the in-process blogger publish call. It also found one stuck-job error path and one architectural drift item around private queue primitive use after the public non-status update helper was introduced.",
+  "counts": {
+    "blockers": 1,
+    "majors": 1,
+    "minors": 1,
+    "nits": 0
+  },
+  "coverage": [
+    {
+      "area": "cross_process_cas",
+      "checked": true,
+      "findings": 0,
+      "note": "The bot lazily imports content_publisher.queue at mnemonik-bridge-workspace/telegram-ai-agent/src/telegram_bot/core/handlers/publish.py:133-136 and uses append_job, cas_status, regenerate_job, and update_job_fields; no local flock/os.replace implementation is present in the bot handler."
+    },
+    {
+      "area": "subprocess_uniformity",
+      "checked": true,
+      "findings": 0,
+      "note": "All detected create_subprocess_exec sites use restricted_env; bulk prompt/content is passed via stdin or protocol stdin, and analyze_blog receives only an article path on argv."
+    },
+    {
+      "area": "inprocess_publish_hardening",
+      "checked": true,
+      "findings": 1,
+      "note": "Systemd hardening is present, but Python-level exception redaction hooks are missing."
+    },
+    {
+      "area": "error_handling_consistency",
+      "checked": true,
+      "findings": 1,
+      "note": "Most worker failure paths transition to failed/pending states with notify_pending where appropriate; publish_step has one early return that leaves a job in publishing."
+    },
+    {
+      "area": "shared_resources_matrix",
+      "checked": true,
+      "findings": 0,
+      "note": "The shared resources generally match the architecture. queue.jsonl is not pre-created by Ansible, but content_publisher.state._write_raw uses mkstemp and os.replace, so the created queue file is 0600."
+    },
+    {
+      "area": "architectural_drift",
+      "checked": true,
+      "findings": 1,
+      "note": "Task 6 explicitly documented private queue primitive use, but Task 8 added a public update_job_fields helper that should now absorb some no-status queue writes."
+    }
+  ],
+  "subprocess_sites": [
+    {
+      "site": "fabric/content-publisher/src/content_publisher/spawn.py:56-66",
+      "process": "claude",
+      "payload_channel": "prompt via stdin using proc.communicate(input=prompt.encode(...))",
+      "argv_payload": "fixed argv only: claude --print --mcp-config /etc/blogger.mcp.json --strict-mcp-config --skill claude-blog/blog-writer",
+      "env": "restricted_env(\"claude\")",
+      "status": "pass"
+    },
+    {
+      "site": "fabric/content-publisher/src/content_publisher/score.py:72-82",
+      "process": "analyze_blog.py",
+      "payload_channel": "article file path on argv; no article body on argv",
+      "argv_payload": "python <analyze_blog.py> <article_path>",
+      "env": "restricted_env(\"analyze_blog\")",
+      "status": "pass"
+    },
+    {
+      "site": "fabric/content-publisher/src/content_publisher/mcp_client.py:137-188",
+      "process": "mnemonik-mcp",
+      "payload_channel": "MCP JSON-RPC frames via stdin",
+      "argv_payload": "<binary> mcp-stdio only",
+      "env": "restricted_env(\"mnemonik-mcp\")",
+      "status": "pass"
+    },
+    {
+      "site": "fabric/content-publisher/src/content_publisher/attest.py:98-105",
+      "process": "mnemonik-mcp through mcp_client.sign_memory",
+      "payload_channel": "delegates to mcp_client.sign_memory, which sends content/prompt through stdin JSON-RPC",
+      "argv_payload": "no direct subprocess argv in attest.py",
+      "env": "delegates to restricted_env(\"mnemonik-mcp\") in mcp_client.py",
+      "status": "pass"
+    }
+  ],
+  "shared_resources_matrix": [
+    {
+      "resource": "queue.jsonl",
+      "owner": "content-publisher role owns the persistent directory at infrastructure/ansible/roles/content-publisher/tasks/main.yml:249-260; content_publisher.state._write_raw creates/replaces the queue file via mkstemp at fabric/content-publisher/src/content_publisher/state.py:28-35",
+      "consumers": [
+        "content-publisher worker",
+        "telegram-ai-agent publish handler"
+      ],
+      "matches_arch": true,
+      "note": "Ansible does not pre-create queue.jsonl exactly as the task text says, but the runtime writer creates it with mkstemp and atomic replace, yielding a 0600 file. Bot and worker share the same CONTENT_PUBLISHER_QUEUE path rendered into their env files."
+    },
+    {
+      "resource": "content_publisher.queue",
+      "owner": "fabric/content-publisher/src/content_publisher/queue.py",
+      "consumers": [
+        "content-publisher modules",
+        "telegram-ai-agent publish.py via content_publisher import queue"
+      ],
+      "matches_arch": true,
+      "note": "The cross-process API is shared. Worker sibling modules still import private helpers for maintenance rewrites; this is reported as architectural drift rather than a separate shared-resources failure."
+    },
+    {
+      "resource": "/etc/blogger.env",
+      "owner": "content-publisher Ansible role at infrastructure/ansible/roles/content-publisher/tasks/main.yml:263-271",
+      "consumers": [
+        "content-publisher.service"
+      ],
+      "matches_arch": true,
+      "note": "Rendered root:root 0600 and loaded only by content-publisher.service. The Telegram operator bot intentionally receives duplicated control vars in its own env file so it does not load the publisher bot token."
+    },
+    {
+      "resource": "/etc/blogger.mcp.json",
+      "owner": "content-publisher Ansible role at infrastructure/ansible/roles/content-publisher/tasks/main.yml:273-281",
+      "consumers": [
+        "claude CLI spawned by content_publisher.spawn"
+      ],
+      "matches_arch": true,
+      "note": "Rendered root:op 0640 and referenced by fixed claude argv in spawn.py."
+    },
+    {
+      "resource": "mnemonic-mcp.service",
+      "owner": "mnemonic-mcp Ansible role",
+      "consumers": [
+        "content_publisher.mcp_client via mnemonic-mcp mcp-stdio"
+      ],
+      "matches_arch": true,
+      "note": "The worker uses MNEMONIK_MCP_BINARY to spawn the stdio binary with PATH-only env; no Telegram bot dependency on the service was found."
+    }
+  ],
+  "ruflo": {
+    "used": true,
+    "swarm": "swarm-1780850191892-vzdokg",
+    "agent": "agent-1780850200480-e6qlwq",
+    "task": "task-1780850230337-gra1fu",
+    "status_at_report_time": "in_progress with progress 0 and no artifact"
+  },
+  "findings": [
+    {
+      "severity": "blocker",
+      "area": "inprocess_publish_hardening",
+      "file": "fabric/content-publisher/src/content_publisher/main.py",
+      "line_range": "74-95,101-160",
+      "issue": "The worker entrypoint does not install the required sys.excepthook or asyncio loop exception handler that scrubs article_text, prompt bodies, TELEGRAM_BOT_TOKEN, CALLBACK_HMAC_SECRETS, PUBLISH_AUTO_MODE_TOKEN, CLAUDE_CODE_OAUTH_TOKEN, and ANTHROPIC_API_KEY. queue_poll_loop also logs unsanitized exceptions with logger.exception, so exceptions raised from the in-process run_campaign_from_article path can reach journald even though systemd core dumps are disabled.",
+      "fix": "Install a process-wide scrubber before starting uvicorn or the fallback asyncio runner, set sys.excepthook, and set an asyncio loop exception handler with the same redaction logic. Reuse that scrubber in broad logger.exception paths that can observe publish, attest, deadline, and cleanup exceptions."
+    },
+    {
+      "severity": "major",
+      "area": "error_handling_consistency",
+      "file": "fabric/content-publisher/src/content_publisher/publish.py",
+      "line_range": "132-134",
+      "issue": "A publishing job with no article_path logs an error and returns without changing state. Because the job remains publishing, queue_poll_loop will keep retrying the same impossible publish and the operator never receives a notify_pending terminal failure.",
+      "fix": "Use queue.cas_status to move publishing -> publish-failed with publish_error set to the missing article_path reason and notify_pending=true. If the CAS is stale, handle it the same way as the other publish_step CAS loser paths."
+    },
+    {
+      "severity": "minor",
+      "area": "architectural_drift",
+      "file": "fabric/content-publisher/src/content_publisher/publish.py",
+      "line_range": "158-169,228-263",
+      "issue": "publish_step intentionally triggers an illegal publishing -> publishing CAS and falls back to a local _mark_tentative rewrite that imports private queue primitives. Task 6 documented private primitive use, but Task 8 added queue.update_job_fields as the shared non-status update path, so the tentative timestamp write now drifts from the public shared-module boundary.",
+      "fix": "Replace _mark_tentative with queue.update_job_fields(expected_status=JobStatus.PUBLISHING, updates={\"tentative_publish_started_at\": ...}) and remove the intentional IllegalTransitionError path. Keep recovery, cleanup, and archive-specific private primitive usage only where a public helper would be misleading."
+    }
+  ]
+}
