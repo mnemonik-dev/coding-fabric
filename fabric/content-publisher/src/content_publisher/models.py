@@ -123,7 +123,10 @@ class Job(BaseModel):
                 JobStatus.REGENERATED,
             },
             JobStatus.PUBLISHING: {JobStatus.PUBLISHED, JobStatus.PUBLISH_FAILED},
-            JobStatus.PUBLISHED: {JobStatus.ATTEST_PENDING},
+            # ``published → done`` is the attest-on-first-try happy path; the
+            # task spec is explicit ("на успехе CAS published → done").
+            # ``published → attest-pending`` is the retry-needed branch.
+            JobStatus.PUBLISHED: {JobStatus.DONE, JobStatus.ATTEST_PENDING},
             JobStatus.ATTEST_PENDING: {JobStatus.DONE, JobStatus.ATTEST_FAILED},
             # terminal states
             JobStatus.DONE: set(),

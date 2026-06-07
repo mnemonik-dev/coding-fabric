@@ -20,6 +20,26 @@ from typing import Any, Literal
 from content_publisher.models import Job, JobStatus
 from content_publisher.state import _acquire, _release, _write_raw
 
+# Re-export underscore primitives for sibling modules (publish, cleanup, attest,
+# recovery) that need to write to queue.jsonl under the same flock pattern but
+# outside the state-machine graph (e.g. tentative timestamps, archive rotation,
+# recovery resets). Listed in ``__all__`` so mypy --strict accepts the import.
+__all__ = [
+    "IllegalTransitionError",
+    "JobNotFoundError",
+    "PREFIX12_RE",
+    "StaleStateError",
+    "_acquire",
+    "_lock_path",
+    "_read_lines",
+    "_release",
+    "_write_raw",
+    "append_job",
+    "cas_status",
+    "find_by_prefix",
+    "load",
+]
+
 logger = logging.getLogger(__name__)
 
 # First 12 characters of a canonical UUID v4 string: 8 hex + dash + 3 hex.

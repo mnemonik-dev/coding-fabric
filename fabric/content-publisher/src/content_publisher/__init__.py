@@ -28,3 +28,26 @@ __all__ = [
     "load",
     "restricted_env",
 ]
+
+
+from types import ModuleType
+
+
+def __getattr__(name: str) -> ModuleType:
+    """Lazy submodule access so ``from content_publisher import publish`` works
+    without importing every submodule (and their deferred upstream deps) at
+    package import time.
+    """
+    if name in {
+        "publish",
+        "deadline",
+        "cleanup",
+        "attest",
+        "mcp_client",
+        "recovery",
+        "main",
+    }:
+        import importlib
+
+        return importlib.import_module(f"content_publisher.{name}")
+    raise AttributeError(f"module 'content_publisher' has no attribute {name!r}")

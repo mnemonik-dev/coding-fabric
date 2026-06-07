@@ -194,6 +194,12 @@ async def run_writing_to_preview(job: Job) -> None:
     now = datetime.now(UTC)
     approval_deadline = (now + timedelta(minutes=APPROVAL_TIMEOUT_MIN)).isoformat()
     cleanup_at = (now + timedelta(hours=CLEANUP_AFTER_HOURS)).isoformat()
+    # In auto-mode the operator surrendered the preview gate, so we set
+    # preview_pending=False (bot has nothing to render) and immediately
+    # transition into PUBLISHING. The state graph forbids skipping PREVIEW_SENT,
+    # so this is two CASes back-to-back, both winnable since no other actor
+    # observes the intermediate state.
+    auto_mode = job.mode == "auto"
     try:
         queue.cas_status(
             QUEUE_PATH,
@@ -205,7 +211,7 @@ async def run_writing_to_preview(job: Job) -> None:
                 "issues": score_result.issues,
                 "preview_segments": preview_segments,
                 "approval_deadline": approval_deadline,
-                "preview_pending": True,
+                "preview_pending": not auto_mode,
                 "cleanup_at": cleanup_at,
             },
         )
@@ -213,3 +219,19 @@ async def run_writing_to_preview(job: Job) -> None:
         logger.warning(
             "worker: stale CAS scoring->preview-sent on %s: %s", job.id, exc
         )
+        return
+
+    if auto_mode:
+        try:
+            queue.cas_status(
+                QUEUE_PATH,
+                job.id,
+                expected=JobStatus.PREVIEW_SENT,
+                target=JobStatus.PUBLISHING,
+            )
+        except queue.StaleStateError as exc:
+            logger.warning(
+                "worker: stale CAS preview-sent->publishing (auto) on %s: %s",
+                job.id,
+                exc,
+            )
