@@ -19,7 +19,7 @@ teammate_name:
 
 Расширяем sops-инфраструктуру под content-publish-pipeline: фундамент для всех остальных волн. Добавляем 10 новых секретов/конфигов в `infrastructure/secrets/secrets.sops.yml.template` (документированный шаблон под `cp ... && sops -e -i ...`), кладём пустые/placeholder-значения в зашифрованный `secrets.sops.yml` через `sops edit`, и пробрасываем их как Ansible facts в playbook `deploy.yml` тем же способом, что и существующие vault_* ключи (см. `playbooks/deploy.yml` строки 50-102 — это `pre_tasks`-блок playbook'а, где sops грузится через `community.sops.load_vars: name: sops` и мапится в `vault_*` через `set_fact`; роль `fabric-services` сама sops не грузит — она потребляет уже-готовые `vault_*` facts, выставленные в `pre_tasks` playbook'а).
 
-Решение #13 из tech-spec вводит **topic-based dispatch** вместо slash-команды: оператор пишет в forum-топик `📝 blogger-prompts` в существующем forum-чате. Поэтому в списке ключей есть `blogger_prompts_topic_id` — message_thread_id этого топика, без него bot-handler не сможет фильтровать сообщения (`F.message_thread_id == BLOGGER_PROMPTS_TOPIC_ID`).
+Решение #13 из tech-spec вводит **topic-based dispatch** вместо slash-команды: оператор пишет в forum-топик `📝 blogger-prompts` в существующем forum-чате. Этот topic создаётся CI/CD через роль `telegram-init`, а основной `message_thread_id` берётся из generated mapping `telegram_topics['blogger-prompts']`. Поэтому sops-ключ `blogger_prompts_topic_id` остаётся только как legacy/recovery fallback для уже существующего manually-created topic; новые deploy не требуют ручного создания topic.
 
 Решение #7 (PUBLISH_MODE=auto with two-location integrity binding) требует отдельный ключ `publish_auto_mode_token`: при `PUBLISH_MODE=auto` worker на старте сверяет значение из `/etc/blogger.env` с sops-значением; mismatch → loud abort. Это 10-й ключ — без него рендер `/etc/blogger.env` (`PUBLISH_AUTO_MODE_TOKEN={{ publish_auto_mode_token | default('') }}`, tech-spec строка 421) сломается в Task 3.
 
@@ -30,7 +30,7 @@ teammate_name:
 1. **Расширить `infrastructure/secrets/secrets.sops.yml.template`** — добавить новый блок-секцию (например `# === Content Publisher ===`) с 10 ключами и человекочитаемыми комментариями для каждого:
    - `blogger_telegram_bot_token` — токен `@mnemonik_publisher_bot` от @BotFather; оператор создаёт бота сам и делает его админом канала @mnemonik (см. tech-spec Decision 5, AC12).
    - `blogger_telegram_channel` — `@mnemonik` (или другой канал); default в шаблоне Ansible — `@mnemonik`.
-   - `blogger_prompts_topic_id` — `message_thread_id` форум-топика `📝 blogger-prompts` в существующем `telegram_forum_chat_id`. Оператор создаёт топик в Telegram-клиенте, копирует thread_id (через `getUpdates` или @RawDataBot). См. tech-spec Decision 13.
+   - `blogger_prompts_topic_id` — legacy fallback `message_thread_id` форум-топика `📝 blogger-prompts` в существующем `telegram_forum_chat_id`. Новые deploy получают id из `telegram-init` (`telegram_topics['blogger-prompts']`); этот sops ключ нужен только для recovery существующего manually-created topic. См. tech-spec Decision 13.
    - `publish_min_score` — `int`, минимальный score из `analyze_blog.py` для авто-одобрения preview; рекомендованный default `80`.
    - `publish_approval_timeout_min` — `int`, минут до auto-publish после preview-sent; default `5`.
    - `publish_mode` — `"approval"` или `"auto"`, default `"approval"` (см. tech-spec Decision 7).
@@ -42,7 +42,7 @@ teammate_name:
 2. **Расширить зашифрованный `infrastructure/secrets/secrets.sops.yml`** — через `sops infrastructure/secrets/secrets.sops.yml` (открывает $EDITOR с расшифрованной копией; сохранение → автоматически шифрует обратно). Добавить те же 10 ключей с **placeholder-значениями** (НЕ настоящими секретами):
    - токены / SHA / hmac / auto_mode_token — пустая строка `""` (default-friendly; роли используют `| default('')`).
    - `blogger_telegram_channel: "@mnemonik"`.
-   - `blogger_prompts_topic_id: "0"` (строка, как у `telegram_ops_thread_id`; ноль = "оператор ещё не сконфигурил").
+   - `blogger_prompts_topic_id: "0"` (строка, как у `telegram_ops_thread_id`; ноль = "legacy fallback не используется").
    - `publish_min_score: 80`, `publish_approval_timeout_min: 5`, `publish_mode: "approval"`.
    - Не коммитить настоящие токены/SHA — это задача оператора уже после мерджа.
 
@@ -58,9 +58,9 @@ Sanity-проверка (не unit-тест в `pytest` — задача чис�
 
 ## Acceptance Criteria
 
-- [ ] В `secrets.sops.yml.template` присутствуют все 10 ключей (`blogger_telegram_bot_token`, `blogger_telegram_channel`, `blogger_prompts_topic_id`, `publish_min_score`, `publish_approval_timeout_min`, `publish_mode`, `publish_auto_mode_token`, `blogger_repo_ref`, `claude_blog_repo_ref`, `publish_callback_hmac_secrets`) с поясняющими комментариями (источник значения, формат, ссылка на BotFather/openssl/RawDataBot где уместно).
+- [ ] В `secrets.sops.yml.template` присутствуют все 10 ключей (`blogger_telegram_bot_token`, `blogger_telegram_channel`, `blogger_prompts_topic_id`, `publish_min_score`, `publish_approval_timeout_min`, `publish_mode`, `publish_auto_mode_token`, `blogger_repo_ref`, `claude_blog_repo_ref`, `publish_callback_hmac_secrets`) с поясняющими комментариями (источник значения, формат, ссылка на BotFather/openssl где уместно; `blogger_prompts_topic_id` помечен как legacy fallback).
 - [ ] В зашифрованном `secrets.sops.yml` присутствуют те же 10 ключей с placeholder/empty-значениями; реальные токены НЕ закоммичены.
-- [ ] `blogger_prompts_topic_id` присутствует и задокументирован отдельно (Decision 13 в tech-spec — это THE ключевой identifier для topic-handler).
+- [ ] `blogger_prompts_topic_id` присутствует и задокументирован отдельно как legacy/recovery fallback; основной identifier для topic-handler приходит из `telegram-init` generated mapping `telegram_topics['blogger-prompts']`.
 - [ ] `publish_auto_mode_token` присутствует и задокументирован отдельно (Decision 7 — two-location integrity binding; нужен для рендера `PUBLISH_AUTO_MODE_TOKEN` в `/etc/blogger.env`, иначе Task 3 / Task 6 упрутся в undefined-var или silent-empty).
 - [ ] `publish_callback_hmac_secrets` поддерживает формат `<current>,<previous>` для ротации (документировано в комментарии шаблона; формат подтверждается комментарием, не валидацией — валидация на уровне worker'а).
 - [ ] В `playbooks/deploy.yml` "Expose sops keys" `set_fact` (в `pre_tasks`) расширен 10 новыми `vault_*`-маппингами с разумными `default(...)`; `no_log: true` сохранён.
@@ -93,7 +93,7 @@ Sanity-проверка (не unit-тест в `pytest` — задача чис�
 
 **Files:**
 
-- `infrastructure/secrets/secrets.sops.yml.template` — добавить блок-секцию `# === Content Publisher ===` с 10 ключами и комментариями (источник значения, формат, ссылки на @BotFather / `openssl rand -hex 32` / @RawDataBot для thread_id). Текущее состояние: 111 строк, документирует все существующие sops-секреты — формат секций уже устоявшийся (`# === <name> ===` + многострочные `# `-комментарии перед каждым ключом).
+- `infrastructure/secrets/secrets.sops.yml.template` — добавить блок-секцию `# === Content Publisher ===` с 10 ключами и комментариями (источник значения, формат, ссылки на @BotFather / `openssl rand -hex 32`; `blogger_prompts_topic_id` пометить как legacy fallback, потому что новый topic создаёт `telegram-init`). Текущее состояние: 111 строк, документирует все существующие sops-секреты — формат секций уже устоявшийся (`# === <name> ===` + многострочные `# `-комментарии перед каждым ключом).
 
 - `infrastructure/secrets/secrets.sops.yml` — encrypted-at-rest YAML (age). Редактируется ТОЛЬКО через `sops infrastructure/secrets/secrets.sops.yml` (открывает $EDITOR с decrypted-копией, сохраняет → автоматически шифрует). НЕ редактировать напрямую как plaintext-файл. Текущее состояние неизвестно (зашифровано), но из деплоя видно, что все ключи из template'а уже там.
 
@@ -106,7 +106,7 @@ Sanity-проверка (не unit-тест в `pytest` — задача чис�
 
 **Edge cases:**
 - **Sops редактирование требует age-ключ.** Если `SOPS_AGE_KEY_FILE` не выставлен или ключ отсутствует — `sops edit` падает. Это нормально и должно стопнуть таск — не пытаться обходить.
-- **`blogger_prompts_topic_id` — строка**, не int (как `telegram_ops_thread_id: "0"` в шаблоне). Telegram thread_ids в Ansible хранятся как строки, в env-файл рендерятся as-is, в Python приводятся к int на стороне bot-handler'а.
+- **`blogger_prompts_topic_id` — строка**, не int (как `telegram_ops_thread_id: "0"` в шаблоне). Это legacy fallback; основной thread_id создаёт `telegram-init` и передаёт в role vars как `telegram_topics['blogger-prompts']`. В env-файл выбранное значение рендерится as-is, в Python приводится к int на стороне bot-handler'а.
 - **`publish_callback_hmac_secrets` — ОДНА строка** с опциональной запятой: `"abc...,def..."`. НЕ список. Parsing на стороне worker'а: `secrets.split(',')`.
 - **`publish_min_score` и `publish_approval_timeout_min` — числа** в YAML; в env-файл рендерятся как `"80"` / `"5"` через jinja-фильтр (worker парсит как int). Для шаблона `secrets.sops.yml.template` можно оставить как `int` — sops это допускает.
 - **False-positive в GitGuardian:** see `CLAUDE.md` — sops file детектируется как "Generic Password". Не действовать; уже задокументировано как known issue.

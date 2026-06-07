@@ -142,23 +142,15 @@
   block:
     - name: Define canonical topics with icon colors
       ansible.builtin.set_fact:
-        canonical_topics:
-          core:
-            color: 16711680
-          mcp:
-            color: 255
-          wasm:
-            color: 65280
-          demo-client:
-            color: 16711935
-          docs:
-            color: 65535
-          loop:
-            color: 16776960
-          protocol-qa:
-            color: 128
-          ops:
-            color: 255
+        canonical_topics: >-
+          {%- set topics = {} -%}
+          {%- for topic in telegram_topics | default([]) -%}
+            {%- set name = topic.name -%}
+            {%- set color = topic.color
+                | default(telegram_topic_icon_colors[name] | default(255)) -%}
+            {%- set _ = topics.update({name: {'color': color}}) -%}
+          {%- endfor -%}
+          {{ topics }}
 
     - name: Initialize topic creation results
       ansible.builtin.set_fact:

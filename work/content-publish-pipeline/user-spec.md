@@ -9,7 +9,7 @@ size: L
 
 ## Что делаем
 
-Добавляем в coding-fabric новый pipeline для генерации и публикации контента в TG-канал @mnemonik. Оператор пишет в Telegram `/publish_content <бриф>`, отдельный worker-сервис на VM спавнит claude с подгруженным skill suite `claude-blog`, claude исследует и пишет статью, бот шлёт оператору preview точно в том виде, в каком статья появится в канале, с inline-кнопками `[✓ Опубликовать]` / `[✗ Отклонить]` (+ `[🔄 Перегенерировать]` при низком quality score). После подтверждения (или 5-минутного timeout) `mnemonik-blogger` CLI публикует пост в @mnemonik и регистрирует attestation через локальный Mnemonik MCP сервер — после этого статья recallable через `mnemonic_recall`. Поддерживается отложенная публикация (`--at <ISO>`).
+Добавляем в coding-fabric новый pipeline для генерации и публикации контента в TG-канал @mnemonik. CI/CD создаёт выделенный Telegram forum topic `📝 blogger-prompts` через роль `telegram-init`; оператор не создаёт этот topic вручную. Оператор пишет plain-text бриф в этот topic, отдельный worker-сервис на VM спавнит claude с подгруженным skill suite `claude-blog`, claude исследует и пишет статью, бот шлёт оператору preview точно в том виде, в каком статья появится в канале, с inline-кнопками `[✓ Опубликовать]` / `[✗ Отклонить]` (+ `[🔄 Перегенерировать]` при низком quality score). После подтверждения (или 5-минутного timeout) `mnemonik-blogger` CLI публикует пост в @mnemonik и регистрирует attestation через локальный Mnemonik MCP сервер — после этого статья recallable через `mnemonic_recall`. Поддерживается отложенная публикация (`--at <ISO>`).
 
 ## Зачем
 
@@ -19,7 +19,7 @@ size: L
 
 **Иммедиэйт сценарий:**
 
-1. Оператор в личке боту: `/publish_content Объясни, почему Mnemonik нужен AI-агентам и в чём отличие от обычных vector stores`
+1. Оператор в topic `📝 blogger-prompts`: `Объясни, почему Mnemonik нужен AI-агентам и в чём отличие от обычных vector stores`
 2. Бот: «Принял. Бриф в очереди (id `abc12345`). Жду статью.»
 3. `content-publisher.service` берёт задачу из очереди, спавнит claude с подгруженным `claude-blog` skill suite в `/var/lib/content-publisher/work/abc12345/`, claude пишет `article.md`.
 4. Worker запускает `analyze_blog.py` от claude-blog → получает score + feedback (массив issues). **Quality gate решений не принимает сам**: и при высоком, и при низком score статья идёт оператору на preview — score просто показан в шапке сообщения и при `< MNEMONIK_MIN_SCORE` (дефолт 80) добавляется inline-кнопка `[🔄 Перегенерировать]`.
@@ -80,6 +80,7 @@ size: L
 - [ ] **AC13 — race click-vs-timeout**: симулировать одновременные click `[✓]` и timeout fire — должна сработать ровно одна публикация. Атомарный CAS на `status` в queue.jsonl блокирует вторую попытку, второй callback получает «too late, статус: publishing».
 - [ ] **AC14 — crash recovery на старте**: убить worker во время `status=writing` → restart → worker замечает overdue in-flight job и резюмирует. Убить во время `status=publishing` → restart → worker проверяет реальный post-status через blogger CLI и НЕ double-post'ит.
 - [ ] **AC15 — RequiresMountsFor блокирует поллер до mount'a**: systemd unit имеет `RequiresMountsFor=/mnt/HC_Volume_*/content-publisher` — если volume не примонтирован, сервис не стартует, а валится с понятным error message.
+- [ ] **AC16 — topic создаётся CI/CD**: роль `telegram-init` создаёт `blogger-prompts` через Bot API в том же deploy pipeline, сохраняет `message_thread_id` в `/etc/fabric/telegram-topics.yml` и `infrastructure/inventory/telegram-topics.yml`; `content-publisher` получает `BLOGGER_PROMPTS_TOPIC_ID` из этой generated mapping. Оператор НЕ создаёт topic вручную.
 
 ## Ограничения
 

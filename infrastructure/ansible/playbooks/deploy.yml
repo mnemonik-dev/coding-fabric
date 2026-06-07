@@ -202,6 +202,8 @@
             description: "Protocol QA and testing"
           - name: ops
             description: "Operational alerts + safe-mode"
+          - name: blogger-prompts
+            description: "Content publisher briefs and approvals"
 
     # Phase 4: Persistence (backups)
     # DESCOPED for happy-path first deploy (run 26222590804):
@@ -324,7 +326,10 @@
         # Publisher bot + HMAC + auto-mode secrets (Decisions 5, 7, 9).
         blogger_telegram_bot_token: "{{ vault_blogger_telegram_bot_token }}"
         blogger_telegram_channel: "{{ vault_blogger_telegram_channel }}"
-        blogger_prompts_topic_id: "{{ vault_blogger_prompts_topic_id }}"
+        # Primary source is the thread id created idempotently by
+        # telegram-init in this same deploy. The sops key remains only as a
+        # backward-compatible fallback for existing/manual environments.
+        blogger_prompts_topic_id: "{{ telegram_topics['blogger-prompts'] | default(vault_blogger_prompts_topic_id) }}"
         publish_callback_hmac_secrets: "{{ vault_publish_callback_hmac_secrets }}"
         publish_mode: "{{ vault_publish_mode }}"
         publish_auto_mode_token: "{{ vault_publish_auto_mode_token }}"

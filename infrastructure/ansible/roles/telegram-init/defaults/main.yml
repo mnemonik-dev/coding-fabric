@@ -13,6 +13,7 @@ telegram_topic_icon_colors:
   loop: 16776960        # Yellow
   protocol-qa: 128      # Orange
   ops: 255              # Blue
+  blogger-prompts: 16711935 # Purple
 
 # Canonical topics list. Operator now creates every topic on demand via
 # the bot's /new-task command (see Phase 2 backlog), so this list is

@@ -20,11 +20,14 @@ teammate_name:
 Этот таск интегрирует уже работающий content-publisher worker (Task 6) c
 telegram-ai-agent: операторский ввод и весь approval-flow живут в выделенном
 Telegram-форум-топике `📝 blogger-prompts` — без slash-команд, без LLM в
-dispatch-пути и без MCP-инструмента (Decision 13). Бот ловит сообщение
-оператора в нужном (chat, thread) и кладёт job в общую `queue.jsonl` через
-`content_publisher.queue.append_job(...)`. Worker отдельно дописывает
-`preview_pending=true`, а фоновая asyncio-задача бота раз в 5с тянет очередь и
-шлёт preview как REPLY на исходный brief в том же топике, с
+dispatch-пути и без MCP-инструмента (Decision 13). Topic `blogger-prompts`
+создаётся deploy pipeline через роль `telegram-init` (НЕ вручную оператором);
+его `message_thread_id` берётся из generated mapping
+`telegram_topics['blogger-prompts']` и рендерится в `BLOGGER_PROMPTS_TOPIC_ID`.
+Бот ловит сообщение оператора в нужном (chat, thread) и кладёт job в общую
+`queue.jsonl` через `content_publisher.queue.append_job(...)`. Worker отдельно
+дописывает `preview_pending=true`, а фоновая asyncio-задача бота раз в 5с тянет
+очередь и шлёт preview как REPLY на исходный brief в том же топике, с
 HMAC-подписанной inline-клавиатурой (Decision 9).
 
 3 callback-хендлера (`publish:approve|reject|retry:<id[:12]>:<hmac8>`)
@@ -47,7 +50,9 @@ HMAC-ошибок или unauthorized-кликов, бот публикует se
    - Объявить `publish_router = Router(name="publish")`.
    - Прочитать `TELEGRAM_FORUM_CHAT_ID`, `BLOGGER_PROMPTS_TOPIC_ID`,
      `OPERATOR_USER_ID`, `CALLBACK_HMAC_SECRETS` из окружения (источник —
-     `/etc/blogger.env`, render Task 3). Fail-loud при отсутствии.
+     `/etc/blogger.env`; `BLOGGER_PROMPTS_TOPIC_ID` в новых deploy берётся из
+     `telegram-init` generated topic mapping, sops key — fallback only).
+     Fail-loud при отсутствии.
    - В startup hook добавить assertion:
      `assert OPERATOR_USER_ID in get_settings().allowed_user_ids` (импорт
      `from telegram_bot.core.config import get_settings` — тот же,
@@ -106,7 +111,14 @@ HMAC-ошибок или unauthorized-кликов, бот публикует se
    - В startup hook (рядом с `_periodic_tmp_cleanup`) поднять
      `asyncio.create_task(start_preview_dispatch_loop(bot))`.
    - НЕ трогать `MOLYANOV_BOT_COMMANDS` — никакой новой slash-команды.
-3. Тесты:
+3. В deploy wiring:
+   - `telegram-init` topic list содержит `blogger-prompts`; роль создаёт его
+     через `createForumTopic` и сохраняет thread_id в `/etc/fabric/telegram-topics.yml`
+     + `infrastructure/inventory/telegram-topics.yml`.
+   - `content-publisher` role var `blogger_prompts_topic_id` получает
+     `{{ telegram_topics['blogger-prompts'] }}` (с fallback на старый
+     `vault_blogger_prompts_topic_id` только для legacy/manual окружений).
+4. Тесты:
    - `tests/test_publish_handlers.py`:
      - approve: позитив (CAS preview-sent→publishing, mocked publish-флоу
        вызывается ровно один раз);
@@ -215,6 +227,9 @@ HMAC-ошибок или unauthorized-кликов, бот публикует se
   `telegram_bot.core.config`, как и в `__main__.py`) и fail-loud
   при несоответствии (защита от silent-drop сообщений оператора глобальным
   `AuthMiddleware`).
+- [ ] CI/CD создаёт topic `blogger-prompts`: `deploy.yml` добавляет его в
+  `telegram-init`, а `content-publisher` получает `blogger_prompts_topic_id`
+  из `telegram_topics['blogger-prompts']`, НЕ как manual-only sops prerequisite.
 - [ ] Sliding-window rejection counter: >5 HMAC-failures ИЛИ unauthorized-
   кликов в 10мин → бот шлёт security-note в топик, окно сбрасывается.
 - [ ] `publish_router` зарегистрирован в `__main__.py` через
