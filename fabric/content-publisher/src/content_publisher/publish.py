@@ -199,7 +199,12 @@ async def publish_step(*, job_id: str) -> None:
                     "post_url": pr.primary_url,
                     "post_message_ids": list(pr.ids or []),
                     "content_sha256": _compute_sha256(article),
-                    "notify_pending": True,
+                    # NOTE: notify_pending is deliberately NOT set here. User-spec
+                    # step 9 calls for ONE consolidated "Опубликовано. Пост: <link>.
+                    # Receipt: <hash>." message after attestation completes; setting
+                    # notify_pending here would fire a premature notify without the
+                    # receipt. attest.attest_once raises notify_pending on its own
+                    # success/failure terminals (DONE / ATTEST_PENDING / ATTEST_FAILED).
                 },
             )
         except queue.StaleStateError as exc:

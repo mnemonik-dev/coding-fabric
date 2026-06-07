@@ -51,6 +51,12 @@ def _append_archive(archive_path: Path, job: Job) -> None:
 
     Same pattern as ``queue.append_job`` so a concurrent reader sees either
     pre-append or post-append, never a half-written line.
+
+    Idempotency note: ``cleanup_gc_once`` archives BEFORE rewriting queue.jsonl,
+    so a crash between the two ops will replay on the next tick and re-archive
+    the same job. The archive may carry a duplicate for that job — this is
+    deliberate forensic noise, not silent dedup. Operators wanting clean archive
+    output should de-duplicate by ``id`` at read time.
     """
     existing: list[bytes] = []
     if archive_path.exists():

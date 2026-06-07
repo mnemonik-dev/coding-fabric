@@ -63,6 +63,10 @@ async def test_publish_success_transitions_to_published(
     assert refreshed.content_sha256 is not None
     assert len(refreshed.content_sha256) == 64
     assert refreshed.published_at is not None
+    # User-spec step 9: the "Опубликовано. Receipt: <hash>." consolidated
+    # message can only be assembled after attestation. notify_pending MUST
+    # NOT be set on publishing→published — attest.py handles it on terminal.
+    assert refreshed.notify_pending is False
 
 
 async def test_publish_failure_transitions_to_publish_failed(

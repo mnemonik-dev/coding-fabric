@@ -110,6 +110,7 @@
         vault_publish_approval_timeout_min:  "{{ sops.publish_approval_timeout_min | default(5) }}"
         vault_publish_mode:                  "{{ sops.publish_mode | default('approval') }}"
         vault_publish_auto_mode_token:       "{{ sops.publish_auto_mode_token | default('') }}"
+        vault_publish_auto_mode_token_confirm: "{{ sops.publish_auto_mode_token_confirm | default('') }}"
         vault_blogger_repo_ref:              "{{ sops.blogger_repo_ref | default('') }}"
         vault_claude_blog_repo_ref:          "{{ sops.claude_blog_repo_ref | default('') }}"
         vault_publish_callback_hmac_secrets: "{{ sops.publish_callback_hmac_secrets | default('') }}"
@@ -327,6 +328,7 @@
         publish_callback_hmac_secrets: "{{ vault_publish_callback_hmac_secrets }}"
         publish_mode: "{{ vault_publish_mode }}"
         publish_auto_mode_token: "{{ vault_publish_auto_mode_token }}"
+        publish_auto_mode_token_confirm: "{{ vault_publish_auto_mode_token_confirm }}"
         publish_min_score: "{{ vault_publish_min_score }}"
         publish_approval_timeout_min: "{{ vault_publish_approval_timeout_min }}"
         # Shared with telegram-ai-agent for operator-bot integration —
