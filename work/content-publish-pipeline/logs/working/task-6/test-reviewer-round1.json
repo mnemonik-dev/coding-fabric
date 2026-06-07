@@ -1,0 +1,137 @@
+{
+  "task": "task-6",
+  "round": 1,
+  "reviewer": "test-reviewer",
+  "commit": "cce889f",
+  "status": "needs_improvement",
+  "summary": "All 14 TDD Anchor items covered across 41 new tests in 12 files. Integration tests are correctly structured with real threading and real queue I/O. Test pyramid is correct (heavy unit, 3 integration, 0 e2e). One medium gap: test_auto_mode_skips_preview_and_publishes_directly does not assert notify_pending=True on the published job — the bot requires this flag to send the post-fact 'Auto-published: <link>. Receipt: <hash>. Score: <N>.' notification (AC11, Decision 7). Without notify_pending=True a silent regression in auto-mode leaves the operator with no post-fact confirmation. Two low findings: attest_once kwargs assertion in deadline checker only checks job_id not queue_path; tentative_write_ordering test setup is overly complex and fragile (manual queue rewriting). No critical or high issues.",
+  "counts": {
+    "critical": 0,
+    "high": 0,
+    "medium": 1,
+    "low": 2
+  },
+  "taskRequired": {
+    "needed": false,
+    "reason": "No high/critical issues. Medium finding is a one-line assertion addition."
+  },
+  "tdd_anchor_coverage": {
+    "test_preview_sent_past_deadline_transitions_to_publishing": "covered — test_deadline_checker.py::test_preview_sent_past_deadline_transitions_to_publishing",
+    "test_attest_pending_retried_via_deadline_loop": "covered — test_deadline_checker.py::test_attest_pending_retried_via_deadline_loop",
+    "test_terminal_jobs_with_cleanup_at_past_are_gced": "covered — test_cleanup_gc.py::test_terminal_jobs_with_cleanup_at_past_are_gced (parametrized over all 6 terminal statuses)",
+    "test_non_terminal_jobs_are_not_gced_even_if_cleanup_at_set": "covered — test_cleanup_gc.py::test_non_terminal_jobs_are_not_gced_even_if_cleanup_at_set",
+    "test_retry_cadence_5min_then_24h_escalation": "covered — test_attest_retry.py::test_retry_cadence_5min_then_24h_escalation",
+    "test_subprocess_argv_is_exactly_binary_and_mcp_stdio": "covered — test_attest_envelope.py::test_subprocess_argv_is_exactly_binary_and_mcp_stdio",
+    "test_mcp_initialize_then_tools_call_over_stdin": "covered — test_attest_envelope.py::test_mcp_initialize_then_tools_call_over_stdin; asserts both message sequence and full argument set",
+    "test_auto_mode_skips_preview_and_posts_directly": "covered — test_auto_mode.py::test_auto_mode_skips_preview_and_publishes_directly (see F1: missing notify_pending assertion)",
+    "test_mismatched_auto_mode_token_aborts_startup": "covered — test_auto_mode_token_binding.py::test_mismatched_auto_mode_token_aborts_startup",
+    "test_tentative_publish_started_at_written_before_call": "covered — test_tentative_write_ordering.py::test_tentative_publish_started_at_written_before_call",
+    "test_publishing_status_just_retries_normal_path": "covered — test_publishing_retry_on_crash.py::test_publishing_status_just_retries_normal_path + test_recovery_needed_state_does_not_exist (hard enum gate)",
+    "test_kill_at_each_in_flight_status": "covered — integration/test_crash_recovery.py covers writing/scoring/preview-sent/publishing/attest-pending; terminal statuses covered by test_recover_in_flight_terminal_untouched",
+    "test_concurrent_callback_and_deadline_fire_publishes_once": "covered — integration/test_concurrent_publish.py::test_concurrent_callback_and_deadline_fire_publishes_once (threading.Barrier pattern)",
+    "test_happy_then_mcp_failure_then_retry_then_escalation": "covered — integration/test_attestation_pipeline.py::test_happy_then_failure_then_retry_then_escalation"
+  },
+  "extra_tests_beyond_anchor": {
+    "test_publish_failure_transitions_to_publish_failed": "valuable — AC-e coverage",
+    "test_publish_uses_keyword_only_signature": "valuable — pins AC-b contract; asserts args==(), dry_run absent, required kwargs present, attest=False",
+    "test_publish_rate_ceiling_ignores_old_publications": "valuable — boundary condition (60min window edge)",
+    "test_first_attest_failure_records_pending_since": "valuable — pins the first-entry contract for attest_pending_since",
+    "test_retry_does_not_overwrite_attest_pending_since": "valuable — directly tests the 'sticky' invariant",
+    "test_happy_path_published_to_done": "valuable — happy attestation path",
+    "test_preview_sent_future_deadline_left_alone": "valuable — deadline checker negative case",
+    "test_preview_sent_with_pending_preview_not_published": "valuable — important race guard: deadline-checker must not fire when preview_pending=True (bot hasn't sent preview yet)",
+    "test_mcp_failure_raises_mcpsignfailed": "valuable — error surface test for mcp_client",
+    "test_matching_tokens_pass_check": "valuable — positive case for auto-mode token",
+    "test_approval_mode_ignores_tokens": "valuable — confirms approval-mode is unaffected by token mismatch",
+    "test_auto_mode_missing_token_aborts": "valuable — defense-in-depth: missing token is also rejected",
+    "test_auto_mode_empty_string_token_aborts": "valuable — empty-string match is treated as unconfigured",
+    "test_cleanup_gc_missing_worktree_still_archives": "valuable — FileNotFoundError treated as success",
+    "test_cleanup_gc_no_worktree_path_set": "valuable — early-failed jobs with no worktree",
+    "test_kill_at_attest_pending_left_alone": "valuable — attest-pending is not reset by recovery"
+  },
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "medium",
+      "category": "Category 3 — missing coverage",
+      "file": "tests/test_auto_mode.py",
+      "test": "test_auto_mode_skips_preview_and_publishes_directly",
+      "issue": "The test asserts status==PUBLISHED and post_url after the publish step completes, but does NOT assert notify_pending=True. In auto-mode, the operator skipped the preview — they must receive a post-fact notification ('Auto-published: <link>. Receipt: <hash>. Score: <N>.' per tech-spec Decision 7 / AC11). The bot's notify_pending poll loop reads this flag to know it should send that message. If the publish step fails to set notify_pending=True in auto-mode, the operator gets no confirmation the post went out, and the litmus test for this is the missing assertion here.",
+      "litmusTestFailed": false,
+      "replacement": {
+        "approach": "After assert refreshed.status == JobStatus.PUBLISHED, add assert refreshed.notify_pending is True to confirm the bot-notification signal is set in auto-mode.",
+        "assertions": [
+          "assert refreshed.notify_pending is True  # bot must DM the operator post-fact in auto-mode"
+        ],
+        "mockChange": "none needed — publish.py is already called; only the assertion is missing"
+      }
+    },
+    {
+      "id": "F2",
+      "severity": "low",
+      "category": "Category 6 — weak assertion",
+      "file": "tests/test_deadline_checker.py",
+      "test": "test_attest_pending_retried_via_deadline_loop",
+      "issue": "The test uses attest_call.assert_awaited_once() and checks kwargs.get('job_id') == job.id, but does not verify that queue_path was also passed correctly. The attest_once signature (per attest.py) takes both queue_path and job_id as keyword arguments. If deadline_checker_once passes the wrong queue path (e.g. hardcoded), this test would not catch it.",
+      "litmusTestFailed": false,
+      "replacement": {
+        "approach": "Add a check for the queue_path kwarg alongside job_id.",
+        "assertions": [
+          "assert kwargs.get('queue_path') == tmp_queue_path  (or the path that was passed to deadline_checker_once)"
+        ],
+        "mockChange": "none"
+      }
+    },
+    {
+      "id": "F3",
+      "severity": "low",
+      "category": "Category 6 — test anti-pattern (fragile setup)",
+      "file": "tests/test_tentative_write_ordering.py",
+      "test": "test_tentative_publish_started_at_written_before_call",
+      "issue": "The test setup manually appends a job via append_job, then reads the queue, merges fields via model_dump, re-validates, and rewrites the file — all to place a job in PUBLISHING status. This is six steps where make_job + direct queue seed (as other tests do) would be two. The complexity increases the chance of the setup itself being wrong and masking the actual property under test. The core assertion (tentative_publish_started_at is not None after a raised exception) is correct and meaningful, but the setup fragility is a maintenance risk.",
+      "litmusTestFailed": false,
+      "replacement": {
+        "approach": "Simplify the setup to match the pattern used in test_publish_handlers.py: use _seed_publishing() or make_job(status=PUBLISHING, ...) + direct tmp_queue_path.write_text(). The assertion itself is fine.",
+        "assertions": [
+          "same final assertion — no change needed to the assertion logic"
+        ],
+        "mockChange": "none — simplify setup only"
+      }
+    }
+  ],
+  "ac_coverage": {
+    "AC_a_tentative_before_call": "covered — test_tentative_write_ordering.py (AC-T7)",
+    "AC_b_keyword_only_signature": "covered — test_publish_uses_keyword_only_signature",
+    "AC_c_result_results_0": "covered — test_publish_success_transitions_to_published asserts post_url=pr.primary_url and post_message_ids=pr.ids",
+    "AC_d_cas_publishing_published": "covered — test_publish_success with content_sha256 assertion",
+    "AC_e_cas_publishing_failed": "covered — test_publish_failure_transitions_to_publish_failed",
+    "AC_f_deadline_checker": "covered — test_deadline_checker.py (two passes)",
+    "AC_g_cleanup_gc": "covered — test_cleanup_gc.py (parametrized + edge cases)",
+    "AC_h_attestation_argv_and_framing": "covered — test_attest_envelope.py (AC-T8)",
+    "AC_i_attest_failure_and_retry": "covered — test_attest_retry.py + integration",
+    "AC_j_crash_recovery": "covered — test_publishing_retry_on_crash.py + integration",
+    "AC_k_auto_mode_token_check": "covered — test_auto_mode_token_binding.py (5 variants)",
+    "AC_l_rate_ceiling": "covered — test_publish_rate_ceiling_blocks_publication + test_rate_ceiling_ignores_old_publications",
+    "AC_no_recovery_needed_state": "covered — test_recovery_needed_state_does_not_exist (hard enum gate)",
+    "AC11_auto_mode_skips_preview": "partially covered — status transition verified but notify_pending=True missing (F1)",
+    "AC_T7_tentative_ordering": "covered",
+    "AC_T8_argv_hygiene": "covered",
+    "AC_T10_auto_mode_two_location": "covered",
+    "AC_T13_just_retry_no_recovery_state": "covered"
+  },
+  "pyramid_assessment": {
+    "verdict": "correct",
+    "unit": 38,
+    "integration": 3,
+    "e2e": 0,
+    "skipped": 1,
+    "note": "Unit-heavy pyramid with 3 focused integration tests (concurrent CAS, crash recovery, attestation pipeline). Integration tests use real queue I/O and real threading — no extra mocking. The 1 pre-existing skip from Task 5 byte-equality fixture is unrelated to Task 6."
+  },
+  "notable_strengths": [
+    "test_preview_sent_with_pending_preview_not_published covers the important race guard where the deadline-checker must not fire while the bot is still sending the preview",
+    "test_concurrent_callback_and_deadline_fire_publishes_once uses the threading.Barrier pattern correctly, same as Task 4's race test",
+    "test_cleanup_gc is parametrized over all 6 terminal statuses, avoiding partial coverage",
+    "test_auto_mode_empty_string_token_aborts catches the 'forgot to set token' case that a naive string compare would miss",
+    "test_mcp_initialize_then_tools_call_over_stdin asserts the exact key set of sign_memory arguments — not just that the call happened"
+  ]
+}

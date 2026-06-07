@@ -1,0 +1,57 @@
+{
+  "task": "task-6",
+  "round": 2,
+  "reviewer": "test-reviewer",
+  "commit": "477e157",
+  "status": "passed",
+  "summary": "All three round 1 findings resolved. The F1 fix is a better solution than the literal wording suggested: instead of asserting notify_pending=True immediately after publish_step, the test drives through attestation to DONE, asserting notify_pending=False at PUBLISHED (locking the T6-2 contract: receipt-free notify must not fire) and notify_pending=True at DONE (AC11: bot sends the post-fact message). The implementation change in publish.py removing notify_pending from publishing->published is correct — user-spec step 9 requires the receipt hash in the notification, which only exists after attest. The companion assertion in test_publish_handlers.py pins this as an explicit contract. No new findings.",
+  "counts": {
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 0
+  },
+  "taskRequired": {
+    "needed": false,
+    "reason": "No issues remain."
+  },
+  "round1_findings_resolution": {
+    "F1_auto_mode_notify_pending": {
+      "status": "resolved",
+      "verdict": "better than requested",
+      "notes": "The fix correctly rejects the literal 'assert notify_pending=True after publish_step' approach because that would fire a receipt-free notification. Instead the test drives through attest_once (with sign_memory_via_mcp mocked to return a hash), landing the job at DONE where notify_pending=True is the correct terminal signal. The two-assertion design (False at PUBLISHED, True at DONE) is more precise than a single assertion — it catches both the 'fires too early' regression and the 'never fires' regression. The fields attest_once needs (article_path, post_url, content_sha256, score) are all set by publish_step in the preceding test steps, so the chain is valid. The companion assertion in test_publish_handlers.py (assert refreshed.notify_pending is False after publish_step) further locks the contract against accidental re-introduction."
+    },
+    "F2_queue_path_kwarg": {
+      "status": "resolved",
+      "verdict": "correct",
+      "notes": "kwargs.get('queue_path') == tmp_queue_path added. The attest_once call signature is now fully pinned."
+    },
+    "F3_tentative_ordering_setup": {
+      "status": "resolved",
+      "verdict": "correct",
+      "notes": "Setup simplified to make_job(status=PUBLISHING, ...) + tmp_queue_path.write_text(...). The unused datetime imports were also cleaned up. The assertion itself is unchanged."
+    }
+  },
+  "bonus_changes_assessment": {
+    "publish_py_remove_notify_pending_from_published": {
+      "verdict": "correct implementation fix",
+      "notes": "Removing notify_pending=True from the publishing->published CAS is the right call per user-spec step 9: the consolidated 'Опубликовано. Пост: <link>. Receipt: <hash>.' message requires the receipt, which only exists after attestation. attest.attest_once sets notify_pending on DONE / ATTEST_PENDING / ATTEST_FAILED termination. This is a meaningful behavior change but it is architecturally correct."
+    },
+    "worker_py_log_level_debug": {
+      "verdict": "correct",
+      "notes": "Changing the auto-mode CAS-lost log from WARNING to DEBUG is appropriate — in auto-mode the deadline-checker racing the worker's second CAS is expected behavior, not an error condition."
+    },
+    "ansible_auto_mode_token_confirm": {
+      "verdict": "correct infrastructure fix",
+      "notes": "Adding PUBLISH_AUTO_MODE_TOKEN_CONFIRM as a second distinct sops key (publish_auto_mode_token_confirm) and rendering it into blogger.env.j2 strengthens the two-location binding described in Decision 7. This was an implicit gap in the original implementation where both sides of the hmac.compare_digest came from the same sops key. The secrets template, deploy.yml, and env template are all consistent."
+    }
+  },
+  "pyramid_assessment": {
+    "verdict": "correct",
+    "unit": 38,
+    "integration": 3,
+    "e2e": 0,
+    "skipped": 1,
+    "note": "Unchanged from round 1. One additional assertion added to existing tests, no new test functions."
+  }
+}

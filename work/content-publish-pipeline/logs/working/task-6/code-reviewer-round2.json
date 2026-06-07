@@ -1,0 +1,45 @@
+{
+  "task": "Task 6 — publish + sub-loops + MCP-stdio attestation + just-retry recovery",
+  "commit": "0372985",
+  "round": 2,
+  "reviewer": "code-reviewer",
+  "verdict": "approved",
+  "summary": "All three round-1 findings resolved correctly. The two-location auto-mode token binding is now functional end-to-end: a new sops key, deploy.yml mapping, and blogger.env.j2 render add PUBLISH_AUTO_MODE_TOKEN_CONFIRM, and the template comment documents the two-edit requirement clearly. notify_pending is correctly removed from publishing→published with a comment explaining why, and a new test assertion pins the invariant. The archive docstring note is clear and actionable.",
+  "issues": [],
+  "round1_resolution": {
+    "T6-1": {
+      "status": "FIXED",
+      "verified": "Four coordinated changes: (1) secrets.sops.yml.template adds publish_auto_mode_token_confirm with documentation; (2) deploy.yml pre_tasks set_fact adds vault_publish_auto_mode_token_confirm from sops; (3) deploy.yml Phase 7.5 vars passes publish_auto_mode_token_confirm to the role; (4) blogger.env.j2 renders PUBLISH_AUTO_MODE_TOKEN_CONFIRM from that var. main.py's PUBLISH_AUTO_MODE_TOKEN_CONFIRM env var lookup will now find the value at deploy time. The two-location binding requires two separate sops keys to be set identically — a single stale edit cannot re-enable auto-mode."
+    },
+    "T6-2": {
+      "status": "FIXED",
+      "verified": "publish.py lines 199-205: notify_pending=True removed from the publishing→published CAS updates dict. Comment documents the user-spec step 9 requirement and the delegation to attest.py. test_publish_handlers.py adds 'assert refreshed.notify_pending is False' on the success path with an inline comment explaining the invariant."
+    },
+    "T6-3": {
+      "status": "FIXED",
+      "verified": "cleanup._append_archive docstring now includes the idempotency/duplicate note and instructs operators to de-duplicate by 'id' at read time. Clear and accurate."
+    }
+  },
+  "informational_notes": [
+    {
+      "title": "Two-location binding: operator must set SAME value in both sops keys",
+      "description": "The new design requires publish_auto_mode_token and publish_auto_mode_token_confirm to carry identical values ('Set the SAME value into both keys via separate sops edits'). This means the two-location binding guards against single-edit accidents, not against a determined operator setting both keys to any shared value. The README runbook in the content-publisher role (Task 3) should document this procedure — Task 3's README currently only documents PUBLISH_AUTO_MODE_TOKEN. Worth adding a note there in a follow-up. Not blocking."
+    }
+  ],
+  "ac_coverage": {
+    "AC_a_tentative_before_call": "PASS",
+    "AC_b_keyword_only_call": "PASS",
+    "AC_c_results_not_posts": "PASS",
+    "AC_d_cas_to_published": "PASS",
+    "AC_e_publish_failed": "PASS",
+    "AC_f_deadline_checker": "PASS",
+    "AC_g_cleanup_gc": "PASS",
+    "AC_h_attestation_argv_and_framing": "PASS",
+    "AC_i_attest_pending_retry_24h": "PASS",
+    "AC_j_recovery": "PASS",
+    "AC_k_auto_mode_token_check": "PASS — T6-1 fixed; PUBLISH_AUTO_MODE_TOKEN_CONFIRM now rendered",
+    "AC_l_rate_ceiling": "PASS",
+    "no_recovery_needed_state": "PASS",
+    "notify_pending_only_after_attest": "PASS — T6-2 fixed; test assertion added"
+  }
+}

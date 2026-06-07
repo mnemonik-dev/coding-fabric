@@ -1,0 +1,68 @@
+{
+  "task": "Task 6 — publish + sub-loops + MCP-stdio attestation + just-retry recovery",
+  "commit": "cce889f",
+  "round": 1,
+  "reviewer": "code-reviewer",
+  "verdict": "approved_with_minor",
+  "summary": "Comprehensive, well-structured implementation. All AC gates are covered: tentative ordering, argv hygiene, just-retry recovery, two-sub-loop cadences, 24h escalation with sticky attest_pending_since, and recovery-needed absence confirmed. Two minor issues found: the auto-mode two-location token binding compares against PUBLISH_AUTO_MODE_TOKEN_CONFIRM which is never rendered by the Ansible blogger.env.j2 template (the binding is effectively broken at deploy time), and notify_pending=True is set on successful publish→published which will cause the bot to post a redundant notification before attestation completes.",
+  "findings": [
+    {
+      "id": "T6-1",
+      "severity": "minor",
+      "dimension": "Cross-File Consistency / Security",
+      "file": "fabric/content-publisher/src/content_publisher/main.py",
+      "line": "50",
+      "issue": "assert_auto_mode_token_match_or_exit() compares PUBLISH_AUTO_MODE_TOKEN against PUBLISH_AUTO_MODE_TOKEN_CONFIRM (a new env var). However, the Ansible blogger.env.j2 template (infrastructure/ansible/roles/content-publisher/templates/blogger.env.j2, line 30) only renders PUBLISH_AUTO_MODE_TOKEN — it does NOT render PUBLISH_AUTO_MODE_TOKEN_CONFIRM. At deploy time, PUBLISH_AUTO_MODE_TOKEN_CONFIRM will be an empty string, so the two-location binding always fails (empty != token), making PUBLISH_MODE=auto completely unusable.\n\nTech-spec Decision 7 specifies the binding as 'PUBLISH_AUTO_MODE_TOKEN must equal sops publish_auto_mode_token' — the canonical implementation is to compare the env var against the sops-sourced value directly. The intent is that Task 3's Ansible role renders BOTH the env-file copy AND the sops-direct copy as separate env vars, so a stale /etc/blogger.env cannot silently re-enable auto-mode after an operator reverts sops.",
+      "recommendation": "Either:\n(a) Add PUBLISH_AUTO_MODE_TOKEN_CONFIRM to blogger.env.j2, rendering from a different sops key (e.g. publish_auto_mode_token_confirm) that Task 1 also needs to add to secrets.sops.yml.template — this adds a 3rd key but matches the code's expectation; OR\n(b) Simplify to the original tech-spec intent: compare PUBLISH_AUTO_MODE_TOKEN against publish_auto_mode_token read from sops directly (the service has access to /etc/blogger.env which is rendered from sops, so a second read of the same sops value is the correct 'two locations' check). Rename the second env var to match what the template actually provides and document the two locations clearly in the comparison logic.",
+      "impact": "PUBLISH_MODE=auto is completely non-functional at deploy time — PUBLISH_AUTO_MODE_TOKEN_CONFIRM is always empty, the startup check always fails, the service always aborts with SystemExit(2) when auto-mode is configured. AC11 is broken."
+    },
+    {
+      "id": "T6-2",
+      "severity": "minor",
+      "dimension": "Correctness / State Machine",
+      "file": "fabric/content-publisher/src/content_publisher/publish.py",
+      "line": "202",
+      "issue": "On successful publish (pr.ok=True), the CAS publishing→published sets notify_pending=True (line 202). This will cause the bot's notify-dispatch poll to fire before attestation completes — the bot will edit the preview message with an intermediate 'Published: <url>' notification. But attestation then runs (attest_once), and on success a second CAS published→done also sets notify_pending=True (attest.py line 122), triggering a second bot notification. The user-spec (step 9) describes a single notification: 'Опубликовано. Пост: <link>. Receipt: <hash>. Recallable через mnemonic_recall(<hash>).' — which should only fire after attestation completes with the receipt hash.\n\nSetting notify_pending=True on publishing→published is premature — the bot doesn't yet have the attestation_hash to include in the message.",
+      "recommendation": "Remove notify_pending=True from the publishing→published CAS. Set it only in the attestation success path (attest.py line 122, already done correctly) when attestation_hash is available. For the auto-mode post-fact notification (AC11), the notify should still fire after attest completes. The only case where notify_pending might be set at publish time is the attest-failed path (already handled in attest.py line 169).",
+      "impact": "Double-notification to the operator: one premature notification without the receipt hash, then a second correct notification after attestation. Minor UX issue but violates the user-spec step 9 contract."
+    },
+    {
+      "id": "T6-3",
+      "severity": "minor",
+      "dimension": "Correctness / Locking",
+      "file": "fabric/content-publisher/src/content_publisher/cleanup.py",
+      "line": "117",
+      "issue": "_append_archive is called inside the queue lock (acquired on line 83), but _append_archive uses _write_raw on the ARCHIVE file (queue.archive.jsonl) — which takes no lock of its own. This means concurrent cleanup-gc ticks (not possible within a single process since cleanup_gc_once is called sequentially from the loop, but possible if two content-publisher instances run simultaneously) could produce a corrupt archive file since _write_raw is atomic only within a single writer. In the normal single-process case this is fine. However the comment in cleanup.py says 'archive first, THEN rewrite queue.jsonl — if we crash between the two, the next tick will replay' — this is correct, but the replay creates a DUPLICATE archive entry (same job appears twice in queue.archive.jsonl). This is documented as acceptable ('archive may carry a duplicate but that is fine for forensics') which is a reasonable trade-off, but worth noting explicitly.",
+      "recommendation": "No code change required for the single-process case. The duplicate-on-replay behavior is documented and acceptable. Consider adding a one-line note in _append_archive's docstring: 'Does not deduplicate — on crash-replay the same job may appear twice. Callers must treat archive as append-only forensic log, not a set.'",
+      "impact": "Informational. Archive deduplication is a forensics concern, not a correctness issue for the primary queue."
+    }
+  ],
+  "positive_observations": [
+    "The tentative_publish_started_at ordering is correct: the forensic marker is written BEFORE the in-process call (AC-T7). The fallback _mark_tentative function correctly handles the PUBLISHING→PUBLISHING non-graph case by writing directly under flock, not bypassing locking entirely.",
+    "MCP-stdio argv is exactly [binary, 'mcp-stdio'] with no payload. The _binary() function raises MCPSignFailed immediately if MNEMONIK_MCP_BINARY is unset, failing loudly rather than silently. env=restricted_env('mnemonik-mcp') correctly passes PATH only (AC-T8, AC-T9).",
+    "The _recv_frame timeout (30s per call) bounds the MCP subprocess lifetime — without this, a hung mnemonik-mcp would deadlock the worker indefinitely. The finally block drains stderr for diagnostics and waits for process exit with a bounded timeout.",
+    "The attest_pending_since sticky invariant is correctly implemented: cas_status auto-sets it on published→attest-pending (Task 4), _bump_retry_attempts explicitly does NOT touch it (attest.py line 206 comment). 24h is measured from that first-entry timestamp.",
+    "recovery.py correctly handles WRITING/SCORING as reset-to-queued (direct flock rewrite, not cas_status which would reject the reverse transition) and leaves PUBLISHING/PREVIEW_SENT/ATTEST_PENDING for their respective sub-loops. recovery-needed state is provably absent in the codebase.",
+    "cleanup.py's 'archive first, THEN rewrite queue' ordering is the correct crash-safe sequence — duplicate archive entries on replay are acceptable forensics noise vs. silent job loss.",
+    "main.py uses hmac.compare_digest for the token comparison (constant-time, prevents side-channel token probing). The deferred FastAPI import is a clean testability pattern consistent with Tasks 4/5.",
+    "The PUBLISHED→DONE direct transition added to models.py is correct per the task spec (attest succeeds on first try without entering attest-pending). The comment documents the rationale.",
+    "deadline.py's _retry_due logic correctly uses attest_pending_since + ATTEST_RETRY_INTERVAL * attest_attempts to compute the next retry slot — this makes retries evenly spaced from the first-entry timestamp rather than from each previous attempt.",
+    "The auto-mode 2-CAS pattern in worker.py (scoring→preview-sent then immediately preview-sent→publishing) is the correct approach since the state graph forbids skipping PREVIEW_SENT. Setting preview_pending=False in the first CAS ensures the bot's preview-dispatch poll does not pick up the transient preview-sent state."
+  ],
+  "ac_coverage": {
+    "AC_a_tentative_before_call": "PASS — _mark_tentative written before _run_campaign_from_article call",
+    "AC_b_keyword_only_call": "PASS — all args passed as kwargs, no positional args",
+    "AC_c_results_not_posts": "PASS — result.results[0] used throughout",
+    "AC_d_cas_to_published": "PASS — with post_url, ids, content_sha256",
+    "AC_e_publish_failed": "PASS — with publish_error + notify_pending",
+    "AC_f_deadline_checker": "PASS — preview-sent + attest-pending both handled",
+    "AC_g_cleanup_gc": "PASS — terminal statuses only, archive + rmtree",
+    "AC_h_attestation_argv_and_framing": "PASS — argv=[binary,'mcp-stdio'], NDJSON, stdin closed",
+    "AC_i_attest_pending_retry_24h": "PASS — sticky attest_pending_since, 5min cadence, 24h escalation",
+    "AC_j_recovery": "PASS — writing/scoring→queued, publishing untouched, decision-8-just-retry",
+    "AC_k_auto_mode_token_check": "FAIL — PUBLISH_AUTO_MODE_TOKEN_CONFIRM never rendered by Ansible template (T6-1)",
+    "AC_l_rate_ceiling": "PASS — pre-check before in-process call, CAS to publish-failed",
+    "no_recovery_needed_state": "PASS — grep confirms absence",
+    "notify_pending_on_success": "MINOR — set prematurely before attestation completes (T6-2)"
+  }
+}

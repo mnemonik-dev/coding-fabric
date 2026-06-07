@@ -1,0 +1,41 @@
+{
+  "task": 6,
+  "round": 2,
+  "commits": ["0372985", "477e157"],
+  "auditor": "security-auditor",
+  "date": "2026-06-07",
+  "verdict": "APPROVED — CLOSED",
+  "summary": "Both round 1 findings correctly addressed. T6-SEC-001 resolved by downgrading the expected auto-mode CAS-2 StaleStateError from WARNING to DEBUG with an explanatory comment. T6-SEC-002 resolved by adding a SECOND separate sops key (publish_auto_mode_token_confirm), rendering it into blogger.env.j2, and mapping it through deploy.yml — this is actually a stronger two-location binding than my recommendation (same key rendered twice), because it requires two distinct sops edits to enable auto-mode. No new findings. Task 6 is clear for merge.",
+  "round1_findings_resolution": [
+    {
+      "id": "T6-SEC-001",
+      "round1_severity": "LOW",
+      "resolution": "FIXED",
+      "verification": "worker.py (commit 477e157): The stale-CAS log on the auto-mode preview-sent→publishing CAS 2 is now logger.debug() instead of logger.warning(). The message was also improved to explicitly state 'lost CAS preview-sent→publishing (auto) to deadline-checker — expected' so future operators reading journald at DEBUG level understand this is not an error. The race itself remains — flock+CAS still ensures exactly-once — but the diagnostic noise at WARNING level is eliminated. Correct resolution."
+    },
+    {
+      "id": "T6-SEC-002",
+      "round1_severity": "INFO",
+      "resolution": "FIXED — stronger than recommended",
+      "verification": "commit 0372985: Three layers added:\n\n1. secrets.sops.yml.template: new key `publish_auto_mode_token_confirm: \"\"` with a comment explaining the two-key integrity binding pattern.\n\n2. deploy.yml pre_tasks set_fact: `vault_publish_auto_mode_token_confirm` mapped from sops.\n\n3. blogger.env.j2: `PUBLISH_AUTO_MODE_TOKEN_CONFIRM=\"{{ publish_auto_mode_token_confirm | default('') }}\"` rendered with a comment: 'The two values come from separate sops keys (publish_auto_mode_token + publish_auto_mode_token_confirm), so a single stale sops edit cannot silently keep auto-mode active after the operator flipped the other key back. Mismatch → SystemExit.'\n\nThis is a STRONGER binding than my round 1 recommendation (which suggested rendering both from the same sops key). Two separate sops keys means: to enable auto-mode, the operator must explicitly set BOTH keys to the same value in sops, in separate edits. A single stale or partial edit cannot silently activate auto-mode. This is correctly the most robust two-location binding possible without requiring the worker to read sops directly at runtime."
+    }
+  ],
+  "additional_observations": [
+    {
+      "id": "T6-R2-OBS-001",
+      "severity": "INFO",
+      "title": "Two-separate-sops-keys binding is architecturally stronger than same-key-twice",
+      "description": "My round 1 recommendation suggested rendering PUBLISH_AUTO_MODE_TOKEN_CONFIRM from the SAME sops key as PUBLISH_AUTO_MODE_TOKEN. The implementation uses TWO distinct sops keys. This is architecturally superior: if both env vars came from the same sops key, an attacker who could write to /etc/blogger.env and who knew the token value could set both vars to the same value from a single leaked key. With two distinct keys, they would need access to two separate sops entries. Additionally, the operator must make two conscious sops edits to enable auto-mode, providing a natural audit trail. No action needed — this deviation from my recommendation is an improvement.",
+      "action": "None. Correct."
+    },
+    {
+      "id": "T6-R2-OBS-002",
+      "severity": "INFO",
+      "title": "notify_pending=True removed from publishing→published CAS (T6-2 code-reviewer fix)",
+      "description": "Noted from commit 0372985: the publishing→published CAS in publish.py no longer sets notify_pending=True. The consolidated 'Опубликовано. Receipt: <hash>.' notification now fires only after attestation completes (attest.py sets notify_pending on DONE/ATTEST_PENDING/ATTEST_FAILED). This is the correct UX flow per user-spec step 9 — the bot sends one message with both the post link and the receipt, not two separate notifications. No security impact; correctness improvement.",
+      "action": "None. Correct."
+    }
+  ],
+  "new_findings": [],
+  "task_status": "CLOSED — no further security review needed for Task 6"
+}
