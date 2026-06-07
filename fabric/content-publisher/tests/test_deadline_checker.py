@@ -87,6 +87,7 @@ async def test_attest_pending_retried_via_deadline_loop(
         # signature pinned by attest.py.
         kwargs = attest_call.await_args.kwargs
         assert kwargs.get("job_id") == job.id
+        assert kwargs.get("queue_path") == tmp_queue_path
 
 
 async def test_preview_sent_with_pending_preview_not_published(

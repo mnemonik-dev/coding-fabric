@@ -10,7 +10,6 @@ call, not as part of the success path.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -40,33 +39,8 @@ async def test_tentative_publish_started_at_written_before_call(
         status=JobStatus.PUBLISHING,
         article_path=str(article),
         score=85,
-        approval_deadline=(datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
     )
-    queue.append_job(
-        tmp_queue_path,
-        prompt=job.prompt,
-        mode="approval",
-        chat_id=None,
-        thread_id=None,
-        reply_to_message_id=None,
-    )
-    # Replace the queued row with a row in PUBLISHING for this test
-    raw = tmp_queue_path.read_text()
-    appended = queue.load(tmp_queue_path)[0]
-    appended_dict = appended.model_dump(mode="json")
-    appended_dict.update(
-        {
-            "id": job.id,
-            "status": JobStatus.PUBLISHING.value,
-            "article_path": str(article),
-            "score": 85,
-        }
-    )
-    from content_publisher.models import Job
-
-    rewritten = Job.model_validate(appended_dict).model_dump_json() + "\n"
-    tmp_queue_path.write_text(rewritten)
-    del raw
+    tmp_queue_path.write_text(job.model_dump_json() + "\n", encoding="utf-8")
 
     def boom(**_kwargs):  # noqa: ANN003
         raise RuntimeError("simulated publish failure mid-call")

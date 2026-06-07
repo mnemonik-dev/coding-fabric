@@ -87,3 +87,26 @@ async def test_auto_mode_skips_preview_and_publishes_directly(
     refreshed = queue.load(tmp_queue_path)[0]
     assert refreshed.status == JobStatus.PUBLISHED
     assert refreshed.post_url == "https://t.me/c/1/2"
+    # T6-2: publishing→published does NOT pre-fire notify; the bot's
+    # post-fact "Auto-published: <link>. Receipt: <hash>. Score: <N>."
+    # message requires the receipt, so notify_pending only flips on the
+    # attestation terminal.
+    assert refreshed.notify_pending is False
+
+    # Drive attestation to terminal — at DONE the bot picks up notify_pending=True
+    # and sends the AC11 auto-published post-fact message.
+    from content_publisher import attest
+
+    with patch(
+        "content_publisher.attest.sign_memory_via_mcp",
+        new_callable=AsyncMock,
+        return_value="deadbeef" * 8,
+    ):
+        await attest.attest_once(queue_path=tmp_queue_path, job_id=job.id)
+
+    refreshed = queue.load(tmp_queue_path)[0]
+    assert refreshed.status == JobStatus.DONE
+    assert refreshed.attestation_hash == "deadbeef" * 8
+    # AC11: bot needs notify_pending=True on the terminal attest result so it
+    # can post "Auto-published: <link>. Receipt: <hash>. Score: <N>." in the topic.
+    assert refreshed.notify_pending is True

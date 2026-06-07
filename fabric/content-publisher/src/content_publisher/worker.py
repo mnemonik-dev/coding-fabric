@@ -230,8 +230,13 @@ async def run_writing_to_preview(job: Job) -> None:
                 target=JobStatus.PUBLISHING,
             )
         except queue.StaleStateError as exc:
-            logger.warning(
-                "worker: stale CAS preview-sent->publishing (auto) on %s: %s",
+            # In auto-mode the worker and the 30s deadline-checker both race
+            # to take preview-sent → publishing — exactly one wins. The loser
+            # is EXPECTED here (the deadline-checker fired in the brief 2-CAS
+            # gap), so this is diagnostic noise, not an error. Logged at DEBUG.
+            logger.debug(
+                "worker: lost CAS preview-sent->publishing (auto) on %s "
+                "to deadline-checker — expected: %s",
                 job.id,
                 exc,
             )
