@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,12 +17,20 @@ from content_publisher.env import restricted_env
 
 logger = logging.getLogger(__name__)
 
-# Upstream contract: analyze_blog.py lives at this path on the VM (Task 3 role
-# clones claude-blog to /opt/claude-blog at a pinned SHA).
-ANALYZE_BLOG_PATH = "/opt/claude-blog/scripts/analyze_blog.py"
+# Default install root for claude-blog (Task 3 Ansible role). The actual root
+# is resolved at call time from ``MNEMONIK_CLAUDE_BLOG_PATH`` so that operator
+# sops changes take effect without a code change — restricted_env already
+# passes the env var to the subprocess, so this keeps them in sync.
+_DEFAULT_CLAUDE_BLOG_ROOT = "/opt/claude-blog"
+_ANALYZE_BLOG_REL = "scripts/analyze_blog.py"
 
 _STDERR_TAIL_BYTES = 2000
 _ISSUES_PREVIEW_CAP = 3
+
+
+def _analyze_blog_path() -> Path:
+    root = os.environ.get("MNEMONIK_CLAUDE_BLOG_PATH", _DEFAULT_CLAUDE_BLOG_ROOT)
+    return Path(root) / _ANALYZE_BLOG_REL
 
 
 @dataclass(frozen=True)
@@ -54,17 +63,33 @@ def _parse_stdout(stdout: bytes) -> ScoreResult:
 
 
 async def analyze(article_path: Path) -> ScoreResult:
-    """Run ``python /opt/claude-blog/scripts/analyze_blog.py <article>`` and parse stdout."""
+    """Run ``python <MNEMONIK_CLAUDE_BLOG_PATH>/scripts/analyze_blog.py <article>``.
+
+    Path root is read from ``MNEMONIK_CLAUDE_BLOG_PATH`` at call time, falling
+    back to ``/opt/claude-blog`` if unset — matching the env var that
+    ``restricted_env('analyze_blog')`` already passes through to the subprocess.
+    """
     env = restricted_env("analyze_blog")
     proc = await asyncio.create_subprocess_exec(
         "python",
-        ANALYZE_BLOG_PATH,
+        str(_analyze_blog_path()),
         str(article_path),
         env=env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout_bytes, stderr_bytes = await proc.communicate()
+    try:
+        stdout_bytes, stderr_bytes = await proc.communicate()
+    except BaseException:
+        # systemd SIGTERM cancels our coroutine — ensure analyze_blog does not
+        # survive as an orphan with open pipes.
+        if proc.returncode is None:
+            proc.terminate()
+            try:
+                await proc.wait()
+            except BaseException:
+                pass
+        raise
     stderr_tail = stderr_bytes[-_STDERR_TAIL_BYTES:].decode("utf-8", errors="replace")
 
     if proc.returncode != 0:

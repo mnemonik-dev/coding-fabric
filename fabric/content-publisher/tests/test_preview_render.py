@@ -85,6 +85,8 @@ def test_preview_segments_byte_equal_to_publish_segments(
             "in this upstream snapshot — Decision 11 deploy-gate territory"
         )
 
+    import inspect
+
     from mnemonik_blogger.config import Platform, Settings
     from mnemonik_blogger.content.formatters import render
     from mnemonik_blogger.content.ingest import ingest_article  # noqa: F401
@@ -104,8 +106,33 @@ def test_preview_segments_byte_equal_to_publish_segments(
     # Compute the expected preview directly from the same dispatcher.
     expected = render(Platform.TELEGRAM, ingest_article(FIXTURE)).segments
 
-    # Drive the publish flow.
-    settings = Settings(dry_run=False)  # type: ignore[call-arg]
+    # Build Settings adaptively: as the pinned upstream evolves it may add
+    # required fields (min_score, claude_blog_path, telegram, ...). Inspect
+    # the live signature and supply test values for each parameter without a
+    # default — otherwise this test would fail on ValidationError instead of
+    # on the byte comparison and the skip would mislead.
+    settings_fields: dict[str, object] = {"dry_run": False}
+    try:
+        sig = inspect.signature(Settings)
+        for name, param in sig.parameters.items():
+            if name in settings_fields:
+                continue
+            if param.default is not inspect.Parameter.empty:
+                continue
+            if name == "min_score":
+                settings_fields[name] = 0
+            elif name == "claude_blog_path":
+                settings_fields[name] = str(FIXTURE.parent)
+            elif name == "telegram":
+                from mnemonik_blogger.config import TelegramConfig
+
+                settings_fields[name] = TelegramConfig()
+            else:
+                settings_fields[name] = None
+    except (TypeError, ValueError):
+        pass
+    settings = Settings(**settings_fields)
+
     agent.run_campaign_from_article(
         article=FIXTURE,
         platforms=[Platform.TELEGRAM],

@@ -22,12 +22,11 @@ from __future__ import annotations
 
 import logging
 import os
-import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from content_publisher import queue, score, spawn
-from content_publisher.models import Job, JobStatus
+from content_publisher.models import UUID4_RE, Job, JobStatus
 from content_publisher.render import render_preview
 
 logger = logging.getLogger(__name__)
@@ -42,18 +41,23 @@ QUEUE_PATH = Path(
     os.environ.get("CONTENT_PUBLISHER_QUEUE", "/var/lib/content-publisher/queue.jsonl")
 )
 APPROVAL_TIMEOUT_MIN = int(os.environ.get("PUBLISH_APPROVAL_TIMEOUT_MIN", "5"))
+# Exposed for tests asserting the high-score path actually crossed the gate
+# (vs. silently passing because the gate was ignored).
+MNEMONIK_MIN_SCORE = int(os.environ.get("MNEMONIK_MIN_SCORE", "80"))
 CLEANUP_AFTER_HOURS = 24
 
 
 def _validate_uuid_v4(job_id: str) -> None:
-    """Raise ValueError unless ``job_id`` is a canonical lowercase UUID v4."""
-    parsed = uuid.UUID(job_id)
-    if parsed.version != 4:
-        raise ValueError(f"job.id is not UUID v4: {job_id!r}")
-    if str(parsed) != job_id:
-        # Catches uppercase hex / brace forms / extra whitespace that ``uuid.UUID``
-        # tolerates but our queue must not store.
-        raise ValueError(f"job.id is not in canonical lowercase form: {job_id!r}")
+    """Raise ValueError unless ``job_id`` is a canonical lowercase UUID v4.
+
+    Uses the same regex as ``Job.id``'s field validator so the worker and the
+    Pydantic model have strictly identical acceptance sets. (``uuid.UUID()``
+    is laxer — it tolerates braces, uppercase, and whitespace.)
+    """
+    if not UUID4_RE.fullmatch(job_id):
+        raise ValueError(
+            f"job.id is not a canonical lowercase UUID v4: {job_id!r}"
+        )
 
 
 def _resolve_worktree(job_id: str) -> Path:
@@ -102,9 +106,10 @@ async def run_writing_to_preview(job: Job) -> None:
     """Drive one job from ``queued`` all the way to ``preview-sent`` (or ``failed``)."""
     _validate_uuid_v4(job.id)
     worktree = _resolve_worktree(job.id)
-    worktree.mkdir(parents=True, exist_ok=True)
 
-    # 1) queued -> writing
+    # 1) queued -> writing — claim the job BEFORE we touch the filesystem.
+    # If another worker beats us in the CAS, we never create the worktree
+    # directory, so there is no leaked artifact for cleanup-gc to miss.
     try:
         queue.cas_status(
             QUEUE_PATH,
@@ -117,6 +122,10 @@ async def run_writing_to_preview(job: Job) -> None:
         # Another worker already claimed it; nothing to do.
         logger.info("worker: job %s already claimed, skipping", job.id)
         return
+
+    # We own the job — now create the worktree (idempotent on crash-recovery
+    # restart: the directory may already exist from a prior writing attempt).
+    worktree.mkdir(parents=True, exist_ok=True)
 
     # 2) writing: spawn claude
     try:

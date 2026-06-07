@@ -62,7 +62,19 @@ async def spawn_claude(*, prompt: str, worktree: Path) -> Path:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    _, stderr_bytes = await proc.communicate(input=prompt.encode("utf-8"))
+    try:
+        _, stderr_bytes = await proc.communicate(input=prompt.encode("utf-8"))
+    except BaseException:
+        # systemd SIGTERM cancels our coroutine — ensure claude does not
+        # survive as an orphan with open pipes. ``terminate`` is no-op if
+        # the process already exited.
+        if proc.returncode is None:
+            proc.terminate()
+            try:
+                await proc.wait()
+            except BaseException:
+                pass
+        raise
     stderr_tail = stderr_bytes[-_STDERR_TAIL_BYTES:].decode("utf-8", errors="replace")
 
     if proc.returncode != 0:
