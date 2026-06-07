@@ -1,0 +1,42 @@
+{
+  "task": "Task 4 — content-publisher queue + state machine + CAS + env isolation",
+  "commit": "3027ed3",
+  "round": 2,
+  "reviewer": "code-reviewer",
+  "verdict": "approved",
+  "summary": "T4-1 confirmed as a false positive — SCORING → FAILED was already present at models.py:119 in the original commit; the reviewer misread it during round 1. T4-2 (cas_status data loss on malformed lines) is correctly and elegantly fixed. T4-3 (comment on static-vs-locked check) is applied. Test-reviewer fixes (warning count precision, file immutability on IllegalTransitionError, conftest docstrings) are all well-done. Task 4 is complete.",
+  "findings": [],
+  "round1_resolution": {
+    "T4-1": {
+      "status": "FALSE_POSITIVE — no fix needed",
+      "verified": "models.py line 119 in the original commit 59b9289 already reads `JobStatus.SCORING: {JobStatus.PREVIEW_SENT, JobStatus.FAILED}`. The reviewer missed this during round 1. The transition was never missing. Confirmed by reading the file directly at HEAD."
+    },
+    "T4-2": {
+      "status": "FIXED",
+      "verified": "queue.py cas_status now uses `entries: list[Job | str]` (line 157). Malformed lines are appended as raw stripped strings to entries instead of being dropped. The rewrite payload joins using `e.model_dump_json() if isinstance(e, Job) else e` — correct. Blank lines are still silently dropped (they are noise). The assert isinstance(current, Job) on line 185 makes the indexing invariant explicit. The new test test_cas_status_preserves_unknown_lines writes a truncated line, runs a CAS, and asserts the truncated bytes are still present in the file after rewrite — correctly pinning the invariant."
+    },
+    "T4-3": {
+      "status": "FIXED",
+      "verified": "Comment added above the static graph check (lines 144-146): 'Static graph check — no I/O needed and the result cannot change at runtime. The live-status comparison below (StaleStateError) is the part that requires the lock.' Clear and accurate."
+    }
+  },
+  "test_reviewer_fixes": {
+    "F1_warning_count": "FIXED — test now asserts len(warning_records) == 1 with a clear failure message. Blank lines are excluded from the count, making the test precise: exactly one malformed-JSON line injected, exactly one warning expected.",
+    "F2_file_immutability_on_illegal": "FIXED — test_cas_status_raises_on_illegal_transition now reads bytes before the attempt and asserts bytes unchanged after. Symmetric with the StaleStateError immutability assertion in test_queue.py.",
+    "F3_conftest_docstrings": "FIXED — all three placeholder fixtures now document the expected return shape with concrete field names and types that Tasks 5/6 will wire. These are load-bearing comments for the cross-task contract."
+  },
+  "ac_coverage": {
+    "AC1_package_scaffold": "PASS",
+    "AC2_state_module": "PASS",
+    "AC3_queue_shared_cas": "PASS — data-preservation invariant now enforced and tested",
+    "AC4_models_job": "PASS",
+    "AC4b_cas_auto_timestamps": "PASS",
+    "AC5_restricted_env": "PASS",
+    "AC6_uuid_v4_validation": "PASS",
+    "AC7_conftest_fixtures": "PASS — docstrings now document expected shapes",
+    "AC8_all_tests_pass": "PASS — 34 passed",
+    "AC9_decision_2_flock": "PASS",
+    "AC10_decoupling": "PASS",
+    "SCORING_to_FAILED_transition": "PASS — was never missing (T4-1 false positive)"
+  }
+}

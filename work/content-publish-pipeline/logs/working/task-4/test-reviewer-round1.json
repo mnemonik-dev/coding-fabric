@@ -1,0 +1,124 @@
+{
+  "task": "task-4",
+  "round": 1,
+  "reviewer": "test-reviewer",
+  "commit": "59b9289",
+  "status": "passed",
+  "summary": "33 tests cover all TDD Anchor items and ACs. The critical race test is correctly structured. One medium gap: load() warning assertion is weak (checks partial message text rather than asserting at least N records were skipped). One low gap: no test verifies that the disk file is unmodified after an illegal-transition attempt (only StaleStateError is checked end-to-end; illegal-transition file immutability is untested). Conftest fixtures are adequate for Tasks 5/6/8 but mock_blogger and mock_mnemonic_mcp stubs have no return value shape — annotate expectations as a TODO so Task 6 knows what to fill in.",
+  "counts": {
+    "critical": 0,
+    "high": 0,
+    "medium": 1,
+    "low": 2
+  },
+  "taskRequired": {
+    "needed": false,
+    "reason": "No high/critical issues; can be addressed in current context or next round."
+  },
+  "tdd_anchor_coverage": {
+    "test_append_job_creates_uuid_v4_and_queued_status": "covered — test_append_job_creates_uuid_v4_and_queued_status",
+    "test_append_is_atomic_under_concurrent_writers": "covered — test_append_is_atomic_under_concurrent_writers",
+    "test_load_skips_blank_and_malformed_lines": "covered — test_load_skips_blank_and_malformed_lines",
+    "test_cas_status_succeeds_when_expected_matches": "covered — test_cas_status_succeeds_when_expected_matches",
+    "test_cas_status_raises_stale_when_expected_mismatch": "covered — test_cas_status_raises_stale_when_expected_mismatch",
+    "test_cas_status_atomic_under_concurrent_clicks": "covered — test_cas_status_atomic_under_concurrent_clicks",
+    "test_cas_status_updates_field_atomically": "covered — test_cas_status_updates_field_atomically",
+    "test_exact_12char_match_returns_job": "covered — test_exact_12char_match_returns_job",
+    "test_prefix_not_found_returns_none": "covered — test_prefix_not_found_returns_none",
+    "test_ambiguous_prefix_raises_value_error": "covered — test_ambiguous_prefix_raises_value_error",
+    "test_invalid_prefix_length_raises": "covered — test_invalid_prefix_length_raises",
+    "test_invalid_prefix_chars_raises": "covered — test_invalid_prefix_chars_raises",
+    "test_all_valid_transitions_allowed": "covered — test_all_valid_transitions_allowed",
+    "test_illegal_transitions_raise": "covered — test_illegal_transitions_raise (static map) + test_cas_status_raises_on_illegal_transition (CAS wiring)",
+    "test_terminal_states_have_no_outgoing": "covered — test_terminal_states_have_no_outgoing",
+    "test_transition_to_published_sets_published_at": "covered — test_transition_to_published_sets_published_at",
+    "test_transition_to_attest_pending_sets_attest_pending_since": "covered — test_transition_to_attest_pending_sets_attest_pending_since",
+    "test_transition_to_terminal_error_records_error_message": "covered — test_transition_to_terminal_error_records_error_message (writing/publish-failed/attest-failed all tested)",
+    "test_model_has_all_required_fields": "covered — test_model_has_all_required_fields (31 fields listed)",
+    "test_new_timestamp_fields_are_optional_datetime": "covered — test_new_timestamp_fields_are_optional_datetime",
+    "test_error_message_is_optional_str": "covered — test_error_message_is_optional_str",
+    "test_accepts_canonical_uuid_v4": "covered — test_accepts_canonical_uuid_v4",
+    "test_rejects_uuid_v1": "covered — test_rejects_uuid_v1",
+    "test_rejects_path_traversal": "covered — test_rejects_path_traversal",
+    "test_rejects_control_chars": "covered — test_rejects_control_chars",
+    "test_rejects_uppercase_hex": "covered — test_rejects_uppercase_hex",
+    "test_claude_env_subset_matches_allowlist": "covered — test_claude_env_subset_matches_allowlist",
+    "test_mnemonik_mcp_env_has_only_PATH": "covered — test_mnemonik_mcp_env_has_only_PATH",
+    "test_analyze_blog_env_has_PATH_and_claude_blog_path": "covered — test_analyze_blog_env_has_PATH_and_claude_blog_path",
+    "test_claude_env_raises_if_no_oauth_or_api_key": "covered — test_claude_env_raises_if_no_oauth_or_api_key"
+  },
+  "ac_coverage": {
+    "AC1_package_scaffold": "not directly tested (install check is a CLI verify step, not a test)",
+    "AC2_state_module": "indirectly covered by queue tests that exercise _write_raw/_acquire/_release",
+    "AC3_cas_primitive": "covered — concurrent_clicks, stale, find_by_prefix ambiguity",
+    "AC4_job_model": "covered — test_model_has_all_required_fields + timestamp type tests",
+    "AC4b_cas_auto_timestamps": "covered — published_at, attest_pending_since, error_message tests",
+    "AC5_restricted_env": "covered — all 4 kinds tested including fail-loud on missing auth",
+    "AC6_uuid_validation": "covered — 5 tests spanning all rejection categories",
+    "AC7_conftest_fixtures": "covered — all 7 named fixtures present in conftest.py",
+    "AC8_all_tests_pass": "33/33 per reporter",
+    "AC9_decision2_flock": "implementation-level; confirmed via source diff (fcntl.flock + os.replace)",
+    "AC10_no_workspace_manager_import": "not tested at test-level (grep verify step); no test asserts this"
+  },
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "medium",
+      "category": "Category 6 — test anti-pattern (weak assertion)",
+      "file": "tests/test_queue.py",
+      "test": "test_load_skips_blank_and_malformed_lines",
+      "issue": "The caplog assertion checks for 'malformed' or 'skip' in any log record message — this is a substring match across ALL records. If load() logs something like 'skip whitespace' for the blank line and 'malformed line' for the bad JSON, this test passes. But it would also pass if zero records were logged as long as no assertion about record count is made. More importantly, the assertion does not verify HOW MANY lines were skipped (3 injected bad lines), so a partial skip would not be caught.",
+      "litmusTestFailed": false,
+      "replacement": {
+        "approach": "Assert len(jobs) == 1 (already done — good). Add: assert len([r for r in caplog.records if 'malformed' in r.message.lower() or 'skip' in r.message.lower()]) >= 1. Also add count assertion: the 3 appended bad lines (blank, whitespace, bad JSON) should produce at least 1 warning log. Optionally assert the final load returns exactly 1 job (already present) and the JSONL file still exists and is valid.",
+        "assertions": [
+          "len(jobs) == 1 (already present)",
+          "at least one warning log record present",
+          "ideally: count of warning records matches bad-line count (3)"
+        ],
+        "mockChange": "none needed"
+      }
+    },
+    {
+      "id": "F2",
+      "severity": "low",
+      "category": "Category 3 — missing coverage",
+      "file": "tests/test_state_machine.py",
+      "test": "test_illegal_transitions_raise",
+      "issue": "The illegal-transition test only asserts against the static allowed_transitions() map (correct), and one end-to-end CAS wiring test checks queued->published. However, there is no assertion that the QUEUE FILE is unmodified after an illegal-transition attempt via cas_status. The file-immutability assertion IS present for the StaleStateError case (test_cas_status_raises_stale_when_expected_mismatch compares pre/post bytes), but the IllegalTransitionError case lacks it.",
+      "litmusTestFailed": false,
+      "replacement": {
+        "approach": "In test_cas_status_raises_on_illegal_transition, add: pre = tmp_queue_path.read_bytes() before the call; assert tmp_queue_path.read_bytes() == pre after the raises block. This makes the test catch an implementation bug where illegal transition still writes to disk.",
+        "assertions": [
+          "tmp_queue_path.read_bytes() == pre (bytes unchanged after IllegalTransitionError)"
+        ],
+        "mockChange": "none"
+      }
+    },
+    {
+      "id": "F3",
+      "severity": "low",
+      "category": "Category 6 — future maintenance risk",
+      "file": "tests/conftest.py",
+      "test": "mock_blogger_run_campaign_from_article, mock_mnemonic_mcp_stdio",
+      "issue": "The Task 5/6 placeholder fixtures return bare MagicMock() with no return-value shape documented. Task 6 will need mock_blogger_run_campaign_from_article to return an object with .results[0].ok, .results[0].primary_url, .results[0].ids, .results[0].error. Task 6 will also need mock_mnemonic_mcp_stdio to return something parseable as a MCP receipt. Without a comment or a minimal shape, Task 6 developers will reinvent this in their local conftest and the centralization purpose is defeated.",
+      "litmusTestFailed": false,
+      "replacement": {
+        "approach": "Add docstring or inline comment to each placeholder fixture describing the expected return shape from tech-spec. For mock_blogger_run_campaign_from_article: note that Task 6 should configure result.results[0].ok=True, result.results[0].primary_url, result.results[0].ids. For mock_mnemonic_mcp_stdio: note that Task 6 should wire in a fake stdout with MCP receipt JSON.",
+        "assertions": [],
+        "mockChange": "comments only, no behavioral change"
+      }
+    }
+  ],
+  "race_test_assessment": {
+    "verdict": "adequate",
+    "notes": "threading.Barrier(2) with two threads targeting the same preview-sent->publishing CAS is correctly structured. The test walks the job through all intermediate states before the race (queued->writing->scoring->preview-sent) which prevents false positives from StaleStateError on an earlier state. The lock around result collection prevents a data race on the results list itself. The final assertion checks exactly 1 'ok' and exactly 1 StaleStateError with actual_status==PUBLISHING — this is the correct litmus. One minor observation: the Barrier releases both threads simultaneously but OS scheduling may still serialize them; in practice this is almost always a tight race on ext4/tmpfs. This is the standard approach and acceptable for CI — the test would still catch a broken flock implementation that lets both succeed."
+  },
+  "pyramid_assessment": {
+    "verdict": "correct",
+    "unit": 33,
+    "integration": 0,
+    "e2e": 0,
+    "note": "Task 4 is pure unit — no external dependencies, no real filesystem paths beyond tmp_path, correct. Integration tests are scoped to Tasks 6+."
+  }
+}

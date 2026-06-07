@@ -1,0 +1,67 @@
+{
+  "task": "Task 4 — content-publisher queue + state machine + CAS + env isolation",
+  "commit": "59b9289",
+  "round": 1,
+  "reviewer": "code-reviewer",
+  "verdict": "approved_with_minor",
+  "summary": "Solid, correct implementation of the load-bearing CAS primitive. The race-safety invariant (flock + read-modify-write + os.replace) is implemented faithfully. State machine is complete and accurate. Three minor issues: a missing transition on the happy path from queued→failed that the state machine tests don't catch; a correctness hazard in cas_status where malformed lines are silently dropped rather than preserved, which can cause data loss on a corrupted queue; and a subtle gap where cas_status checks the transition before acquiring the lock, meaning IllegalTransitionError is raised without holding the lock while StaleStateError is raised while holding it — inconsistent but not a safety issue.",
+  "findings": [
+    {
+      "id": "T4-1",
+      "severity": "minor",
+      "dimension": "Correctness / State Machine",
+      "file": "fabric/content-publisher/src/content_publisher/models.py",
+      "line": "117",
+      "issue": "queued → failed transition is allowed in allowed_transitions() but test_all_valid_transitions_allowed VALID_TRANSITIONS list in test_state_machine.py does include it (line 40). However, the transition map on line 117 allows QUEUED → {WRITING, FAILED} but does NOT allow SCORING → FAILED or PREVIEW_SENT → FAILED, even though the tech-spec state machine diagram (line 394) shows `└─────────┴───────────┴────────────┘─► failed (terminal — hard error in writing/scoring/spawn)`. The diagram explicitly shows failed as reachable from writing, scoring, AND the initial path — but the current allowed_transitions map only allows FAILED from QUEUED and WRITING. SCORING → FAILED is missing.",
+      "recommendation": "Add JobStatus.FAILED to the outgoing set for JobStatus.SCORING in allowed_transitions(): `JobStatus.SCORING: {JobStatus.PREVIEW_SENT, JobStatus.FAILED}`. The tech-spec diagram shows scoring failures (e.g. analyze_blog.py crashes) should transition directly to failed. Tasks 5/6 will need to call cas_status(job_id, expected=SCORING, target=FAILED) on scoring errors — without this, that call will raise IllegalTransitionError.",
+      "impact": "Task 5 (score.py) cannot mark a job as failed if analyze_blog.py crashes while the job is in scoring state. The worker would be stuck with a scoring-status job that can't advance."
+    },
+    {
+      "id": "T4-2",
+      "severity": "minor",
+      "dimension": "Correctness / Error Handling",
+      "file": "fabric/content-publisher/src/content_publisher/queue.py",
+      "line": "153-167",
+      "issue": "cas_status silently drops malformed lines during the read-modify-write cycle. If a JSONL line fails to parse (lines 162-164), it is skipped with a warning and not included in `parsed`. When _write_raw writes the result back, the malformed line is permanently lost from the file. This is different from load()'s behavior, which also skips but doesn't write back. If a partially-written line exists (e.g. from a kill -9 during a previous write), a subsequent cas_status call will silently delete it from the queue.",
+      "recommendation": "Preserve malformed lines as opaque raw strings through the CAS cycle. One approach: track raw lines alongside parsed jobs, keep the malformed ones in their original positions, and only replace the line for the matched job_id. Simpler approach: collect malformed lines as raw strings, append them after the parsed-and-updated jobs during the _write_raw step. Either way, the invariant should be: cas_status never deletes data it doesn't understand. The existing warning is insufficient since data loss is silent.",
+      "impact": "In theory a kill-9 mid-write followed by a cas_status call could silently drop a job from the queue. Low probability since _write_raw's atomic replace minimizes the window, but the truncation of the write after a crash + the fact that the temp file has incomplete data means a half-written last line is possible. Preserving unknown lines prevents permanent queue data loss."
+    },
+    {
+      "id": "T4-3",
+      "severity": "minor",
+      "dimension": "Correctness / Locking",
+      "file": "fabric/content-publisher/src/content_publisher/queue.py",
+      "line": "145-150",
+      "issue": "IllegalTransitionError is raised BEFORE the lock is acquired (line 145-149 check transition validity, line 151 acquires the lock). StaleStateError is raised AFTER the lock is acquired (line 174). This means: (1) two concurrent callers both doing an illegal transition will each raise IllegalTransitionError without contention — fine. (2) But the caller receives IllegalTransitionError without any guarantee that the job's current status hasn't changed since the call. For the use case where a caller probes 'is this transition legal' before deciding what to do, this is slightly misleading — the status could change between the pre-lock check and the actual lock acquisition. More practically: the pre-lock check uses `expected`, not the actual status — it validates the transition map, not the live state. This is correct but slightly surprising in a CAS context.",
+      "recommendation": "This is acceptable as-is. The pre-lock IllegalTransitionError is a static map check (not live state), so it can't be 'wrong' — it rejects impossible transitions before doing any I/O. A comment documenting the intentional two-phase check (static graph validation outside lock, live state comparison inside lock) would prevent future confusion. No code change required — just add a one-line comment before line 145: '# Static graph check — no I/O needed; lock is only needed for live-status comparison.'",
+      "impact": "No correctness issue. Minor potential for confusion when reading the code."
+    }
+  ],
+  "positive_observations": [
+    "The race-safety invariant is correctly implemented: flock on a sibling .lock file, full read-modify-write under the lock, os.replace for atomic swap. The test_cas_status_atomic_under_concurrent_clicks test correctly uses threading.Barrier(2) to maximize contention and asserts exactly one StaleStateError.",
+    "append_job also holds the lock for the full read-rewrite cycle rather than using O_APPEND mode — the comment (lines 105-107) correctly explains why: lines > PIPE_BUF are not atomic with O_APPEND on ext4.",
+    "The PREFIX12_RE regex (line 27) correctly encodes '8 hex + dash + 3 hex' which is exactly what UUID v4's first 12 characters look like. This matches the tech-spec note on callback_data 64-byte limit.",
+    "find_by_prefix raises ValueError on ambiguous prefix rather than silently returning the first match — the comment explains the security reasoning (could publish the wrong operator's content). This is the correct fail-loud design.",
+    "restricted_env uses an allowlist (_pick builds from named keys) rather than a blacklist — the comment explicitly notes this prevents a future leaked secret from reaching a child process.",
+    "model_config = ConfigDict(extra='forbid') on Job prevents silent field name typos in updates dicts from being silently ignored — they'll raise ValidationError instead.",
+    "The cas_status re-validates through Job.model_validate after applying updates (line 190) — this catches type errors in caller-supplied updates before they reach disk, not at the next load().",
+    "The state machine allowed_transitions() is a classmethod returning a fresh dict each call — no shared mutable state, no risk of callers mutating the map.",
+    "test_cas_status_raises_stale_when_expected_mismatch verifies the file is NOT modified on a stale CAS (line 151) — correct and important for the race-safety guarantee.",
+    "The TDD Anchor tests cover 33 cases including the security-critical concurrent-click test. The test helper _seed_at in test_state_machine.py cleanly walks a job to any intermediate status, making the timestamp side-effect tests readable.",
+    "AC10 (workspace-manager decoupling) is structurally enforced by the comment in state.py documenting the intentional copy and the differences from the source."
+  ],
+  "ac_coverage": {
+    "AC1_package_scaffold": "PASS — pyproject.toml PEP 621, src layout, tests directory",
+    "AC2_state_module": "PASS — _write_raw/_acquire/_release, no workspace-manager imports",
+    "AC3_queue_shared_cas": "PASS — four functions, flock+os.replace, find_by_prefix fail-loud on ambiguity",
+    "AC4_models_job": "PASS — 31 fields, all types correct, JobStatus 13 values",
+    "AC4b_cas_auto_timestamps": "PASS — published_at on publishing->published, attest_pending_since on published->attest-pending",
+    "AC5_restricted_env": "PASS — four kinds, fail-loud on missing claude auth",
+    "AC6_uuid_v4_validation": "PASS — regex rejects v1, path traversal, control chars, uppercase",
+    "AC7_conftest_fixtures": "PASS — all five fixtures present with sensible defaults",
+    "AC8_all_tests_pass": "PASS — 33 passed per implementer",
+    "AC9_decision_2_flock": "PASS — fcntl.flock LOCK_EX + read-modify-write + os.replace",
+    "AC10_decoupling": "PASS — no workspace_manager imports",
+    "SCORING_to_FAILED_transition": "FAIL — missing from allowed_transitions (T4-1)"
+  }
+}
