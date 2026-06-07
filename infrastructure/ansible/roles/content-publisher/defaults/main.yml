@@ -40,10 +40,10 @@ mnemonik_dry_run: "false"
 
 # --- systemd unit -----------------------------------------------------------
 content_publisher_systemd_unit: content-publisher.service
-# Wave 1 unit is enabled but NOT started — the Python entrypoint package
-# (`content-publisher`) is installed by Task 7. Wave 2 flips this to
-# 'started' once the worker code exists.
-content_publisher_systemd_state: stopped
+# Wave 2 (Task 7): worker package is installed into the blogger venv, so
+# the unit is enabled AND started. The role's wait_for step then asserts
+# the three sub-loop startup log lines within 30 s.
+content_publisher_systemd_state: started
 
 # --- Hetzner persistent volume ----------------------------------------------
 # Resolved at runtime via `ansible_facts.mounts | selectattr('device',

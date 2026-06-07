@@ -1,14 +1,21 @@
 ---
 #
-# content-publisher role — install scaffold (Task 3 of content-publish-pipeline)
+# content-publisher role — Tasks 3 (scaffold) + 7 (wire + smoke)
 #
-# This role lays down the filesystem + venv + systemd foundation for the
-# Python content-publisher worker. The worker package itself is installed
-# by Task 7. After this role runs successfully, the unit is enabled but
-# inactive (Wave 1 contract).
+# Task 3 lays down the filesystem + venv + systemd foundation for the
+# Python content-publisher worker. Task 7 (appended below the Task 3
+# scaffold) installs the fabric/content-publisher package into the
+# blogger venv, starts the unit, waits for the three sub-loop startup
+# log lines in journald, and runs a deploy-time channel-admin smoke
+# (getMe + getChatMember against @mnemonik).
 #
-# Tech-spec: work/content-publish-pipeline/tech-spec.md (Task 3, Decisions
-# 10, 11, 12; Risks "in-process publish hardening").
+# After a successful run: unit is enabled AND active; journal contains
+# the three "<loop> started" lines from main(); publisher bot is
+# verified as an administrator/creator of @mnemonik.
+#
+# Tech-spec: work/content-publish-pipeline/tech-spec.md (Tasks 3 + 7,
+# Decisions 10, 11, 12; Risks "in-process publish hardening" and
+# "publisher bot channel admin").
 #
 
 # --- Preflight: assert required upstream refs are set ----------------------
@@ -271,6 +278,7 @@
     owner: root
     group: "{{ base_operator_user }}"
     mode: '0640'
+  notify: Restart content-publisher
 
 - name: Render content-publisher systemd unit
   become: true
@@ -280,7 +288,9 @@
     owner: root
     group: root
     mode: '0644'
-  notify: Reload systemd
+  notify:
+    - Reload systemd
+    - Restart content-publisher
 
 - name: Flush handlers so the daemon-reload runs before the assert + enable steps
   ansible.builtin.meta: flush_handlers
@@ -312,12 +322,278 @@
     fail_msg: "content-publisher.service is missing or mis-rendering hardening directives"
     quiet: true
 
-- name: Enable content-publisher.service (but do not start — Wave 1)
-  # Wave 1 contract: the Python entrypoint (`content_publisher.main`) is
-  # not installed yet. The unit is enabled so systemd will auto-start it
-  # once Task 7 drops the package in place. Until then it stays inactive.
+- name: Enable + start content-publisher.service (Wave 2)
+  # Wave 2 contract (Task 7): the `content_publisher` package is installed
+  # into the blogger venv just above, so the unit can be both enabled and
+  # started. Subsequent tasks anchor the journal window to this start.
   become: true
   ansible.builtin.systemd:
     name: "{{ content_publisher_systemd_unit }}"
     enabled: true
     state: "{{ content_publisher_systemd_state }}"
+  register: cp_service_start
+
+# ===========================================================================
+# Task 7 — Wave 2: install worker package + start service + deploy-time smoke
+# ===========================================================================
+#
+# Everything above this banner is Task 3's scaffold (rendered templates,
+# unit hardening assertions, enable+start). Task 7 appends three things:
+#   (a) install fabric/content-publisher into the blogger venv,
+#   (b) wait for the three sub-loop startup log lines in journald,
+#   (c) channel-admin smoke (getMe → getChatMember @mnemonik).
+#
+# The package install above triggers the Restart handler if the source
+# changed; the wait_for-style journal grep anchors itself to the unit's
+# ActiveEnterTimestamp so slow Ansible execution between `started` and
+# the grep never misses the start lines.
+
+# --- Wave 2 step (a): install fabric/content-publisher worker package ------
+#
+# The worker package lives at fabric/content-publisher/ in the repo
+# checkout on the controller. fabric-services already uploaded the
+# tarball to {{ fabric_target_dir }}/content-publisher on the VM (the
+# tarball includes every subdir under fabric/). We install it into the
+# blogger venv (NOT a separate venv): main() imports mnemonik_blogger
+# directly, so both packages must share an interpreter / site-packages.
+# `--no-deps` because all transitive deps are already pinned by
+# requirements.locked.txt (Decision 12); we never want pip to resolve
+# anything fresh at deploy time.
+
+- name: Probe whether content-publisher source is present on the VM
+  ansible.builtin.stat:
+    path: "{{ fabric_target_dir }}/content-publisher/pyproject.toml"
+  register: cp_source_stat
+
+- name: Fail loud if content-publisher source is missing
+  # fabric-services runs BEFORE this role in deploy.yml and is responsible
+  # for syncing fabric/* to /opt/fabric. Missing source here means an out-
+  # of-order play or a botched sync — refuse to "fix it up" silently.
+  ansible.builtin.fail:
+    msg: >-
+      {{ fabric_target_dir }}/content-publisher/pyproject.toml is missing.
+      fabric-services must run before content-publisher in deploy.yml so the
+      worker source is on the VM. See work/content-publish-pipeline/tasks/
+      07-content-publisher-wire-service-smoke.md.
+  when: not cp_source_stat.stat.exists
+
+- name: Install content-publisher package into blogger venv (--no-deps)
+  # No-deps install: pydantic and any other runtime deps are already pulled
+  # by blogger's requirements.locked.txt above. This step is idempotent —
+  # pip detects the already-installed wheel by version and reports "Already
+  # satisfied", so changed=false on a healthy second run.
+  become: true
+  become_user: "{{ base_operator_user }}"
+  ansible.builtin.pip:
+    name: "."
+    chdir: "{{ fabric_target_dir }}/content-publisher"
+    virtualenv: "{{ blogger_install_dir }}/venv"
+    extra_args: "--no-deps"
+  register: cp_pip_install
+  notify: Restart content-publisher
+
+- name: Assert content-publisher entry point resolves in the venv
+  # Catches a package-layout regression at deploy time: if pyproject.toml
+  # stops exporting content_publisher.main as a module, `python -m` would
+  # fail when systemd next tried to start the unit. Fail loud here instead.
+  become: true
+  become_user: "{{ base_operator_user }}"
+  ansible.builtin.command:
+    cmd: >-
+      {{ blogger_install_dir }}/venv/bin/python -c "import content_publisher.main"
+  changed_when: false
+
+- name: Flush handlers so a fresh package install bounces the service
+  # If the pip install above changed (notify: Restart content-publisher),
+  # the handler must fire BEFORE the journal-grep step below — otherwise
+  # we'd grep the previous unit instance and miss the new start lines.
+  ansible.builtin.meta: flush_handlers
+
+# --- Wave 2 step (b): anchor + grep journal for three start log lines ------
+
+- name: Query content-publisher unit state (for ActiveEnterTimestamp anchor)
+  # Anchors `journalctl --since` to the unit's actual start instant, NOT a
+  # relative window. Slow Ansible execution between `state: started` and
+  # the grep below could otherwise push a fixed `--since "30 seconds ago"`
+  # past the start lines. The systemd module returns the full unit-status
+  # dict; we read ActiveEnterTimestamp out of `status.ActiveEnterTimestamp`
+  # rather than shelling out to systemctl (ansible-lint
+  # command-instead-of-module). Same lookup pattern as
+  # handlers/main.yml's "Probe whether content-publisher is currently
+  # active".
+  become: true
+  ansible.builtin.systemd:
+    name: "{{ content_publisher_systemd_unit }}"
+  register: cp_unit_show
+  changed_when: false
+
+- name: Set ActiveEnterTimestamp fact for the journal window
+  ansible.builtin.set_fact:
+    cp_active_ts: "{{ cp_unit_show.status.ActiveEnterTimestamp | default('') | trim }}"
+
+- name: Assert ActiveEnterTimestamp is non-empty (unit actually started)
+  # An empty value means the unit never reached `active` — probably
+  # ConditionPathIsMountPoint= refused (volume not mounted) or ExecStart
+  # crashed before the asyncio.gather. Refuse to grep an empty window.
+  ansible.builtin.assert:
+    that:
+      - cp_active_ts | length > 0
+    fail_msg: >-
+      {{ content_publisher_systemd_unit }} has no ActiveEnterTimestamp —
+      the unit never reached active. Inspect with `systemctl status
+      {{ content_publisher_systemd_unit }}` and `journalctl -u
+      {{ content_publisher_systemd_unit }} --no-pager`.
+    quiet: true
+
+- name: Wait for "queue-poll started" in journal
+  # Three separate small tasks — one per expected log line — yield clearer
+  # failure attribution than a composite regex. Each retries 6× at 5 s
+  # intervals (30 s budget total). community.general.journal_grep is not in
+  # stock Ansible; shell + grep -q is the portable equivalent.
+  become: true
+  ansible.builtin.shell: >-
+    journalctl -u {{ content_publisher_systemd_unit }}
+    --since "{{ cp_active_ts }}"
+    --no-pager
+    | grep -q 'queue-poll started'
+  register: cp_log_queue_poll
+  changed_when: false
+  retries: 6
+  delay: 5
+  until: cp_log_queue_poll.rc == 0
+  failed_when: cp_log_queue_poll.rc != 0
+  # Custom message: which line is missing is the operator's first question.
+  ignore_errors: true
+
+- name: Fail loud if queue-poll start line never appeared
+  ansible.builtin.fail:
+    msg: >-
+      content-publisher did not emit "queue-poll started" within 30 s of
+      ActiveEnterTimestamp ({{ cp_active_ts }}). The queue-
+      poll sub-loop crashed before logging. Run `journalctl -u
+      {{ content_publisher_systemd_unit }} --since "{{ cp_active_ts }}"
+      --no-pager` for the traceback.
+  when: cp_log_queue_poll.rc | default(1) != 0
+
+- name: Wait for "deadline-checker started" in journal
+  become: true
+  ansible.builtin.shell: >-
+    journalctl -u {{ content_publisher_systemd_unit }}
+    --since "{{ cp_active_ts }}"
+    --no-pager
+    | grep -q 'deadline-checker started'
+  register: cp_log_deadline
+  changed_when: false
+  retries: 6
+  delay: 5
+  until: cp_log_deadline.rc == 0
+  failed_when: cp_log_deadline.rc != 0
+  ignore_errors: true
+
+- name: Fail loud if deadline-checker start line never appeared
+  ansible.builtin.fail:
+    msg: >-
+      content-publisher did not emit "deadline-checker started" within 30 s
+      of ActiveEnterTimestamp ({{ cp_active_ts }}). Run
+      `journalctl -u {{ content_publisher_systemd_unit }} --since
+      "{{ cp_active_ts }}" --no-pager` for the traceback.
+  when: cp_log_deadline.rc | default(1) != 0
+
+- name: Wait for "cleanup-gc started" in journal
+  become: true
+  ansible.builtin.shell: >-
+    journalctl -u {{ content_publisher_systemd_unit }}
+    --since "{{ cp_active_ts }}"
+    --no-pager
+    | grep -q 'cleanup-gc started'
+  register: cp_log_cleanup
+  changed_when: false
+  retries: 6
+  delay: 5
+  until: cp_log_cleanup.rc == 0
+  failed_when: cp_log_cleanup.rc != 0
+  ignore_errors: true
+
+- name: Fail loud if cleanup-gc start line never appeared
+  ansible.builtin.fail:
+    msg: >-
+      content-publisher did not emit "cleanup-gc started" within 30 s of
+      ActiveEnterTimestamp ({{ cp_active_ts }}). Run
+      `journalctl -u {{ content_publisher_systemd_unit }} --since
+      "{{ cp_active_ts }}" --no-pager` for the traceback.
+  when: cp_log_cleanup.rc | default(1) != 0
+
+# --- Wave 2 step (c): channel-admin smoke (getMe → getChatMember) ----------
+#
+# Tech-spec Risks row: operator forgets to add the publisher bot as an
+# admin of @mnemonik. `getChat` cannot validate admin membership (any
+# caller gets 200 OK against a public channel). Two-step:
+#   1) getMe with the publisher bot token → publisher_bot_id
+#   2) getChatMember(chat_id=@mnemonik, user_id=publisher_bot_id)
+#      → result.status must be in {administrator, creator}
+# NO getForumTopic smoke — the Bot API has no such endpoint. Topic-id
+# mismatch is self-detected by Task 8's topic-handler at first use via
+# journald (tech-spec Risks row 11).
+
+- name: Smoke — getMe (discover publisher bot id)
+  # no_log: true so the token never reaches Ansible stdout/json output.
+  # Accept any HTTP status so the dedicated `fail:` task below can render
+  # the operator-actionable runbook message instead of Ansible's generic
+  # "Status code was not 200" (which would also leak nothing useful since
+  # the URL itself is suppressed). status_code accepts a list of codes.
+  ansible.builtin.uri:
+    url: "https://api.telegram.org/bot{{ blogger_telegram_bot_token }}/getMe"
+    method: POST
+    body_format: json
+    status_code: [200, 401, 404]
+    return_content: true
+  register: tg_me
+  no_log: true
+  changed_when: false
+
+- name: Fail loud if getMe did not return ok=true
+  # Catches token rotation drift: ok=false (or missing) = token doesn't
+  # authenticate against Bot API at all. Different failure class than "bot
+  # is not channel admin" — surface them separately so the runbook step is
+  # unambiguous.
+  ansible.builtin.fail:
+    msg: >-
+      Publisher bot token authentication failed (getMe did not return
+      ok=true). The token in sops `blogger_telegram_bot_token` is invalid
+      or revoked. See roles/content-publisher/README.md
+      "Rotate publisher bot token".
+  when: not (tg_me.json.ok | default(false))
+
+- name: Smoke — getChatMember(@mnemonik, publisher_bot_id)
+  # Chains tg_me → user_id. `chat_id` is the public channel handle from
+  # role defaults (blogger_telegram_channel = "@mnemonik"). no_log
+  # protects the token in the URL. status_code list mirrors the getMe
+  # step's reasoning — defer the actionable message to the `fail:` task.
+  ansible.builtin.uri:
+    url: "https://api.telegram.org/bot{{ blogger_telegram_bot_token }}/getChatMember"
+    method: POST
+    body_format: json
+    body:
+      chat_id: "{{ blogger_telegram_channel }}"
+      user_id: "{{ tg_me.json.result.id }}"
+    status_code: [200, 400, 403, 404]
+    return_content: true
+  register: tg_member
+  no_log: true
+  changed_when: false
+
+- name: Fail loud if publisher bot is not a channel admin
+  # Channel-admin runbook lives in roles/content-publisher/README.md
+  # (Wave-2-added section pointed to by the runbook map there). Without
+  # admin rights, getChatMember returns ok=true but result.status is
+  # 'left' / 'member' / 'kicked' / 'restricted' — none of which can post
+  # to the channel.
+  ansible.builtin.fail:
+    msg: >-
+      Publisher bot is not an admin of {{ blogger_telegram_channel }}
+      (getChatMember returned status='{{ tg_member.json.result.status | default("unknown") }}',
+      expected 'administrator' or 'creator').
+      See roles/content-publisher/README.md "Publisher bot must be channel admin".
+  when: >-
+    not (tg_member.json.ok | default(false))
+    or (tg_member.json.result.status | default('') not in ['administrator', 'creator'])

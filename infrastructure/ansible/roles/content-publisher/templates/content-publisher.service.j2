@@ -22,21 +22,21 @@ Group={{ base_operator_user }}
 WorkingDirectory={{ blogger_install_dir }}
 
 # Secrets via /etc/blogger.env (mode 0600 root:root, rendered from sops).
-# Leading `-` so Ansible reordering between deploy steps doesn't trap
-# the unit in a permanent failed state before the env file exists.
-# TASK 7 TODO (security-auditor T3-SEC-003): drop the leading dash when
-# the worker package is installed and the unit is flipped to active.
-# A missing env-file should hard-fail at that point, not start with a
-# blank environment.
-EnvironmentFile=-/etc/blogger.env
+# No leading `-`: Wave 2 service is active, and a missing env-file must
+# hard-fail the unit rather than silently start with TELEGRAM_BOT_TOKEN=""
+# (which would 401 against Bot API on every publish). The Task 7 role
+# renders the env file BEFORE enabling the service, so the ordering is
+# safe. (security-auditor T3-SEC-003, carried over from Task 3)
+EnvironmentFile=/etc/blogger.env
 Environment="PYTHONUNBUFFERED=1"
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-# Wave 1 places a placeholder ExecStart — the Python entrypoint module
-# (`content_publisher.main`) is installed by Task 7. Until then the unit
-# stays `enabled / inactive`. The path will be overwritten in Task 7
-# when the package lands in a venv at /opt/content-publisher/venv/.
-ExecStart=/opt/content-publisher/venv/bin/python -m content_publisher.main
+# Wave 2 entrypoint: the `content_publisher` package is installed into
+# the blogger venv by the Task 7 role, so its main module is reachable via
+# the same interpreter. main() spawns three sub-loops (queue-poll,
+# deadline-checker, cleanup-gc) — each logs its own "<loop> started" line
+# the role's smoke step grep-asserts after `systemctl start`.
+ExecStart={{ blogger_install_dir }}/venv/bin/python -m content_publisher.main
 
 # --- Hardening (tech-spec Risks: in-process publish hardening) -------------
 # LimitCORE=0  — no core dumps on disk (article text could leak).

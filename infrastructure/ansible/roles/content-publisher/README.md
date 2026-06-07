@@ -209,19 +209,55 @@ defeating the supply-chain pin (Decision 12).
 
 ---
 
-## Wave-1 acceptance check
+## Runbook: publisher bot must be channel admin
+
+The role runs a deploy-time smoke that calls `getMe` + `getChatMember` on
+`@mnemonik` against the publisher bot token. If the bot is not an admin
+the deploy fails with:
+
+```
+Publisher bot is not an admin of @mnemonik (getChatMember returned
+status='left', expected 'administrator' or 'creator').
+See roles/content-publisher/README.md "Publisher bot must be channel admin".
+```
+
+(`status` can also be `member`, `kicked`, `restricted` — none can post.)
+
+1. Open `@mnemonik` in Telegram (the channel itself, not a DM).
+2. Channel settings → Administrators → Add Administrator.
+3. Search for the publisher bot (`@mnemonik_publisher_bot`); add with
+   "Post Messages" permission (and optionally "Edit/Delete Messages").
+4. Re-run the deploy; the `getChatMember` smoke now returns
+   `status: 'administrator'` and the play proceeds.
+
+If you cannot find the bot when searching, the most likely cause is that
+the publisher bot was never created (Decision 5 — separate from the
+operator-facing bot). Talk to `@BotFather` first; the token in sops
+`blogger_telegram_bot_token` must belong to the bot you intend to add.
+
+Note: the role does NOT validate `blogger_prompts_topic_id` at deploy
+time — the Bot API has no read endpoint that takes a `message_thread_id`
+and confirms a topic exists in a chat. Topic-id mismatches surface at
+first use via journald (tech-spec Risks row 11): the bot's topic-handler
+logs the inbound `message_thread_id` and the operator compares with the
+configured value using `journalctl -u telegram-ai-agent | grep thread_id`.
+
+---
+
+## Wave-2 acceptance check (post Task 7)
 
 After this role runs successfully:
 
 ```
 ssh op@<vm> 'systemctl is-enabled content-publisher.service'   # → enabled
-ssh op@<vm> 'systemctl is-active content-publisher.service'    # → inactive (expected)
+ssh op@<vm> 'systemctl is-active content-publisher.service'    # → active
 ssh op@<vm> 'stat -c "%a %U:%G" /etc/blogger.env'              # → 600 root:root
 ssh op@<vm> 'stat -c "%a %U:%G" /etc/blogger.mcp.json'         # → 640 root:op
 ssh op@<vm> 'test -f /opt/blogger/venv/bin/python && echo OK'  # → OK
 ssh op@<vm> 'grep -E "^RequiresMountsFor=" /etc/systemd/system/content-publisher.service'
 # → RequiresMountsFor=/mnt/HC_Volume_<int>/content-publisher  (no literal *)
-```
 
-Task 7 (Wave 2) installs the Python entrypoint and flips the unit to
-`active`.
+# Three sub-loops emit their start lines on every (re)start.
+ssh op@<vm> 'journalctl -u content-publisher --since "$(systemctl show -p ActiveEnterTimestamp content-publisher --value)" --no-pager | grep -E "queue-poll started|deadline-checker started|cleanup-gc started"'
+# → all three lines present
+```
