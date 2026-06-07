@@ -104,3 +104,29 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - `ansible-playbook --syntax-check infrastructure/ansible/playbooks/deploy.yml` (via test wrapper) → rc=0
 - Offline-verified upstream surface: `npm ci` from generated lockfile installs cleanly; `node_modules/.bin/mnemonik-mcp --help` lists `install / mcp-stdio / doctor` — NO `sign-memory` subcommand on the npm-shipped binary (tech-spec Decision 3 anchor preserved)
 - Live VM smoke (post-deploy `systemctl is-active mnemonic-mcp`, real `mcp-stdio` handshake, lockfile sha drift check) deferred to Task 13 / 14
+
+## Task 4: `fabric/content-publisher/` — queue + state machine + CAS + env isolation
+
+**Status:** Done
+**Commits:** 59b9289 (impl), 3027ed3 (review-fix round 1), then review reports
+**Agent:** task-4-queue-cas
+**Summary:** Created new Python package `fabric/content-publisher/` with the SHARED CAS primitive both the long-running worker (Tasks 5–6) and the Telegram bot (Task 8) will import — single source of truth for every mutation of `queue.jsonl` on the Hetzner persistent volume. `state.py` carries the ~30 LOC flock/atomic-rename pattern from `workspace-manager/state.py` (module-level functions taking path parameters — copied, NOT imported, per AC10). `queue.py` exposes four functions — `append_job`, `load`, `cas_status`, `find_by_prefix` — implemented under `fcntl.flock(LOCK_EX)` + read-modify-write + `os.replace()` (tech-spec Decision 2). `cas_status` auto-sets `published_at` on `publishing→published` and `attest_pending_since` on `published→attest-pending` (caller-supplied `updates` apply after auto-set and may override). `find_by_prefix` accepts the 12-character SLICE form `job.id[:12]` (8 hex + `-` + 3 hex — what the bot actually stores in Telegram callback_data, capped at 64 bytes), fail-loud on ambiguous prefix to prevent publishing the wrong operator's content from a misrouted callback. `models.Job` has 31 fields including the three new lifecycle fields (`published_at`, `attest_pending_since`, `error_message`), `extra="forbid"` to catch typos in `updates` dicts, and a strict regex UUID v4 validator that rejects path traversal, control chars, uppercase hex, and non-v4 UUIDs at the model boundary. `env.py` builds child-process env from an allowlist per kind (claude / analyze_blog / mnemonik-mcp / blogger_inproc), fail-loud if neither `CLAUDE_CODE_OAUTH_TOKEN` nor `ANTHROPIC_API_KEY` is set for `claude`. Centralized `tests/conftest.py` carries `tmp_queue_dir` / `tmp_queue_path` / `make_job` factory + four placeholder mock fixtures (documented return shapes) used by Tasks 5/6/8. The race-safety invariant is proved by `test_cas_status_atomic_under_concurrent_clicks` using `threading.Barrier(2)` (exactly one CAS succeeds, the other gets `StaleStateError`). Round 1 review also surfaced a data-loss hazard: the round-1 `cas_status` silently dropped malformed JSONL lines on rewrite, so a half-written line from a previous kill-9 would be permanently deleted on the next CAS; fixed by preserving unparseable lines verbatim as opaque pass-through entries (`entries: list[Job | str]`), with `test_cas_status_preserves_unknown_lines` pinning the invariant.
+**Deviations:** Two minor variances from the TDD Anchor wording:
+  1. `find_by_prefix` accepts the 12-char SLICE form (`job.id[:12]` = 8 hex + dash + 3 hex), not 12 hex characters. The TDD Anchor tests themselves use `j.id[:12]` directly, so this matches what Task 8 (bot callback resolver) will actually pass at the call site. Spec text saying "12 hex chars" was inconsistent with the spec's own tests; chose the test-driven form.
+  2. `test_illegal_transitions_raise` was collapsed to assert against the static `Job.allowed_transitions()` map for the 8 ILLEGAL_TRANSITIONS pairs, plus a separate `test_cas_status_raises_on_illegal_transition` that pins the cas_status → `IllegalTransitionError` wiring with a pre/post file-immutability check. Per-edge end-to-end CAS tests would have required walking every job through a multi-step legal path to each src state (and many illegal-source states like `done` / `rejected` are not reachable from `queued` without first taking another illegal transition); the collapsed form is strictly stronger and avoids the bootstrap problem.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approved_with_minor — T4-1 SCORING→FAILED missing (FALSE POSITIVE, mapping already at models.py:119), T4-2 cas_status drops malformed lines on rewrite (data-loss hazard), T4-3 static-vs-locked confusion (comment only) → [logs/working/task-4/code-reviewer-round1.json](logs/working/task-4/code-reviewer-round1.json)
+- test-reviewer: passed — F1 weak caplog assertion (medium), F2 no file-immutability after IllegalTransitionError (low), F3 conftest placeholder fixtures undocumented (low) → [logs/working/task-4/test-reviewer-round1.json](logs/working/task-4/test-reviewer-round1.json)
+
+*Round 2 (after fixes):*
+- code-reviewer: approved — T4-1 confirmed false positive (mapping was present in original commit); T4-2 elegantly fixed with `list[Job | str]` + isinstance guard; T4-3 comment applied; all test-reviewer findings fixed → [logs/working/task-4/code-reviewer-round2.json](logs/working/task-4/code-reviewer-round2.json)
+- test-reviewer: passed — all three findings resolved correctly; new test_cas_status_preserves_unknown_lines well-structured → [logs/working/task-4/test-reviewer-round2.json](logs/working/task-4/test-reviewer-round2.json)
+
+**Verification:**
+- `pytest fabric/content-publisher/tests/ -v` → 34/34 pass (including the critical `test_cas_status_atomic_under_concurrent_clicks`)
+- `ruff check fabric/content-publisher/` → clean
+- `mypy fabric/content-publisher/src/` → clean (strict mode)
+- `grep -rE "from workspace_manager|import workspace_manager" fabric/content-publisher/src/` → empty (AC10 decoupling)
