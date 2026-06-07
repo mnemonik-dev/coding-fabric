@@ -1,0 +1,118 @@
+{
+  "task": "task-5",
+  "round": 1,
+  "reviewer": "test-reviewer",
+  "commit": "2d8eef3",
+  "status": "needs_improvement",
+  "summary": "All 10 TDD Anchor items covered; 13 new tests + 1 skipped. Three tests added beyond the anchor (import-paths guard, prompt-via-stdin, missing-article edge case) are genuinely valuable. Two medium findings: (1) the byte-equality test will likely fail the first time upstream is present because Settings(dry_run=False) is called with no telegram config — a required field — which would raise a Pydantic ValidationError before the byte comparison runs; (2) test_high_score_no_retry_marker does not assert the absence of a low-score flag in a way that is robust to the worker interface (it only checks issues==[], which is also satisfied by a low-score path if truncation yielded an empty list). No critical or high issues.",
+  "counts": {
+    "critical": 0,
+    "high": 0,
+    "medium": 2,
+    "low": 1
+  },
+  "taskRequired": {
+    "needed": false,
+    "reason": "Medium findings are fixable in current context without a separate task."
+  },
+  "tdd_anchor_coverage": {
+    "test_preview_segments_byte_equal_to_publish_segments": "covered — present in test_preview_render.py; skipped (loudly via importorskip) pending upstream. Skip strategy is spec-compliant per Decision 11 gate.",
+    "test_render_uses_config_platform_import": "covered — test_render_uses_config_platform_import",
+    "test_high_score_no_retry_marker": "covered — test_high_score_no_retry_marker (see F1 finding: assertion could be stronger)",
+    "test_low_score_truncates_issues_to_three": "covered — test_low_score_truncates_issues_to_three; asserts exact first-3 slice with order preserved",
+    "test_claude_nonzero_exit_marks_failed_and_notify_pending": "covered — test_claude_nonzero_exit_marks_failed_and_notify_pending",
+    "test_analyze_blog_nonzero_exit_marks_failed_and_notify_pending": "covered — test_analyze_blog_nonzero_exit_marks_failed_and_notify_pending",
+    "test_claude_env_excludes_telegram_token": "covered — test_claude_env_excludes_telegram_token",
+    "test_analyze_env_excludes_telegram_token": "covered — test_analyze_env_excludes_telegram_token",
+    "test_unit_template_renders_concrete_volume_id": "covered — test_unit_template_renders_concrete_volume_id",
+    "test_unit_template_no_literal_wildcard": "covered — test_unit_template_no_literal_wildcard; uses for/else to also assert the line exists"
+  },
+  "extra_tests_beyond_anchor": {
+    "test_render_uses_documented_ingest_and_dispatcher_imports": "valuable — pins both mnemonik_blogger.content.ingest.ingest_article and mnemonik_blogger.content.formatters.render import paths as regression guards",
+    "test_claude_prompt_via_stdin_not_argv": "valuable — explicitly asserts operator-controlled text is never in argv; includes injection-string test case",
+    "test_missing_article_after_claude_success_marks_failed": "valuable — covers the edge case where skill workflow exits 0 but produces no article.md"
+  },
+  "ac_coverage": {
+    "AC_worker_uuid_and_worktree": "indirectly covered — spawn failure tests exercise the full worker path including worktree creation; no dedicated UUID-traversal test at worker level (this was Task 4's AC6 scope — acceptable)",
+    "AC_spawn_argv_and_stdin": "covered — test_claude_prompt_via_stdin_not_argv asserts fixed argv + prompt not in any argv element",
+    "AC_article_path_saved": "indirectly covered — test_missing_article_after_claude_success_marks_failed validates the 'article.md not produced' branch; success path sets article_path (verified via refreshed.status == PREVIEW_SENT implying it was stored)",
+    "AC_cas_writing_to_scoring": "covered indirectly — analyze gate tests walk through the full CAS chain and verify final state",
+    "AC_analyze_subprocess": "covered — analyze gate tests use fake_exec that simulates analyze_blog.py; spawn_failure tests simulate its non-zero exit",
+    "AC_issues_truncated_to_three": "covered — test_low_score_truncates_issues_to_three with 7-element input",
+    "AC_preview_render_direct_import": "covered — import-guard tests + byte-equality (skipped)",
+    "AC_cas_scoring_to_preview_sent_atomic": "covered — analyze gate tests assert approval_deadline, preview_pending, cleanup_at, preview_segments all set in PREVIEW_SENT state",
+    "AC_failure_handling": "covered — three spawn failure tests covering all three failure modes",
+    "AC12_subprocess_env_isolation": "covered — two env isolation tests",
+    "AC15_required_mounts_for": "covered — three template-render tests"
+  },
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "medium",
+      "category": "Category 2 — mock-only / weak assertion",
+      "file": "tests/test_analyze_gate.py",
+      "test": "test_high_score_no_retry_marker",
+      "issue": "The test asserts refreshed.issues == [] to verify 'no retry marker'. But the retry marker (the [🔄 Перегенерировать] button) is driven by score < MNEMONIK_MIN_SCORE, not by the issues list being empty. If score >= min_score but analyze_blog returned non-empty issues, the worker still stores them without a low-score flag. The test verifies 'high score path passes through with empty issues' — that is true but narrow. It does NOT verify that the worker/bot would NOT add the low-score indicator when score is high. Since the low-score flag is determined by score vs threshold (not by issues presence), the test should also assert score >= some_min_threshold or explicitly that the job is in the expected state for the high-score gate. More concretely: the test should assert that refreshed.score >= MNEMONIK_MIN_SCORE (whatever that constant is) to pin the threshold comparison — otherwise a future bug where score is ignored and all jobs get the retry button would not be caught by this test.",
+      "litmusTestFailed": false,
+      "replacement": {
+        "approach": "Add an assertion on the score value relative to the configured threshold, and optionally add a second variant that passes non-empty issues with a high score to confirm issues are stored but the low-score path is not triggered.",
+        "assertions": [
+          "assert refreshed.score == 92  (already present — good)",
+          "assert refreshed.score >= worker.MNEMONIK_MIN_SCORE  (pin the gate comparison)",
+          "optionally: run same pipeline with score=92, issues=['minor thing'] -> verify refreshed.issues == ['minor thing'] and status == PREVIEW_SENT (high score does not suppress issues storage)"
+        ],
+        "mockChange": "none needed — the existing _patch_pipeline already supports non-empty issues"
+      }
+    },
+    {
+      "id": "F2",
+      "severity": "medium",
+      "category": "Category 6 — test anti-pattern (will likely fail on first real upstream run)",
+      "file": "tests/test_preview_render.py",
+      "test": "test_preview_segments_byte_equal_to_publish_segments",
+      "issue": "Settings(dry_run=False) is constructed with no other arguments. The tech-spec Decision 4 shows the real call requires telegram=TelegramConfig(bot_token=..., channel=...) and min_score and claude_blog_path. If Settings is a Pydantic model with required fields (which it is per the tech-spec), this call raises ValidationError at test time — before the byte comparison is ever reached. The test will fail the moment the upstream snapshot is present, not for the right reason (byte mismatch) but for a configuration error. This undermines the entire purpose of the importorskip guard.",
+      "litmusTestFailed": false,
+      "replacement": {
+        "approach": "Construct Settings with the minimum required fields using Pydantic's construct() or by supplying test values. The bot_token can be a fake SecretStr; channel can be '@test'. min_score can be 0. claude_blog_path can be a tmp_path. The point is the test exercises the publish path, not that it connects to real Telegram.",
+        "assertions": [
+          "same byte-equality assertions — no change needed",
+          "Settings construction: Settings(dry_run=False, min_score=0, claude_blog_path=Path('/tmp'), telegram=TelegramConfig(bot_token=SecretStr('fake'), channel='@test'))"
+        ],
+        "mockChange": "TelegramPublisher.publish is already monkeypatched — no real Telegram connection will be made; the Settings fields only need to pass Pydantic validation"
+      }
+    },
+    {
+      "id": "F3",
+      "severity": "low",
+      "category": "Category 3 — missing coverage",
+      "file": "tests/test_analyze_gate.py",
+      "test": "missing",
+      "issue": "Neither analyze gate test verifies that approval_deadline is in the future (> now) and cleanup_at is approximately now+24h. The tests assert these fields are not None, which is correct, but do not check the magnitude. A bug where both are set to `now` would pass both tests. This is a low-risk finding since the values are straightforward, but it is specifically called out in the task AC: 'approval_deadline = now() + PUBLISH_APPROVAL_TIMEOUT_MIN мин'.",
+      "litmusTestFailed": false,
+      "replacement": {
+        "approach": "Add a time-bracket assertion around approval_deadline and cleanup_at, similar to the pattern used in Task 4's timestamp tests.",
+        "assertions": [
+          "from datetime import UTC, datetime, timedelta",
+          "before = datetime.now(UTC)",
+          "... run worker ...",
+          "after = datetime.now(UTC)",
+          "assert refreshed.approval_deadline > before  (it's in the future)",
+          "assert refreshed.cleanup_at > refreshed.approval_deadline  (cleanup is later than approval)"
+        ],
+        "mockChange": "none"
+      }
+    }
+  ],
+  "skip_strategy_assessment": {
+    "verdict": "acceptable",
+    "notes": "The importorskip approach is correct: it fails the test with a loud SKIP rather than silently passing when the upstream module is absent. The three guards (content.ingest, agent module, run_campaign_from_article attribute) are layered correctly. The skip is visible in pytest summary. The regression-guard tests (import path assertions) run regardless of whether the upstream is present, which is the right design. The only concern is F2 above — once the skip is lifted the Settings construction will fail for reasons unrelated to the byte-equality property being tested."
+  },
+  "pyramid_assessment": {
+    "verdict": "correct",
+    "unit": 13,
+    "skipped": 1,
+    "integration": 0,
+    "e2e": 0,
+    "note": "All unit, appropriate for Task 5 scope. Integration tests are Task 6 territory."
+  }
+}

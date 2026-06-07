@@ -1,0 +1,44 @@
+{
+  "task": "Task 5 — content-publisher claude spawn + analyze_blog + renderer",
+  "commit": "adc63d9",
+  "round": 2,
+  "reviewer": "code-reviewer",
+  "verdict": "approved",
+  "summary": "All three round-1 issues are resolved correctly. The worktree mkdir order fix is clean and the comment explains the invariant. The subprocess cleanup pattern is consistent across spawn.py and score.py. The UUID4_RE import eliminates the validator acceptance-set discrepancy. One bonus fix in score.py (dynamic ANALYZE_BLOG_PATH via MNEMONIK_CLAUDE_BLOG_PATH) is a good addition that aligns the hardcoded path with the env var already passed through restricted_env.",
+  "issues": [],
+  "round1_resolution": {
+    "T5-1": {
+      "status": "FIXED",
+      "verified": "worker.py run_writing_to_preview: worktree.mkdir() moved to line ~127, after the queued→writing CAS block. On StaleStateError the function returns at line 124 before any filesystem mutation. Comment on line 106 explains the invariant explicitly ('claim the job BEFORE we touch the filesystem'). The mkdir remains idempotent (exist_ok=True) for crash-recovery restarts where the directory already exists."
+    },
+    "T5-2": {
+      "status": "FIXED",
+      "verified": "spawn.py lines 65-76: proc.communicate(input=...) wrapped in try/except BaseException. On exception: proc.terminate() called if proc.returncode is None, await proc.wait() in inner try/except, then re-raise. score.py lines 76-87: identical pattern for proc.communicate(). The returncode is None guard is correct — terminate() is a no-op on an already-exited process on most platforms but the guard makes intent explicit."
+    },
+    "T5-3": {
+      "status": "FIXED",
+      "verified": "worker.py: uuid import removed, UUID4_RE imported from content_publisher.models. _validate_uuid_v4 now uses UUID4_RE.fullmatch(job_id) — strictly equivalent to the Job.id field validator. Docstring explains the rationale (uuid.UUID laxer than the regex). MNEMONIK_MIN_SCORE also added as a module-level constant for testability."
+    }
+  },
+  "bonus_improvement": {
+    "title": "ANALYZE_BLOG_PATH made dynamic via MNEMONIK_CLAUDE_BLOG_PATH",
+    "description": "score.py now computes the analyze_blog path at call time via _analyze_blog_path() which reads MNEMONIK_CLAUDE_BLOG_PATH from os.environ. This keeps the hardcoded '/opt/claude-blog' in sync with the env var already passed to the subprocess by restricted_env('analyze_blog'). Previously the path was a module-level constant that would diverge from the env var if an operator changed MNEMONIK_CLAUDE_BLOG_PATH. The comment on lines 17-22 explains the rationale clearly.",
+    "verdict": "good"
+  },
+  "ac_coverage": {
+    "spawn_via_stdin_not_argv": "PASS",
+    "article_path_returned": "PASS",
+    "cas_writing_to_scoring": "PASS",
+    "analyze_blog_subprocess": "PASS",
+    "article_path_containment": "PASS",
+    "issues_truncated_to_3": "PASS",
+    "render_via_direct_import": "PASS",
+    "scoring_to_preview_sent_atomic": "PASS",
+    "failure_to_failed_with_notify_and_error_message": "PASS",
+    "env_isolation_no_telegram_token": "PASS",
+    "worktree_mkdir_after_cas": "PASS — T5-1 fixed",
+    "subprocess_cleanup_on_cancellation": "PASS — T5-2 fixed",
+    "uuid_v4_validator_single_source": "PASS — T5-3 fixed",
+    "pytest_48_passed_1_skipped": "PASS"
+  }
+}

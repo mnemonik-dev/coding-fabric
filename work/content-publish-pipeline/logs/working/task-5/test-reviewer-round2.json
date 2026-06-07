@@ -1,0 +1,53 @@
+{
+  "task": "task-5",
+  "round": 2,
+  "reviewer": "test-reviewer",
+  "commit": "adc63d9",
+  "status": "passed",
+  "summary": "All three round 1 findings resolved correctly. Two bonus implementation fixes (orphan subprocess cleanup on SIGTERM in spawn.py + score.py, worktree-mkdir ordering moved after CAS in worker.py) are sound and do not require test changes — the existing failure-path tests cover both. 48 passed, 1 skipped, no new findings.",
+  "counts": {
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 0
+  },
+  "taskRequired": {
+    "needed": false,
+    "reason": "No issues remain."
+  },
+  "round1_findings_resolution": {
+    "F1_high_score_gate_assertion": {
+      "status": "resolved",
+      "verdict": "correct",
+      "notes": "test_high_score_no_retry_marker now asserts refreshed.score >= worker.MNEMONIK_MIN_SCORE. MNEMONIK_MIN_SCORE is exposed as a module-level env-driven constant so the test binds to the same gate value the worker uses. The new test_high_score_still_records_issues_if_present confirms that issues are stored even when score is high — this is the second variant suggested in the finding. Both assertions correctly distinguish the high-score gate logic from the storage logic."
+    },
+    "F2_settings_construction": {
+      "status": "resolved",
+      "verdict": "correct",
+      "notes": "Settings is now constructed adaptively via inspect.signature, supplying test values for each required field without a default. The approach handles the known fields (min_score, claude_blog_path, telegram) explicitly and falls back to None for any unknown future fields. TelegramConfig() is imported inside the conditional block so the test still skips cleanly when the upstream module is absent. The try/except around the signature inspection is a sensible safety net — if Settings has a non-standard __init__ the test degrades gracefully rather than crashing before the importorskip guard. The byte comparison will now fail for the right reason (mismatch) rather than a ValidationError."
+    },
+    "F3_deadline_magnitude_assertions": {
+      "status": "resolved",
+      "verdict": "correct",
+      "notes": "before = datetime.now(UTC) is captured immediately before run_writing_to_preview; then refreshed.approval_deadline > before and refreshed.cleanup_at > refreshed.approval_deadline are asserted. The datetime comparison is type-safe: approval_deadline is stored as an ISO string via .isoformat() and Pydantic coerces it back to a timezone-aware datetime on load, so the comparison against before (also UTC) works correctly without tzinfo mismatch."
+    }
+  },
+  "bonus_implementation_fixes_assessment": {
+    "orphan_subprocess_cleanup": {
+      "verdict": "sound",
+      "notes": "The BaseException handler in spawn.py and score.py sends SIGTERM to the subprocess and awaits it if proc.returncode is None. This prevents claude and analyze_blog from becoming orphans when the worker coroutine is cancelled by systemd SIGTERM. The inner try/except on proc.wait() is correct — a second cancellation or timeout should not mask the original exception. Existing failure-path tests (test_claude_nonzero_exit, test_analyze_blog_nonzero_exit) continue to exercise the normal non-zero exit path; the SIGTERM path is a runtime-only concern. No new tests needed for this defensive path."
+    },
+    "worktree_mkdir_ordering": {
+      "verdict": "sound",
+      "notes": "Moving worktree.mkdir() to after the queued->writing CAS is a correctness fix: previously a crash between mkdir and the CAS would leave an orphaned directory for a job that was never claimed. The reordered code creates the directory only after the CAS succeeds (worker owns the job). The comment correctly notes idempotency for crash-recovery restarts. Existing tests are unaffected because fake_exec stubs do not check directory pre-existence."
+    }
+  },
+  "pyramid_assessment": {
+    "verdict": "correct",
+    "unit": 14,
+    "skipped": 1,
+    "integration": 0,
+    "e2e": 0,
+    "note": "One additional test added (test_high_score_still_records_issues_if_present). All unit, appropriate for Task 5 scope."
+  }
+}

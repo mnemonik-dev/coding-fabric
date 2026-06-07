@@ -1,0 +1,47 @@
+{
+  "task": 5,
+  "round": 2,
+  "commit": "adc63d9",
+  "auditor": "security-auditor",
+  "date": "2026-06-07",
+  "verdict": "APPROVED — CLOSED",
+  "summary": "T5-SEC-001 fixed correctly: analyze_blog path now resolved from MNEMONIK_CLAUDE_BLOG_PATH at call time via _analyze_blog_path() helper. Two code-reviewer fixes also carry security-adjacent benefit: worktree.mkdir() moved after CAS claim (no orphaned dir on lost race), and proc.communicate() wrapped in BaseException handler with terminate()+wait() (no orphaned subprocesses on SIGTERM). UUID4_RE regex alignment is a correctness improvement that eliminates a subtle acceptance-set divergence between the Pydantic model and the worker validator. No new findings. Task 5 is clear for merge.",
+  "round1_findings_resolution": [
+    {
+      "id": "T5-SEC-001",
+      "round1_severity": "LOW",
+      "resolution": "FIXED exactly as recommended",
+      "verification": "score.py: `ANALYZE_BLOG_PATH` constant replaced with `_DEFAULT_CLAUDE_BLOG_ROOT = '/opt/claude-blog'` + `_ANALYZE_BLOG_REL = 'scripts/analyze_blog.py'` + `_analyze_blog_path()` function that reads `os.environ.get('MNEMONIK_CLAUDE_BLOG_PATH', _DEFAULT_CLAUDE_BLOG_ROOT)` at call time. The `analyze()` function now calls `str(_analyze_blog_path())` in argv. The docstring explicitly states the env-var/path alignment rationale. MNEMONIK_CLAUDE_BLOG_PATH is now the single source of truth for both the script location and the subprocess env var passed by `restricted_env('analyze_blog')`."
+    },
+    {
+      "id": "T5-SEC-002",
+      "round1_severity": "INFO",
+      "resolution": "NO ACTION REQUIRED — confirmed still acceptable"
+    }
+  ],
+  "additional_observations": [
+    {
+      "id": "T5-R2-OBS-001",
+      "severity": "INFO",
+      "title": "worktree.mkdir() moved after CAS claim — eliminates orphaned directory risk",
+      "description": "worker.py previously called `worktree.mkdir(parents=True, exist_ok=True)` before the `queued -> writing` CAS. On a losing race (another worker claimed the job first), the directory was created with no job record pointing to it and no `cleanup_at` — cleanup-gc would never reclaim it, slowly accumulating empty dirs under WORKTREE_ROOT. The fix moves mkdir to after the CAS succeeds. The comment correctly notes the crash-recovery case: if the worker crashes between CAS-writing and mkdir, the next restart will also call mkdir (idempotent, exist_ok=True). No security impact, but the fix eliminates a cleanup surface that could accumulate UUID-named dirs indefinitely.",
+      "action": "None. Fix is correct."
+    },
+    {
+      "id": "T5-R2-OBS-002",
+      "severity": "INFO",
+      "title": "BaseException handler in proc.communicate() prevents orphaned subprocesses on SIGTERM",
+      "description": "Both spawn.py and score.py now wrap `await proc.communicate()` in `try/except BaseException` that calls `proc.terminate()` + `await proc.wait()` if the subprocess is still running. This handles the case where systemd sends SIGTERM to the worker while a claude or analyze_blog subprocess is running: without this guard, the subprocess would continue with its stdin/stdout pipes still open and no parent to wait on it, becoming a zombie until the next cleanup pass. The inner `try/except BaseException: pass` around `await proc.wait()` is correct — if wait() itself raises (e.g. the process already exited between terminate() and wait()), we still re-raise the original exception. This is a correctness/reliability fix with security-adjacent benefit: no lingering claude subprocesses holding credentials in their env past the worker's intended lifetime.",
+      "action": "None. Fix is correct."
+    },
+    {
+      "id": "T5-R2-OBS-003",
+      "severity": "INFO",
+      "title": "UUID4_RE regex replaces uuid.UUID() — acceptance sets now identical between Pydantic model and worker validator",
+      "description": "worker._validate_uuid_v4() previously used `uuid.UUID(job_id)` which accepts forms that the Pydantic Job.id field validator would reject (braces `{...}`, uppercase hex, leading/trailing whitespace). The replacement uses `UUID4_RE.fullmatch(job_id)` — the same compiled regex imported from models.py. This closes a subtle attack surface: a crafted job_id that uuid.UUID() accepts but does not match the canonical UUID4 pattern (e.g. `{aaaabbbb-cccc-4ddd-eeee-ffffffffffff}`) could previously slip through _validate_uuid_v4() and reach the worktree path construction. The canonical round-trip check `str(parsed) == job_id` in the old code would have caught braces and uppercase anyway, but the regex alignment makes the acceptance sets provably identical and removes the dependency on uuid.UUID's tolerance behavior.",
+      "action": "None. Fix is correct and a security improvement."
+    }
+  ],
+  "new_findings": [],
+  "task_status": "CLOSED — no further security review needed for Task 5"
+}

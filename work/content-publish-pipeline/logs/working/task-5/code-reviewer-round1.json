@@ -1,0 +1,69 @@
+{
+  "task": "Task 5 — content-publisher claude spawn + analyze_blog + renderer",
+  "commit": "2d8eef3",
+  "round": 1,
+  "reviewer": "code-reviewer",
+  "verdict": "approved_with_minor",
+  "summary": "Clean, well-structured implementation. The spawn/score/render/worker separation of concerns is correct. Decision 1 (stdin-only prompt, no argv), Decision 4 (direct import byte-equality), and env isolation are all properly implemented. Three minor issues: a missing cleanup of the worktree mkdir on queued→writing CAS failure (directory created before the CAS, not after), a potential process handle leak in score.py if communicate() raises, and the _validate_uuid_v4 in worker.py uses uuid.UUID() which accepts braced/uppercase forms that the Job model's regex rejects — the canonical regex from models.py should be the single source of truth.",
+  "findings": [
+    {
+      "id": "T5-1",
+      "severity": "minor",
+      "dimension": "Correctness / Error Handling",
+      "file": "fabric/content-publisher/src/content_publisher/worker.py",
+      "line": "105",
+      "issue": "worktree.mkdir() is called BEFORE the queued→writing CAS on line 109. If the CAS raises StaleStateError (another worker already claimed the job), the function returns on line 117-119 but the worktree directory has already been created on disk. This is a leaked artifact: a directory named after a job.id that the current worker did not claim. It won't cause incorrect behavior (cleanup-gc won't find it since cleanup_at is never set on this job, and the actual worker that claimed it will use exist_ok=True), but it is unnecessary filesystem noise and could accumulate across crash-recovery cycles.",
+      "recommendation": "Move worktree.mkdir() to after the queued→writing CAS succeeds:\n\n  queue.cas_status(QUEUE_PATH, job.id, expected=JobStatus.QUEUED, target=JobStatus.WRITING, ...)\n  worktree.mkdir(parents=True, exist_ok=True)\n\nThis ensures the directory only exists for jobs this worker actually owns. The worktree path can still be computed before the CAS for use in the updates dict.",
+      "impact": "Filesystem noise — orphaned directories. Not a correctness or security issue."
+    },
+    {
+      "id": "T5-2",
+      "severity": "minor",
+      "dimension": "Resource Management",
+      "file": "fabric/content-publisher/src/content_publisher/score.py",
+      "line": "59-68",
+      "issue": "In score.analyze(), if proc.communicate() raises (e.g. asyncio.CancelledError from a task cancellation), the subprocess is left running because there is no try/finally to terminate it. asyncio.create_subprocess_exec returns a Process object; if communicate() is cancelled, the process keeps running and holds the pipe handles open. spawn.py has the same pattern but is less exposed since communicate() there includes prompt bytes via input= which can block.",
+      "recommendation": "Wrap the communicate() call in a try/except that ensures the process is terminated on unexpected exceptions:\n\n  try:\n    stdout_bytes, stderr_bytes = await proc.communicate()\n  except BaseException:\n    proc.terminate()\n    await proc.wait()\n    raise\n\nAlternatively, use asyncio.wait_for() with a timeout to bound subprocess lifetime. Both spawn.py and score.py should apply the same pattern.",
+      "impact": "On worker cancellation (SIGTERM to content-publisher.service), spawned subprocesses may be orphaned. Low probability in normal operation but a concern for graceful shutdown."
+    },
+    {
+      "id": "T5-3",
+      "severity": "minor",
+      "dimension": "Cross-File Consistency / Security",
+      "file": "fabric/content-publisher/src/content_publisher/worker.py",
+      "line": "49-56",
+      "issue": "_validate_uuid_v4() uses uuid.UUID(job_id) which accepts non-canonical forms that the Job model rejects: braces, uppercase hex, and surrounding whitespace (Python's uuid.UUID is lenient). Then it checks str(parsed) != job_id for canonical form. This is correct logic, but it means uuid.UUID() can succeed with job_id='  ABCD1234-12AB-4DEF-89AB-0123456789AB  ' (uuid.UUID normalizes whitespace and case), and str(parsed) would be the lowercase version — the comparison would fail for different reasons than the Job model's regex. The concern is that the two validators are slightly different in their acceptance set. If a malformed ID somehow bypassed Job's Pydantic validator (e.g. loaded from a malformed JSONL line that was preserved as opaque), the worker's validator should be the backstop — but the specific 'strip whitespace + lowercase' normalization by uuid.UUID() makes the comparison indirect.",
+      "recommendation": "Use the UUID4_RE regex from models.py as the single source of truth for validation in worker.py as well:\n\n  from content_publisher.models import UUID4_RE\n\n  def _validate_uuid_v4(job_id: str) -> None:\n    if not UUID4_RE.fullmatch(job_id):\n      raise ValueError(f\"job.id is not a canonical lowercase UUID v4: {job_id!r}\")\n\nThis guarantees worker.py's validation is strictly equivalent to the Pydantic model's validation, eliminating any acceptance-set discrepancy.",
+      "impact": "Negligible security risk since the Job model validator runs first. But the dual-validator pattern creates a subtle inconsistency that could confuse future readers."
+    }
+  ],
+  "positive_observations": [
+    "Decision 1 is correctly implemented: _CLAUDE_ARGV is a fixed tuple, prompt flows exclusively through proc.communicate(input=prompt.encode()) — no f-string interpolation, no argv injection surface.",
+    "The test_claude_prompt_via_stdin_not_argv test explicitly checks that the prompt string does not appear in any argv element, including a prompt that contains a shell injection attempt. This is the right adversarial test.",
+    "render.py uses deferred imports (inside the function body) to allow test collection on dev venvs where mnemonik_blogger may not have the full API. The module-level comment explains this clearly.",
+    "The byte-equality test correctly identifies the actual seam (mnemonik_blogger/publish/telegram.py::TelegramPublisher.publish) via the comment, rather than relying on the speculative mnemonik_blogger.agent._publish_post mentioned in the task spec.",
+    "All scoring/rendering failures are funneled through _mark_failed() which is a best-effort CAS — it logs and returns rather than panicking if the CAS fails due to a race. This is correct for a catch-all error handler.",
+    "The atomic single-CAS write for scoring→preview-sent (lines 183-206) writes approval_deadline, cleanup_at, preview_pending, preview_segments, score, and issues all together — correct per the task spec requirement to avoid races with the deadline-checker in Task 6.",
+    "score.py documents _ISSUES_PREVIEW_CAP = 3 as a named constant rather than a magic number, and the truncation happens inside _parse_stdout before returning to the caller — single responsibility.",
+    "The _FakeProc class in tests reuses the same shape across test_spawn_failure_path.py and test_analyze_gate.py. The test helper _stub_env() correctly sets all four env vars needed by restricted_env.",
+    "test_required_mounts_for.py renders the Jinja template directly with jinja2.StrictUndefined — no Ansible engine required, runs fast at unit level. The empty-fact test correctly uses del to remove the var and asserts UndefinedError.",
+    "The WORKTREE_ROOT/QUEUE_PATH/APPROVAL_TIMEOUT_MIN module-level constants are monkeypatchable by tests without needing to mock os.environ for each test — a clean testability pattern."
+  ],
+  "ac_coverage": {
+    "spawn_via_stdin_not_argv": "PASS — _CLAUDE_ARGV fixed tuple, communicate(input=...) for stdin",
+    "article_path_returned": "PASS — worktree/article.md checked, SpawnFailed if missing",
+    "cas_writing_to_scoring": "PASS — atomic",
+    "analyze_blog_subprocess": "PASS — asyncio.create_subprocess_exec, restricted_env",
+    "article_path_containment": "PASS — is_relative_to(worktree) check before scoring",
+    "issues_truncated_to_3": "PASS — inside score._parse_stdout, confirmed by test",
+    "render_via_direct_import": "PASS — Decision 4 imports in render_preview",
+    "scoring_to_preview_sent_atomic": "PASS — single cas_status call with all fields",
+    "failure_to_failed_with_notify_and_error_message": "PASS — _mark_failed() throughout",
+    "env_isolation_no_telegram_token": "PASS — test_separate_bot_token covers both claude and analyze_blog",
+    "worktree_mkdir_before_cas": "MINOR ISSUE — T5-1 (dir created before ownership confirmed)",
+    "subprocess_resource_cleanup": "MINOR ISSUE — T5-2 (no terminate on cancellation)",
+    "uuid_v4_validator_consistency": "MINOR ISSUE — T5-3 (dual-validator pattern)",
+    "byte_equality_test_skipped": "INFORMATIONAL — test correctly skipped when upstream snapshot absent; importorskip is loud, not silent",
+    "test_render_uses_config_platform_import": "PASS — AST grep approach is solid"
+  }
+}
