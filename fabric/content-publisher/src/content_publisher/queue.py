@@ -142,6 +142,9 @@ def cas_status(
     that contract is enforced by Tasks 5/6 at their call sites — but if one IS
     supplied it is persisted verbatim.
     """
+    # Static graph check — no I/O needed and the result cannot change at
+    # runtime. The live-status comparison below (StaleStateError) is the part
+    # that requires the lock.
     transitions = Job.allowed_transitions()
     if target not in transitions.get(expected, set()):
         raise IllegalTransitionError(
@@ -151,7 +154,11 @@ def cas_status(
     lock = _acquire(_lock_path(queue_path))
     try:
         lines = _read_lines(queue_path)
-        parsed: list[Job] = []
+        # Preserve every line we cannot parse as an opaque pass-through so the
+        # CAS rewrite never silently deletes data we don't understand (e.g. a
+        # half-written line left by a kill -9 mid-_write_raw). Blank lines are
+        # dropped — they are noise, not data.
+        entries: list[Job | str] = []
         idx_match: int | None = None
         for raw in lines:
             stripped = raw.strip()
@@ -160,16 +167,21 @@ def cas_status(
             try:
                 j = Job.model_validate_json(stripped)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("queue: skipping malformed line during cas: %s", exc)
+                logger.warning(
+                    "queue: preserving malformed line during cas (will be kept verbatim): %s",
+                    exc,
+                )
+                entries.append(stripped)
                 continue
             if j.id == job_id and idx_match is None:
-                idx_match = len(parsed)
-            parsed.append(j)
+                idx_match = len(entries)
+            entries.append(j)
 
         if idx_match is None:
             raise JobNotFoundError(job_id)
 
-        current = parsed[idx_match]
+        current = entries[idx_match]
+        assert isinstance(current, Job)  # idx_match only set for parsed jobs
         if current.status != expected:
             raise StaleStateError(job_id, expected, current.status)
 
@@ -188,9 +200,14 @@ def cas_status(
         # Re-validate so caller errors (bad type in updates) fail loud here,
         # not at next ``load()``.
         new_job = Job.model_validate(as_dict)
-        parsed[idx_match] = new_job
+        entries[idx_match] = new_job
 
-        payload = "\n".join(j.model_dump_json() for j in parsed) + "\n"
+        payload = (
+            "\n".join(
+                e.model_dump_json() if isinstance(e, Job) else e for e in entries
+            )
+            + "\n"
+        )
         _write_raw(queue_path, payload.encode("utf-8"))
         return new_job
     finally:

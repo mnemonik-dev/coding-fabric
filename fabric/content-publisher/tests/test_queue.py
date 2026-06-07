@@ -100,8 +100,18 @@ def test_load_skips_blank_and_malformed_lines(tmp_queue_path, caplog) -> None:
         jobs = load(tmp_queue_path)
 
     assert [j.id for j in jobs] == [good.id]
-    assert any("malformed" in r.message.lower() or "skip" in r.message.lower()
-               for r in caplog.records)
+    # Exactly ONE malformed-JSON line was injected; blank/whitespace lines are
+    # silently skipped (they are not errors). Asserting count = 1 catches a
+    # regression where load() either swallows the warning or fires it for
+    # benign blank lines.
+    warning_records = [
+        r
+        for r in caplog.records
+        if "malformed" in r.message.lower() or "skip" in r.message.lower()
+    ]
+    assert len(warning_records) == 1, (
+        f"expected 1 warning for the single bad JSON line, got {len(warning_records)}"
+    )
 
 
 def test_cas_status_succeeds_when_expected_matches(tmp_queue_path) -> None:
@@ -201,6 +211,42 @@ def test_cas_status_atomic_under_concurrent_clicks(tmp_queue_path) -> None:
     assert len(oks) == 1, f"expected exactly one success, got {results!r}"
     assert len(stales) == 1, f"expected exactly one StaleStateError, got {results!r}"
     assert stales[0].actual_status == JobStatus.PUBLISHING
+
+
+def test_cas_status_preserves_unknown_lines(tmp_queue_path) -> None:
+    """Invariant: cas_status never silently deletes data it cannot parse.
+
+    Reason: a kill-9 mid-``_write_raw`` can leave a half-written last line.
+    Dropping it on the next CAS rewrite would silently lose a job. Instead we
+    keep the line verbatim and let an operator inspect / repair it.
+    """
+    job = append_job(
+        tmp_queue_path,
+        prompt="p",
+        mode="approval",
+        chat_id=None,
+        thread_id=None,
+        reply_to_message_id=None,
+    )
+    # Append a malformed line that simulates a crash mid-write.
+    with tmp_queue_path.open("a") as fh:
+        fh.write('{"id": "11111111-1111-4111-8111-1111111111')  # truncated, no newline
+
+    cas_status(
+        tmp_queue_path,
+        job.id,
+        expected=JobStatus.QUEUED,
+        target=JobStatus.WRITING,
+    )
+
+    # After rewrite, the malformed line must still be present in the file.
+    contents = tmp_queue_path.read_text()
+    assert '{"id": "11111111-1111-4111-8111-1111111111' in contents, (
+        "cas_status silently dropped a malformed line — data-loss regression"
+    )
+    # And load() still surfaces the legitimate job, ignoring the bad line.
+    jobs = load(tmp_queue_path)
+    assert [j.id for j in jobs] == [job.id]
 
 
 def test_cas_status_updates_field_atomically(tmp_queue_path) -> None:

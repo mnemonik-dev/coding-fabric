@@ -68,19 +68,40 @@ def mock_analyze_blog() -> MagicMock:
 
 @pytest.fixture()
 def mock_blogger_run_campaign_from_article() -> MagicMock:
-    """Placeholder for mnemonik_blogger.agent.run_campaign_from_article; refined by Task 6."""
+    """Placeholder for ``mnemonik_blogger.agent.run_campaign_from_article``.
+
+    Task 6 will configure the return shape used by the publish sub-loop:
+        result.results[0].ok          -> bool (publish success)
+        result.results[0].primary_url -> str (Telegram channel post URL)
+        result.results[0].ids         -> list[int] (post + reply message ids)
+        result.results[0].error       -> str | None (failure reason)
+    Leave it bare here; per-test ``.return_value`` wiring belongs in Task 6.
+    """
     return MagicMock()
 
 
 @pytest.fixture()
 def mock_mnemonic_mcp_stdio() -> MagicMock:
-    """Placeholder for the mnemonik-mcp stdio subprocess seam; refined by Task 6."""
+    """Placeholder for the ``mnemonik-mcp`` stdio subprocess seam.
+
+    Task 6 will configure stdout to yield an MCP receipt JSON-RPC envelope
+    (``{"jsonrpc":"2.0","id":...,"result":{"attestation_hash":"<sha256-hex>", ...}}``).
+    Per-test ``.communicate.return_value`` wiring belongs in Task 6's attest
+    sub-loop tests.
+    """
     return MagicMock()
 
 
 @pytest.fixture()
 def mock_claude_subprocess() -> MagicMock:
-    """Placeholder for asyncio.create_subprocess_exec('claude', ...); refined by Task 5."""
+    """Placeholder for ``asyncio.create_subprocess_exec("claude", ...)``.
+
+    Task 5 will configure:
+        ``.returncode``             -> int (0 on success, non-zero -> ``failed``)
+        ``.communicate(input=...)`` -> tuple[bytes, bytes] (stdout, stderr)
+    The writing sub-loop expects the article path to be written to disk by
+    the (mocked) claude run, not parsed from stdout.
+    """
     m = MagicMock()
     m.returncode = 0
     return m

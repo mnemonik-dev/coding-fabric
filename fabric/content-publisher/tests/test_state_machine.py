@@ -82,7 +82,11 @@ def test_illegal_transitions_raise(tmp_queue_path) -> None:
 
 
 def test_cas_status_raises_on_illegal_transition(tmp_queue_path) -> None:
-    """End-to-end: cas_status surfaces IllegalTransitionError for a forbidden edge."""
+    """End-to-end: cas_status surfaces IllegalTransitionError for a forbidden edge.
+
+    Also asserts file immutability — a rejected transition MUST NOT write to
+    disk (symmetric guarantee to the StaleStateError case in test_queue.py).
+    """
     job = append_job(
         tmp_queue_path,
         prompt="p",
@@ -91,6 +95,7 @@ def test_cas_status_raises_on_illegal_transition(tmp_queue_path) -> None:
         thread_id=None,
         reply_to_message_id=None,
     )
+    pre = tmp_queue_path.read_bytes()
     with pytest.raises(IllegalTransitionError):
         cas_status(
             tmp_queue_path,
@@ -98,6 +103,9 @@ def test_cas_status_raises_on_illegal_transition(tmp_queue_path) -> None:
             expected=JobStatus.QUEUED,
             target=JobStatus.PUBLISHED,
         )
+    assert tmp_queue_path.read_bytes() == pre, (
+        "queue.jsonl mutated despite IllegalTransitionError"
+    )
 
 
 def test_terminal_states_have_no_outgoing() -> None:
