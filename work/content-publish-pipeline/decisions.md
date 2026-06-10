@@ -218,3 +218,7 @@ Review details — in JSON files via links. QA report — in logs/working/.
 Task 9 (Code Audit): Ruflo was started for an external review, but produced no artifact before this report was finalized; local audit found shared queue/subprocess handling mostly aligned, with one blocker in missing Python traceback redaction hooks, one major stuck-job error path, and one minor queue-helper drift; full report → [logs/audit/code-audit.json](logs/audit/code-audit.json). Counts: blockers=1, majors=1, minors=1, nits=0.
 
 Task 9 remediation: Fixed the audit blocker/major/minor in a follow-up implementation pass: `main.py` now installs neutral traceback redaction hooks for process + asyncio loop failures, `publish_step` transitions missing-article jobs to `publish-failed` with `notify_pending=true`, and tentative publish timestamps now use `queue.update_job_fields` instead of a private local rewrite. Verification: content-publisher pytest 102 passed, 1 skipped; touched-file ruff clean.
+
+## Task 10: Security Audit
+
+Task 10 (Security Audit): passed=true with Critical/High=0; report found two Medium follow-ups (per-secret callback HMAC validation, in-handler topic guard) and one Low monitoring hardening item (alert-send failure handling); full report -> [logs/audit/security-audit.json](logs/audit/security-audit.json).

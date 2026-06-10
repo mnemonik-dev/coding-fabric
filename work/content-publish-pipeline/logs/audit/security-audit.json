@@ -1,0 +1,168 @@
+{
+  "summary": "Security audit completed after Task 9 remediation. No Critical or High findings were found, and the core publish path passes subprocess argv/env hygiene, HMAC replay gating, secret containment, attestation binding, auto-mode integrity, and supply-chain pinning checks. Three non-blocking issues remain: per-secret HMAC rotation entropy is not validated, the topic handler lacks a second in-handler authorization guard, and the invalid-callback alert path does not handle send failures locally.",
+  "passed": true,
+  "critical_high_count": 0,
+  "counts": {
+    "critical": 0,
+    "high": 0,
+    "medium": 2,
+    "low": 1
+  },
+  "generated_at": "2026-06-07T16:46:58Z",
+  "owasp_findings": [
+    {
+      "category": "A01_broken_access_control",
+      "verdict": "FAIL",
+      "rationale": "Operator user id, chat id, topic id, and callback origin are checked in the bot flow, but the message handler relies on the aiogram filter and has no second in-handler guard if the router is reused incorrectly.",
+      "findings": [
+        "SEC-002"
+      ]
+    },
+    {
+      "category": "A02_cryptographic_failures",
+      "verdict": "FAIL",
+      "rationale": "HMAC-SHA256 and hmac.compare_digest are used correctly, but each comma-separated callback secret is not individually validated for entropy/format.",
+      "findings": [
+        "SEC-001"
+      ]
+    },
+    {
+      "category": "A03_injection",
+      "verdict": "PASS",
+      "rationale": "No shell invocation carries operator prompt/article payload. claude receives the prompt through stdin, mnemonik-mcp receives JSON-RPC through stdin, and analyze_blog argv carries only an article path."
+    },
+    {
+      "category": "A04_insecure_design",
+      "verdict": "PASS",
+      "rationale": "The design keeps the operator approval boundary in Telegram, uses CAS replay rejection for callbacks, binds attestation to content hash and metadata, and defaults publish mode to approval."
+    },
+    {
+      "category": "A05_security_misconfiguration",
+      "verdict": "PASS",
+      "rationale": "content-publisher.service sets LimitCORE=0, ProtectSystem=strict, NoNewPrivileges=true, ProtectHome=true, PrivateTmp=true, and constrained ReadWritePaths."
+    },
+    {
+      "category": "A06_vulnerable_outdated_components",
+      "verdict": "PASS",
+      "rationale": "Python dependencies are installed with --require-hashes, mnemonik-mcp uses npm ci against checked-in package-lock.json, and upstream blogger/claude-blog repos are pinned by full commit SHA."
+    },
+    {
+      "category": "A07_identification_authentication_failures",
+      "verdict": "PASS",
+      "rationale": "Callback handling rejects foreign from_user.id before HMAC validation and also verifies callback origin against the job's stored chat/thread."
+    },
+    {
+      "category": "A08_software_data_integrity_failures",
+      "verdict": "PASS",
+      "rationale": "The attestation payload includes content, content_sha256, post_url, score, and prompt, and the worker persists content_sha256 in the queue before signing."
+    },
+    {
+      "category": "A09_security_logging_monitoring_failures",
+      "verdict": "FAIL",
+      "rationale": "Invalid callback/authorization events are counted and can alert the operator, but alert delivery failures are not handled locally.",
+      "findings": [
+        "SEC-003"
+      ]
+    },
+    {
+      "category": "A10_ssrf",
+      "verdict": "N/A",
+      "rationale": "This feature does not accept operator-controlled URLs for server-side fetches. Telegram Bot API endpoints and upstream clone/package URLs are fixed by deploy configuration."
+    }
+  ],
+  "focus_findings": [
+    {
+      "focus": "subprocess_argv_env_hygiene",
+      "verdict": "PASS",
+      "rationale": "spawn.py uses restricted_env(\"claude\") and stdin for prompt at fabric/content-publisher/src/content_publisher/spawn.py:56-66; score.py uses restricted_env(\"analyze_blog\") and argv path only at score.py:72-82; mcp_client.py uses restricted_env(\"mnemonik-mcp\") and stdin JSON-RPC at mcp_client.py:137-188."
+    },
+    {
+      "focus": "path_traversal_worktree",
+      "verdict": "PASS",
+      "rationale": "Job ids are strict lowercase UUID v4 values in models.py:99-106, and queue/job creation uses generated uuid.uuid4 values. No operator-controlled string is directly joined into worktree paths."
+    },
+    {
+      "focus": "callback_hmac_replay_rotation",
+      "verdict": "FAIL",
+      "rationale": "The callback format, constant-time compare, current+previous rotation, foreign-user-first ordering, and CAS replay rejection are implemented, but each rotation secret segment is not individually validated for entropy/format.",
+      "findings": [
+        "SEC-001"
+      ]
+    },
+    {
+      "focus": "sops_env_leakage",
+      "verdict": "PASS",
+      "rationale": "/etc/blogger.env is rendered root:root 0600 at infrastructure/ansible/roles/content-publisher/tasks/main.yml:263-271. Subprocess env allowlists exclude TELEGRAM_BOT_TOKEN except for the in-process blogger call, and the operator bot does not source /etc/blogger.env."
+    },
+    {
+      "focus": "topic_filter_correctness",
+      "verdict": "FAIL",
+      "rationale": "The PublishTopicFilter checks chat_id, message_thread_id, and from_user.id, but handle_publish_topic_message does not repeat the check inside the handler.",
+      "findings": [
+        "SEC-002"
+      ]
+    },
+    {
+      "focus": "publisher_token_leakage",
+      "verdict": "PASS",
+      "rationale": "Task 9 remediation added sys.excepthook and asyncio loop redaction hooks in main.py:31-100, queue-poll logs scrubbed exceptions at main.py:159-162, and content-publisher.service disables core dumps at content-publisher.service.j2:41-50."
+    },
+    {
+      "focus": "attestation_content_sha256_binding",
+      "verdict": "PASS",
+      "rationale": "publish.py stores content_sha256 from article bytes at publish.py:191-209, and attest.py passes content, content_sha256, post_url, score, and prompt into sign_memory_via_mcp at attest.py:98-105."
+    },
+    {
+      "focus": "auto_mode_two_location_integrity",
+      "verdict": "PASS",
+      "rationale": "main.py aborts auto mode unless PUBLISH_AUTO_MODE_TOKEN and PUBLISH_AUTO_MODE_TOKEN_CONFIRM are both non-empty and equal using hmac.compare_digest at main.py:32-63; Ansible asserts the auto token exists when publish_mode == auto at content-publisher/tasks/main.yml:64-76."
+    },
+    {
+      "focus": "supply_chain_pinning",
+      "verdict": "PASS",
+      "rationale": "content-publisher uses pip --require-hashes at content-publisher/tasks/main.yml:185-196, mnemonik-mcp uses npm ci at mnemonic-mcp/tasks/main.yml:110-121, and blogger/claude-blog refs must be full 40-char SHAs at content-publisher/tasks/main.yml:23-32."
+    },
+    {
+      "focus": "worker_posts_per_hour_rate_ceiling",
+      "verdict": "PASS",
+      "rationale": "publish.py counts published/terminally published jobs within the last hour at publish.py:88-110 and rejects at/over cap with publish-failed plus notify_pending at publish.py:136-153. The counter is queue-backed, so it survives process restarts."
+    },
+    {
+      "focus": "bot_hmac_failure_sliding_window_alert",
+      "verdict": "FAIL",
+      "rationale": "The bot evicts events older than 10 minutes and alerts after the sixth event at publish.py:204-216, and the in-memory counter reset-on-restart behavior is intentional. Alert send failures are not caught/logged locally.",
+      "findings": [
+        "SEC-003"
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "id": "SEC-001",
+      "severity": "Medium",
+      "file": "infrastructure/ansible/roles/content-publisher/tasks/main.yml",
+      "line": "49-62",
+      "issue": "The deploy assertion checks only the total CALLBACK_HMAC_SECRETS string length, not each comma-separated secret segment. A rotation value such as '<64-hex-current>,x' satisfies the deploy check while still accepting callbacks signed with a weak previous key.",
+      "attack_vector": "A bot env/configuration mistake or compromised deploy variable could leave a weak previous HMAC key in the rotation window, reducing the cost of forging approve/retry/reject callback_data for in-flight previews.",
+      "suggested_fix": "Validate every comma-separated secret at deploy and bot startup: require one or two non-empty segments, each at least 64 hex characters, and reject malformed values before the bot starts."
+    },
+    {
+      "id": "SEC-002",
+      "severity": "Medium",
+      "file": "mnemonik-bridge-workspace/telegram-ai-agent/src/telegram_bot/core/handlers/publish.py",
+      "line": "298-305",
+      "issue": "handle_publish_topic_message relies on the PublishTopicFilter decorator and does not repeat the chat/thread/operator check inside the handler. The task explicitly calls for decorator filtering plus belt-and-suspenders runtime checks.",
+      "attack_vector": "A future router refactor, direct handler reuse, or incorrectly registered handler could enqueue prompts without rechecking the operator/topic boundary.",
+      "suggested_fix": "Add an early `if not is_publish_topic_message(message, settings): return` inside handle_publish_topic_message before reading text or calling append_job."
+    },
+    {
+      "id": "SEC-003",
+      "severity": "Low",
+      "file": "mnemonik-bridge-workspace/telegram-ai-agent/src/telegram_bot/core/handlers/publish.py",
+      "line": "204-216",
+      "issue": "The sliding-window invalid-callback alert awaits bot.send_message directly. If Telegram rejects or times out the alert send, the monitoring event is lost locally and the exception can bubble through the callback handler path.",
+      "attack_vector": "During callback tampering or token/API instability, the operator may not receive the intended security note and logs may only show a generic handler failure.",
+      "suggested_fix": "Wrap the alert send in try/except, log a warning with exc_info, and keep the event counter cleared only after a successful send or after recording a local warning."
+    }
+  ]
+}
