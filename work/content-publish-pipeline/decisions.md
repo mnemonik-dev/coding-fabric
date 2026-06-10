@@ -224,3 +224,7 @@ Task 9 remediation: Fixed the audit blocker/major/minor in a follow-up implement
 Task 10 (Security Audit): passed=true with Critical/High=0; report found two Medium follow-ups (per-secret callback HMAC validation, in-handler topic guard) and one Low monitoring hardening item (alert-send failure handling); full report -> [logs/audit/security-audit.json](logs/audit/security-audit.json).
 
 Task 10 remediation: Fixed all three security-audit follow-ups. The nested `telegram-ai-agent` repo commit `278bde3` validates each callback HMAC secret segment at startup, repeats the topic/operator guard inside the publish handler, and logs security-alert delivery failures; the outer Ansible role now rejects malformed one/two-secret HMAC rotation values before rendering env. Verification: telegram-ai-agent pytest 83 passed; publish-handler ruff clean; deploy.yml syntax-check clean.
+
+## Task 11: Test Audit
+
+Task 11 (Test Audit): verdict=fail; report found 5 high gaps and 1 medium gap, mostly in bot-side HMAC negative/replay coverage, full topic-filter coverage, scheduled persistence/past-date coverage, runtime file-mode/runbook checks, and local mock drift; full report -> [logs/audit/test-audit.json](logs/audit/test-audit.json).

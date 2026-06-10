@@ -1,0 +1,540 @@
+{
+  "feature": "content-publish-pipeline",
+  "task": 11,
+  "auditor": "test-master",
+  "generated_at": "2026-06-10T16:10:54Z",
+  "verdict": "fail",
+  "summary": {
+    "total_findings": 6,
+    "high": 5,
+    "medium": 1,
+    "low": 0,
+    "ac_covered": 22,
+    "ac_weak": 4,
+    "ac_missing": 2
+  },
+  "ac_matrix": [
+    {
+      "ac": "AC1",
+      "source": "user-spec",
+      "text": "Topic-handler registration and dispatch per Decision 13",
+      "expected_tests": [
+        "mnemonik-bridge-workspace/telegram-ai-agent/tests/test_publish_handlers.py",
+        "mnemonik-bridge-workspace/telegram-ai-agent/tests/test_topic_filter.py"
+      ],
+      "actual_tests": [
+        "mnemonik-bridge-workspace/telegram-ai-agent/tests/test_publish_handlers.py::test_publish_topic_handler_rechecks_topic_before_enqueue"
+      ],
+      "status": "weak",
+      "note": "Only wrong-topic negative is covered; wrong chat, wrong sender, and positive enqueue are missing."
+    },
+    {
+      "ac": "AC2",
+      "source": "user-spec",
+      "text": "Operator brief enqueues a publish job",
+      "expected_tests": [
+        "mnemonik-bridge-workspace/telegram-ai-agent/tests/test_publish_handlers.py"
+      ],
+      "actual_tests": [
+        "mnemonik-bridge-workspace/telegram-ai-agent/tests/test_publish_handlers.py"
+      ],
+      "status": "weak",
+      "note": "Preview/publish callback paths are tested, but the positive topic-message enqueue branch is not asserted."
+    },
+    {
+      "ac": "AC3",
+      "source": "user-spec",
+      "text": "High score preview has no retry marker",
+      "expected_tests": [
+        "fabric/content-publisher/tests/test_analyze_gate.py"
+      ],
+      "actual_tests": [
+        "fabric/content-publisher/tests/test_analyze_gate.py::test_high_score_no_retry_marker"
+      ],
+      "status": "covered",
+      "note": ""
+    },
+    {
+      "ac": "AC4",
+      "source": "user-spec",
+      "text": "Low score preview shows warning, issues, and retry affordance",
+      "expected_tests": [
+        "fabric/content-publisher/tests/test_analyze_gate.py",
+        "mnemonik-bridge-workspace/telegram-ai-agent/tests/test_publish_handlers.py"
+      ],
+      "actual_tests": [
+        "fabric/content-publisher/tests/test_analyze_gate.py::test_low_score_truncates_issues_to_three",
+        "mnemonik-bridge-workspace/telegram-ai-agent/tests/test_publish_handlers.py::test_preview_dispatch_sends_reply_and_clears_preview_pending"
+      ],
+      "status": "covered",
+      "note": ""
+    },
+    {
+      "ac": "AC5",
+      "source": "user-spec",
+      "text": "Approve callback publishes through the normal publish path",
+      "expected_tests": [
+        "mnemonik-bridge-workspace/telegram-ai-agent/tests/test_publish_handlers.py",
+        "fabric/content-publisher/tests/test_publish_handlers.py"
+      ],
+      "actual_tests": [
+        "mnemonik-bridge-workspace/telegram-ai-agent/tests/test_publish_handlers.py::test_approve_callback_transitions_preview_to_publishing",
+        "fabric/content-publisher/tests/test_publish_handlers.py::test_publish_success_transitions_to_published"
+      ],
+      "status": "covered",
+      "note": ""
+    },
+    {
+      "ac": "AC6",
+      "source": "user-spec",
+      "text": "Approval timeout publishes automatically",
+      "expected_tests": [
+        "fabric/content-publisher/tests/test_deadline_checker.py"
+      ],
+      "actual_tests": [
+        "fabric/content-publisher/tests/test_deadline_checker.py::test_preview_sent_past_deadline_transitions_to_publishing"
+      ],
+      "status": "covered",
+      "note": ""
+    },
+    {
+      "ac": "AC7",
+      "source": "user-spec",
+      "text": "Mnemonik MCP attestation records a retrievable receipt",
+      "expected_tests": [
+        "fabric/content-publisher/tests/test_attest_envelope.py",
+        "fabric/content-publisher/tests/integration/test_attestation_pipeline.py"
+      ],
+      "actual_tests": [
+        "fabric/content-publisher/tests/test_attest_envelope.py",
+        "fabric/content-publisher/tests/integration/test_attestation_pipeline.py::test_happy_then_failure_then_retry_then_escalation"
+      ],
+      "status": "covered",
+      "note": ""
+    },
+    {
+      "ac": "AC8",
+      "source": "user-spec",
+      "text": "Scheduled job survives worker restart and fires near target time",
+      "expected_tests": [
+        "fabric/content-publisher/tests/integration/test_queue_persist.py"
+      ],
+      "actual_tests": [],
+      "status": "missing",
+      "note": "No test_queue_persist.py exists, and no test asserts fire_at scheduling across restart."
+    },
+    {
+      "ac": "AC9",
+      "source": "user-spec",
+      "text": "Past scheduled date is rejected",
+      "expected_tests": [
+        "mnemonik-bridge-workspace/telegram-ai-agent/tests/test_publish_handlers.py"
+      ],
+      "actual_tests": [],
+      "status": "missing",
+      "note": "Decision 13 removed slash-command parsing, but the replacement topic flow has no past-date/scheduling rejection test or explicit N/A decision in the tests."
+    },
+    {
+      "ac": "AC10",
+      "source": "user-spec",
+      "text": "Claude/analyze spawn failure marks failed and notifies",
+      "expected_tests": [
+        "fabric/content-publisher/tests/test_spawn_failure_path.py"
+      ],
+      "actual_tests": [
+        "fabric/content-publisher/tests/test_spawn_failure_path.py"
+      ],
+      "status": "covered",
+      "note": ""
+    },
+    {
+      "ac": "AC11",
+      "source": "user-spec",
+      "text": "Race click-vs-timeout publishes exactly once",
+      "expected_tests": [
+        "fabric/content-publisher/tests/integration/test_concurrent_publish.py"
+      ],
+      "actual_tests": [
+        "fabric/content-publisher/tests/integration/test_concurrent_publish.py::test_concurrent_callback_and_deadline_fire_publishes_once"
+      ],
+      "status": "covered",
+      "note": ""
+    },
+    {
+      "ac": "AC12",
+      "source": "user-spec",
+      "text": "Crash during publishing follows Decision 8 just-retry behavior",
+      "expected_tests": [
+        "fabric/content-publisher/tests/test_publishing_retry_on_crash.py",
+        "fabric/content-publisher/tests/integration/test_crash_recovery.py"
+      ],
+      "actual_tests": [
+        "fabric/content-publisher/tests/test_publishing_retry_on_crash.py::test_publishing_status_just_retries_normal_path",
+        "fabric/content-publisher/tests/integration/test_crash_recovery.py::test_kill_at_publishing_just_retries"
+      ],
+      "status": "covered",
+      "note": "This maps the original no-double-post AC to Decision 8's accepted just-retry behavior."
+    },
+    {
+      "ac": "AC13",
+      "source": "user-spec",
+      "text": "Volume/mount failure blocks service startup",
+      "expected_tests": [
+        "fabric/content-publisher/tests/test_required_mounts_for.py"
+      ],
+      "actual_tests": [
+        "fabric/content-publisher/tests/test_required_mounts_for.py"
+      ],
+      "status": "covered",
+      "note": ""
+    },
+    {
+      "ac": "AC14",
+      "source": "user-spec",
+      "text": "PUBLISH_MODE=auto skips preview and sends post-fact notification",
+      "expected_tests": [
+        "fabric/content-publisher/tests/test_auto_mode.py",
+        "fabric/content-publisher/tests/test_auto_mode_token_binding.py"
+      ],
+      "actual_tests": [
+        "fabric/content-publisher/tests/test_auto_mode.py::test_auto_mode_skips_preview_and_publishes_directly",
+        "fabric/content-publisher/tests/test_auto_mode_token_binding.py"
+      ],
+      "status": "covered",
+      "note": ""
+    },
+    {
+      "ac": "AC15",
+      "source": "user-spec",
+      "text": "Preview byte-equality with final Telegram segments",
+      "expected_tests": [
+        "fabric/content-publisher/tests/test_preview_render.py"
+      ],
+      "actual_tests": [
+        "fabric/content-publisher/tests/test_preview_render.py::test_preview_segments_byte_equal_to_publish_segments"
+      ],
+      "status": "covered",
+      "note": "The test patches TelegramPublisher.publish and compares captured segments to render_preview. It may skip loudly if upstream mnemonik_blogger is missing."
+    },
+    {
+      "ac": "AC-T1",
+      "source": "tech-spec",
+      "text": "Module imports and upstream signatures verified during role install",
+      "expected_tests": [
+        "infrastructure/ansible/roles/content-publisher/tasks/main.yml"
+      ],
+      "actual_tests": [
+        "deploy-time Ansible command assertions"
+      ],
+      "status": "covered",
+      "note": "Install-time verification, not pytest-only."
+    },
+    {
+      "ac": "AC-T2",
+      "source": "tech-spec",
+      "text": "No regression in existing services",
+      "expected_tests": [
+        "workspace-manager suite",
+        "telegram-ai-agent suite"
+      ],
+      "actual_tests": [
+        "local verification runs recorded in decisions.md"
+      ],
+      "status": "covered",
+      "note": ""
+    },
+    {
+      "ac": "AC-T3",
+      "source": "tech-spec",
+      "text": "File modes for queue/env/MCP config",
+      "expected_tests": [
+        "Ansible template/mode tests"
+      ],
+      "actual_tests": [
+        "partial Ansible task assertions"
+      ],
+      "status": "weak",
+      "note": "The task layer asserts some rendered files and hardening, but no test directly proves queue.jsonl mode op:op 0600 after first runtime write."
+    },
+    {
+      "ac": "AC-T4",
+      "source": "tech-spec",
+      "text": "RequiresMountsFor/ConditionPathIsMountPoint fail loud",
+      "expected_tests": [
+        "fabric/content-publisher/tests/test_required_mounts_for.py"
+      ],
+      "actual_tests": [
+        "fabric/content-publisher/tests/test_required_mounts_for.py"
+      ],
+      "status": "covered",
+      "note": ""
+    },
+    {
+      "ac": "AC-T5",
+      "source": "tech-spec",
+      "text": "Existing tests pass",
+      "expected_tests": [
+        "workspace-manager suite",
+        "telegram-ai-agent suite"
+      ],
+      "actual_tests": [
+        "local verification runs recorded in decisions.md"
+      ],
+      "status": "covered",
+      "note": ""
+    },
+    {
+      "ac": "AC-T6",
+      "source": "tech-spec",
+      "text": "Operator authorization + HMAC rejects foreign user and tampered HMAC",
+      "expected_tests": [
+        "mnemonik-bridge-workspace/telegram-ai-agent/tests/test_publish_handlers.py"
+      ],
+      "actual_tests": [
+        "current+previous happy path only",
+        "approve success path"
+      ],
+      "status": "weak",
+      "note": "Invalid HMAC, foreign user, and replay branches are missing."
+    },
+    {
+      "ac": "AC-T7",
+      "source": "tech-spec",
+      "text": "tentative_publish_started_at written before publish call",
+      "expected_tests": [
+        "fabric/content-publisher/tests/test_tentative_write_ordering.py"
+      ],
+      "actual_tests": [
+        "fabric/content-publisher/tests/test_tentative_write_ordering.py::test_tentative_publish_started_at_written_before_call"
+      ],
+      "status": "covered",
+      "note": ""
+    },
+    {
+      "ac": "AC-T8",
+      "source": "tech-spec",
+      "text": "mnemonik-mcp argv hygiene and MCP-stdio handshake",
+      "expected_tests": [
+        "fabric/content-publisher/tests/test_attest_envelope.py"
+      ],
+      "actual_tests": [
+        "fabric/content-publisher/tests/test_attest_envelope.py"
+      ],
+      "status": "covered",
+      "note": ""
+    },
+    {
+      "ac": "AC-T9",
+      "source": "tech-spec",
+      "text": "Subprocess environment isolation",
+      "expected_tests": [
+        "fabric/content-publisher/tests/test_env_isolation.py",
+        "fabric/content-publisher/tests/test_separate_bot_token.py"
+      ],
+      "actual_tests": [
+        "fabric/content-publisher/tests/test_env_isolation.py",
+        "fabric/content-publisher/tests/test_separate_bot_token.py"
+      ],
+      "status": "covered",
+      "note": ""
+    },
+    {
+      "ac": "AC-T10",
+      "source": "tech-spec",
+      "text": "Auto-mode two-location token binding",
+      "expected_tests": [
+        "fabric/content-publisher/tests/test_auto_mode_token_binding.py"
+      ],
+      "actual_tests": [
+        "fabric/content-publisher/tests/test_auto_mode_token_binding.py"
+      ],
+      "status": "covered",
+      "note": ""
+    },
+    {
+      "ac": "AC-T11",
+      "source": "tech-spec",
+      "text": "HMAC rotation runbook",
+      "expected_tests": [
+        "content-publisher README/runbook check"
+      ],
+      "actual_tests": [],
+      "status": "weak",
+      "note": "HMAC rotation behavior is partially tested, but no test or static check asserts the README runbook exists and matches the current one/two-secret behavior."
+    },
+    {
+      "ac": "AC-T12",
+      "source": "tech-spec",
+      "text": "Topic filter ignores wrong chat, wrong thread, wrong sender and enqueues positive case",
+      "expected_tests": [
+        "mnemonik-bridge-workspace/telegram-ai-agent/tests/test_topic_filter.py"
+      ],
+      "actual_tests": [
+        "mnemonik-bridge-workspace/telegram-ai-agent/tests/test_publish_handlers.py::test_publish_topic_handler_rechecks_topic_before_enqueue"
+      ],
+      "status": "weak",
+      "note": "Only wrong topic is covered."
+    },
+    {
+      "ac": "AC-T13",
+      "source": "tech-spec",
+      "text": "Just-retry crash recovery, no special recovery state or slash commands",
+      "expected_tests": [
+        "fabric/content-publisher/tests/test_publishing_retry_on_crash.py",
+        "fabric/content-publisher/tests/integration/test_crash_recovery.py"
+      ],
+      "actual_tests": [
+        "fabric/content-publisher/tests/test_publishing_retry_on_crash.py",
+        "fabric/content-publisher/tests/integration/test_crash_recovery.py"
+      ],
+      "status": "covered",
+      "note": ""
+    }
+  ],
+  "targeted_checks": [
+    {
+      "id": "check_1",
+      "name": "User-spec AC1-AC15 coverage",
+      "status": "fail",
+      "findings_ids": [
+        "F-001",
+        "F-002",
+        "F-003",
+        "F-004"
+      ]
+    },
+    {
+      "id": "check_2",
+      "name": "Tech-spec AC-T1-AC-T13 coverage",
+      "status": "fail",
+      "findings_ids": [
+        "F-001",
+        "F-002",
+        "F-005"
+      ]
+    },
+    {
+      "id": "check_3",
+      "name": "Preview-render cross-comparison is real",
+      "status": "pass",
+      "findings_ids": []
+    },
+    {
+      "id": "check_4",
+      "name": "Centralized mock fixtures",
+      "status": "fail",
+      "findings_ids": [
+        "F-006"
+      ]
+    },
+    {
+      "id": "check_5",
+      "name": "HMAC replay + rotation + foreign user",
+      "status": "fail",
+      "findings_ids": [
+        "F-001"
+      ]
+    },
+    {
+      "id": "check_6",
+      "name": "cleanup-gc terminal-only deletion",
+      "status": "pass",
+      "findings_ids": []
+    },
+    {
+      "id": "check_7",
+      "name": "Just-retry crash recovery",
+      "status": "pass",
+      "findings_ids": []
+    },
+    {
+      "id": "check_8",
+      "name": "Topic filter 3 negative dimensions",
+      "status": "fail",
+      "findings_ids": [
+        "F-002"
+      ]
+    },
+    {
+      "id": "check_9",
+      "name": "MCP-stdio handshake argv hygiene + receipt parsing",
+      "status": "pass",
+      "findings_ids": []
+    }
+  ],
+  "findings": [
+    {
+      "id": "F-001",
+      "severity": "high",
+      "check_id": "check_5",
+      "ac_refs": [
+        "AC-T6"
+      ],
+      "file": "mnemonik-bridge-workspace/telegram-ai-agent/tests/test_publish_handlers.py",
+      "issue": "HMAC callback tests cover current/previous secret acceptance and approve success, but not tampered HMAC rejection, foreign user rejection before HMAC processing, or replay where a second valid callback sees status != preview-sent and returns a too-late response.",
+      "fix": "Add distinct async tests for invalid signature, foreign user, and replay/StaleStateError paths against handle_publish_callback. Assert callback.answer text and that queue mutation is not performed where appropriate.",
+      "spec_anchor": "Task 11 check (5), tech-spec AC-T6"
+    },
+    {
+      "id": "F-002",
+      "severity": "high",
+      "check_id": "check_8",
+      "ac_refs": [
+        "AC1",
+        "AC2",
+        "AC-T12"
+      ],
+      "file": "mnemonik-bridge-workspace/telegram-ai-agent/tests/test_publish_handlers.py",
+      "issue": "Topic-filter tests cover only wrong thread via the direct handler guard. There is no test_topic_filter.py, no wrong-chat case, no wrong-user case, and no positive case proving append_job is called exactly once for the correct chat/thread/operator tuple.",
+      "fix": "Add the missing three negative dimensions plus the positive enqueue case, either in a new tests/test_topic_filter.py or in test_publish_handlers.py with clear names.",
+      "spec_anchor": "Task 11 check (8), tech-spec AC-T12"
+    },
+    {
+      "id": "F-003",
+      "severity": "high",
+      "check_id": "check_1",
+      "ac_refs": [
+        "AC8"
+      ],
+      "file": "fabric/content-publisher/tests/integration/test_queue_persist.py",
+      "issue": "The expected queue-persistence/scheduled-fire test file does not exist, and no current test proves a fire_at job survives worker restart and fires near the target time.",
+      "fix": "Add an integration test that enqueues a job with fire_at, simulates restart/reload, and asserts the worker only processes it after the configured target window.",
+      "spec_anchor": "user-spec step 8, tech-spec Testing Strategy test_queue_persist.py"
+    },
+    {
+      "id": "F-004",
+      "severity": "high",
+      "check_id": "check_1",
+      "ac_refs": [
+        "AC9"
+      ],
+      "file": "mnemonik-bridge-workspace/telegram-ai-agent/tests/test_publish_handlers.py",
+      "issue": "No test covers rejection of past scheduled dates or records that scheduling input is intentionally out of scope after Decision 13 replaced slash-command parsing with topic briefs.",
+      "fix": "Either add explicit scheduling/past-date validation tests for the topic flow or update the specs/decisions to mark AC9 as superseded and add a test asserting the replacement behavior.",
+      "spec_anchor": "user-spec step 9, Task 11 AC matrix requirement"
+    },
+    {
+      "id": "F-005",
+      "severity": "high",
+      "check_id": "check_2",
+      "ac_refs": [
+        "AC-T3",
+        "AC-T11"
+      ],
+      "file": "fabric/content-publisher/tests",
+      "issue": "The test suite does not directly assert queue.jsonl runtime file mode/owner after first write, and does not statically verify that the HMAC rotation README/runbook exists and matches the current one/two-secret rotation model.",
+      "fix": "Add a queue file-mode test around append_job/_write_raw where feasible, and add a README/runbook static test for the HMAC rotation procedure.",
+      "spec_anchor": "tech-spec AC-T3 and AC-T11"
+    },
+    {
+      "id": "F-006",
+      "severity": "medium",
+      "check_id": "check_4",
+      "ac_refs": [],
+      "file": "fabric/content-publisher/tests/test_spawn_failure_path.py",
+      "issue": "The test suite has centralized mock fixtures in conftest.py, but test_spawn_failure_path.py redefines a local _FakeProc instead of using the mock_claude_subprocess fixture shape. This is not breaking today, but it is exactly the mock-drift risk Task 11 calls out.",
+      "fix": "Refactor repeated subprocess fakes into conftest fixtures or factory helpers and reuse them in spawn/analyze/MCP tests.",
+      "spec_anchor": "Task 11 check (4)"
+    }
+  ]
+}
