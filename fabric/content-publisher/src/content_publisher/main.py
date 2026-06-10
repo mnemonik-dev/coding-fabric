@@ -24,6 +24,7 @@ import sys
 import traceback
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
 from typing import Any
@@ -141,6 +142,27 @@ def _queue_path() -> Path:
     )
 
 
+def _queued_job_due(job: Any, now: datetime | None = None) -> bool:
+    fire_at = getattr(job, "fire_at", None)
+    if fire_at is None:
+        return True
+    return bool(fire_at <= (now or datetime.now(UTC)))
+
+
+async def queue_poll_once(queue_path: Path | None = None) -> None:
+    from content_publisher import publish, queue, worker
+
+    qp = queue_path or _queue_path()
+    now = datetime.now(UTC)
+    for job in queue.load(qp):
+        if job.status.value == "queued":
+            if not _queued_job_due(job, now):
+                continue
+            await worker.run_writing_to_preview(job)
+        elif job.status.value == "publishing":
+            await publish.publish_step(job_id=job.id)
+
+
 async def queue_poll_loop() -> None:
     """Long-running queue-poll sub-loop (writing→preview-sent + publishing).
 
@@ -148,18 +170,12 @@ async def queue_poll_loop() -> None:
     ``worker.run_writing_to_preview``; ``publishing`` jobs through
     ``publish.publish_step``. Cadence ~5s, default-overridable via env.
     """
-    from content_publisher import publish, queue, worker
-
     logger.info("queue-poll started")
     interval = float(os.environ.get("PUBLISH_QUEUE_POLL_INTERVAL_SECONDS", "5"))
     try:
         while True:
             try:
-                for job in queue.load(_queue_path()):
-                    if job.status.value == "queued":
-                        await worker.run_writing_to_preview(job)
-                    elif job.status.value == "publishing":
-                        await publish.publish_step(job_id=job.id)
+                await queue_poll_once()
             except Exception as exc:  # noqa: BLE001
                 logger.error("queue-poll tick failed\n%s", format_scrubbed_exception(exc))
             await asyncio.sleep(interval)

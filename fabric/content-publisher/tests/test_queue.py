@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import stat
 import threading
 
 import pytest
@@ -45,6 +46,19 @@ def test_append_job_creates_uuid_v4_and_queued_status(tmp_queue_path) -> None:
     parsed = json.loads(raw[0])
     assert parsed["id"] == job.id
     assert parsed["status"] == "queued"
+
+
+def test_append_job_creates_queue_file_mode_0600(tmp_queue_path) -> None:
+    append_job(
+        tmp_queue_path,
+        prompt="mode check",
+        mode="approval",
+        chat_id=1,
+        thread_id=2,
+        reply_to_message_id=3,
+    )
+
+    assert stat.S_IMODE(tmp_queue_path.stat().st_mode) == 0o600
 
 
 def test_append_is_atomic_under_concurrent_writers(tmp_queue_path) -> None:
