@@ -1,0 +1,80 @@
+{
+  "round": 1,
+  "reviewer": "test-reviewer",
+  "generated_at": "2026-06-10T19:30:00Z",
+  "verdict": "approve",
+  "summary": "All three findings F-001, F-003, F-004 are substantively closed. Tests are non-tautological, assertions are meaningful, and no flakiness or mock drift observed. Minor observation on F-001 edit_text assertion (see N-001) — no action required.",
+  "findings": [
+    {
+      "id": "F-001",
+      "ac_refs": ["AC6"],
+      "verdict": "closed",
+      "test": "test_reject_callback_transitions_preview_to_rejected",
+      "file": "mnemonik-bridge-workspace/telegram-ai-agent/tests/test_publish_handlers.py:377",
+      "checks": {
+        "wrong_target_status": "PASS — queue.transitions asserts exactly (job.id, PREVIEW_SENT, REJECTED); separate targets list also checked",
+        "wrong_edit_text": "PASS — message.edited_text asserted verbatim 'Отклонено. Бриф сохранён, можно повторить руками.' with reply_markup=None",
+        "accidental_publishing_transition": "PASS — targets list explicitly asserts PUBLISHING not present",
+        "accidental_regenerate_job": "PASS — queue.regenerated == [] asserted"
+      },
+      "notes": [
+        "N-001 (observation, no action): The test monkeypatches `publish.Message` to `FakeCallbackMessage` so that `isinstance(callback.message, Message)` in publish.py:385 fires on the fake. This is correct and necessary — the production guard `isinstance(callback.message, Message)` is tested by the monkeypatch being present. However, if someone removes the monkeypatch line accidentally (e.g. during refactor), the test would still pass but the edit_text call might not happen (depending on whether the else-branch silently swallows). This is inherent to the monkeypatching approach and not a flaw in the current test. Observation only.",
+        "callback.answer('Rejected', None) assertion is present and correct — mirrors the approve test structure."
+      ]
+    },
+    {
+      "id": "F-003",
+      "ac_refs": ["AC4"],
+      "verdict": "closed",
+      "tests": [
+        "test_preview_dispatch_low_score_renders_retry_button",
+        "test_preview_dispatch_high_score_hides_retry_button"
+      ],
+      "file": "mnemonik-bridge-workspace/telegram-ai-agent/tests/test_publish_handlers.py:194,235",
+      "checks": {
+        "flipped_conditional_caught": "PASS — _callback_actions() parses InlineKeyboardMarkup by iterating all rows/buttons and extracting parts[1] where parts[0]=='publish'; exact order-pinned list asserted; a flip in publish.py:273-284 that puts retry in high-score path would surface as ['approve','reject','retry'] when ['approve','reject'] expected",
+        "low_score_retry_present": "PASS — actions == ['approve', 'reject', 'retry'] at score=72 < min_score=80",
+        "high_score_retry_absent": "PASS — actions == ['approve', 'reject'] AND 'retry' not in actions at score=90 >= min_score=80",
+        "order_pinned": "PASS — exact list comparison, not just membership",
+        "reflexive_assertion_eliminated": "PASS — previous `reply_markup: bot.sent[0]['reply_markup']` reflexive assert replaced with concrete structural assertions"
+      },
+      "notes": [
+        "The low-score test also pins text format ('Score: 72/100 ⚠️\\n\\nIssues: weak hook\\n\\nArticle preview'), chat_id, thread_id, reply_to_message_id, and update_job_fields call — a thorough structural check beyond what F-003 strictly required. Good.",
+        "High-score test correctly uses issues=[] (empty list) — no issues header in the text, consistent with AC4 behavior at high score.",
+        "_callback_actions helper is clean, reusable within the test file, no prod-code dependency."
+      ]
+    },
+    {
+      "id": "F-004",
+      "ac_refs": ["AC-T11"],
+      "verdict": "closed",
+      "tests": [
+        "test_readme_has_hmac_rotation_runbook_heading",
+        "test_readme_documents_two_secret_rotation_format"
+      ],
+      "file": "fabric/content-publisher/tests/test_readme_hmac_rotation_runbook.py",
+      "checks": {
+        "readme_exists": "PASS — fixture assert README_PATH.is_file() fails with a clear path message if file missing",
+        "heading_present": "PASS — '## Runbook: rotate HMAC callback secret' exists at README.md:55; test asserts this literal string",
+        "callback_hmac_secrets_env_var": "PASS — 'CALLBACK_HMAC_SECRETS' substring present at README.md:58; test asserts it",
+        "two_secret_format_example": "PASS — README.md:58 has '<new>,<old>' and README.md:68 has '<new>,<current>'; test accepts either; both match",
+        "parents_depth_correct": "PASS — parents[3] from fabric/content-publisher/tests/ resolves to /Users/syi/src/sessions/coding-fabric (repo root); README path resolves correctly",
+        "runbook_drop_detection": "PASS — if the ## Runbook heading is removed from README, test_readme_has_hmac_rotation_runbook_heading fails immediately with a descriptive message"
+      },
+      "notes": [
+        "scope='module' on the readme_text fixture is correct — no mutation between the two tests.",
+        "The OR condition `'<new>,<old>' in readme_text or '<new>,<current>' in readme_text` is appropriate; README currently satisfies both branches (both strings present)."
+      ]
+    }
+  ],
+  "isolation_and_quality": {
+    "flakiness": "None observed. All tests use monkeypatching or FakeQueue with deterministic state. No time-dependent or network-dependent paths.",
+    "mock_drift": "No drift. FakeQueue.cas_status signature mirrors the production cas_status call pattern used in existing tests. FakeCallbackMessage.edit_text captures kwargs cleanly.",
+    "naming": "test_reject_callback_transitions_preview_to_rejected, test_preview_dispatch_low_score_renders_retry_button, test_preview_dispatch_high_score_hides_retry_button, test_readme_has_hmac_rotation_runbook_heading, test_readme_documents_two_secret_rotation_format — all names follow the existing test file naming convention (verb_noun_expected).",
+    "test_count_delta": {
+      "telegram_ai_agent": "+2 (17 from 15 in test_publish_handlers.py; 91 total from 89)",
+      "content_publisher": "+2 (107 from 105 total)"
+    }
+  },
+  "verdict_rationale": "All three medium-severity findings are substantively closed. Tests assert real behavior: F-001 catches wrong CAS target, wrong edit text, and spurious publish/regenerate calls; F-003 catches a flipped conditional in _preview_keyboard via order-pinned exact list comparison; F-004 catches a README rewrite dropping the rotation runbook. No tautological tests, no reflexive asserts, no mock drift. Verdict: approve."
+}
