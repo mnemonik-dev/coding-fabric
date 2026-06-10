@@ -54,11 +54,18 @@
   # (security-auditor T3-SEC-001)
   ansible.builtin.assert:
     that:
-      - publish_callback_hmac_secrets | length >= 64
+      - publish_callback_hmac_secrets.split(',') | length in [1, 2]
+      - >-
+        (publish_callback_hmac_secrets.split(',')
+          | map('trim')
+          | reject('match', '^[0-9a-fA-F]{64,}$')
+          | list
+          | length) == 0
     fail_msg: >-
-      publish_callback_hmac_secrets is missing or shorter than 64 chars.
-      Generate via `openssl rand -hex 32` and store in sops — see role
-      README "Rotate HMAC callback secret".
+      publish_callback_hmac_secrets must be one or two comma-separated
+      secrets, and each secret must be at least 64 hex chars. Generate via
+      `openssl rand -hex 32` and store in sops — see role README
+      "Rotate HMAC callback secret".
     quiet: true
 
 - name: Assert auto-mode token is configured when PUBLISH_MODE=auto
