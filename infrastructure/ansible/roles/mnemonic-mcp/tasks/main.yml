@@ -18,7 +18,7 @@
 - name: Mnemonik MCP install + configure
   when: mnemonic_mcp_enabled | bool
   block:
-    - name: Ensure op service user exists
+    - name: Ensure mnemonic-mcp service user exists
       ansible.builtin.user:
         name: "{{ mnemonic_mcp_service_user }}"
         group: "{{ mnemonic_mcp_service_group }}"

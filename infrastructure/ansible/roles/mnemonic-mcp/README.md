@@ -68,8 +68,8 @@ Architecture step 4.
 | `mnemonik_mcp_npm_version` | `0.2.4` | Pinned root version. Bumping requires re-generating `files/package-lock.json`. |
 | `mnemonik_mcp_install_dir` | `/opt/mnemonik-mcp` | Where `package.json` + lockfile live; not the binary path. |
 | `mnemonic_mcp_systemd_unit` | `mnemonic-mcp.service` | systemd unit filename. |
-| `mnemonic_mcp_service_user` | `op` | User runs the daemon. |
-| `mnemonic_mcp_service_group` | `op` | Group. |
+| `mnemonic_mcp_service_user` | `mnemonic-mcp` | Dedicated system user; isolated from `op`. |
+| `mnemonic_mcp_service_group` | `mnemonic-mcp` | Group. |
 
 ## Facts exposed to downstream roles
 

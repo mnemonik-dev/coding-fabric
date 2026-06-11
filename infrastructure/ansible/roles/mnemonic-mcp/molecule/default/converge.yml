@@ -10,8 +10,8 @@
     mnemonik_mcp_npm_package: "@mnemonik-xyz/mcp"
     mnemonik_mcp_npm_version: "0.2.4"
     mnemonik_mcp_install_dir: /opt/mnemonik-mcp
-    mnemonic_mcp_service_user: op
-    mnemonic_mcp_service_group: op
+    mnemonic_mcp_service_user: mnemonic-mcp
+    mnemonic_mcp_service_group: mnemonic-mcp
     mnemonic_mcp_systemd_unit: mnemonic-mcp.service
   roles:
     - role: mnemonic-mcp
