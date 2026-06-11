@@ -165,7 +165,7 @@
       # The binary is provided by the lockfile-installed tree at
       # `{{ mnemonik_mcp_install_dir }}/node_modules/.bin/<binary>`. We use a
       # single canonical spelling here that matches the currently-pinned
-      # version (`mnemonik-mcp` per `@mnemonik-xyz/mcp@0.2.6`); the
+      # version (`mnemonik-mcp` per `@mnemonik-xyz/mcp@0.2.7`); the
       # downstream discovery cascade still tolerates either spelling
       # because the symlink itself is the resolution. If a future version
       # ships a different bin name, this symlink will fail to create and
