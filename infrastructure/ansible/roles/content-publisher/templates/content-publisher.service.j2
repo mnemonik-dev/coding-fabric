@@ -30,6 +30,12 @@ WorkingDirectory={{ blogger_install_dir }}
 EnvironmentFile=/etc/blogger.env
 Environment="PYTHONUNBUFFERED=1"
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+# Point the shim at the shared cache populated by the mnemonic-mcp role's
+# smoke step (running as root with GH_TOKEN). Without this override the
+# `op`-owned worker would resolve a per-user cache under /home/op/.local
+# and re-trigger the `gh attestation verify` flow on first attest —
+# which would fail because no GH_TOKEN is in this unit's environment.
+Environment="MNEMONIK_MCP_CACHE_DIR=/opt/mnemonik-mcp/cache"
 
 # Wave 2 entrypoint: the `content_publisher` package is installed into
 # the blogger venv by the Task 7 role, so its main module is reachable via

@@ -611,6 +611,13 @@ jobs:
           ANSIBLE_ROLES_PATH: ${{ github.workspace }}/infrastructure/ansible/roles
           # Pass sops age key path so any sops_decrypt lookups in roles work.
           SOPS_AGE_KEY_FILE: /home/runner/.config/sops/age/keys.txt
+          # Forwarded into the mnemonic-mcp role's Smoke MCP-stdio task via
+          # `environment:` so the shim's `gh attestation verify` call can
+          # authenticate against the GitHub API. `gh attestation verify` is
+          # fail-closed by design (security audit round 2 — no skip env var).
+          # The Actions-issued GITHUB_TOKEN has the public-repo read access
+          # required for the attestation/sigstore endpoint.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ansible-playbook \
             -i infrastructure/ansible/inventory/hosts.yml \

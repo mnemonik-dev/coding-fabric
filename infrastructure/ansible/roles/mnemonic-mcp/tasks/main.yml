@@ -209,13 +209,45 @@
       notify: reload systemd after mnemonic-mcp unit removal
 
     # ------------------------------------------------------------------
+    # Shared binary cache. The shim downloads + verifies the Rust binary
+    # on first invocation and stores it under MNEMONIK_MCP_CACHE_DIR
+    # (default: ~/.local/share/@mnemonik-xyz/mcp). Without an override
+    # each Linux user (root for the smoke task, `op` for content-publisher
+    # runtime) would have its own cache → re-download + re-verify per
+    # user → runtime would need GH_TOKEN of its own. Override to a
+    # single shared dir owned root:root, world-readable: the smoke step
+    # (running as root with GH_TOKEN from CI) populates it once; the
+    # `op`-owned content-publisher worker reads the cached binary +
+    # manifest and skips download+verify on every attest.
+    - name: Ensure shared mnemonic-mcp cache dir exists
+      ansible.builtin.file:
+        path: /opt/mnemonik-mcp/cache
+        state: directory
+        owner: root
+        group: root
+        # 0755: world-read+exec so the unprivileged content-publisher
+        # process (running as `op`) can resolve the cached binary path
+        # and exec it; only root writes.
+        mode: "0755"
+
+    # ------------------------------------------------------------------
     # Smoke: MCP-stdio JSON-RPC initialize handshake. This is the SAME
     # subprocess pattern content-publisher uses in production — spawn the
     # binary, push initialize on stdin, read one JSON-RPC frame, close.
     # Proves the binary speaks MCP over stdio (Decision 3 + Architecture
     # step 4). Full payload via stdin — nothing of substance in argv
     # (R2 — no `ps` leakage).
+    #
+    # GH_TOKEN forwarded from the CI workflow's `Run Ansible playbook`
+    # env block — the shim's install-binary.ts spawns `gh attestation
+    # verify` which fails-closed without auth (security audit round 2,
+    # no skip env var). Once the binary is cached, runtime attests skip
+    # the verify step entirely; only this very first download needs the
+    # token.
     - name: Smoke MCP-stdio initialize handshake
+      environment:
+        GH_TOKEN: "{{ lookup('env', 'GH_TOKEN') }}"
+        MNEMONIK_MCP_CACHE_DIR: /opt/mnemonik-mcp/cache
       ansible.builtin.shell: |
         set -euo pipefail
         payload='{"jsonrpc":"2.0","id":1,"method":"initialize",'
