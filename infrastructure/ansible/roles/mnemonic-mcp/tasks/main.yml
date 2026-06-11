@@ -61,6 +61,48 @@
       when: mnemonik_node_check.rc != 0
 
     # ------------------------------------------------------------------
+    # GitHub CLI >= 2.40 (provides `gh attestation verify`). The shim's
+    # install-binary.ts calls `gh attestation verify --repo --signer-workflow`
+    # on every binary fetch — fail-closed per security audit round 2 (no
+    # env override exists to skip). Ubuntu apt-default ships gh ~2.34
+    # which does NOT have the `attestation` subcommand; we must install
+    # from cli.github.com to get >= 2.40.
+    # ------------------------------------------------------------------
+    - name: Check gh attestation subcommand availability
+      ansible.builtin.command: gh attestation --help
+      register: gh_attest_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install GitHub CLI APT keyring
+      ansible.builtin.get_url:
+        url: https://cli.github.com/packages/githubcli-archive-keyring.gpg
+        dest: /usr/share/keyrings/githubcli-archive-keyring.gpg
+        mode: "0644"
+      when: gh_attest_check.rc != 0
+
+    - name: Register GitHub CLI APT repo
+      ansible.builtin.apt_repository:
+        repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main"
+        filename: github-cli
+        state: present
+      when: gh_attest_check.rc != 0
+
+    - name: Install gh from cli.github.com (>= 2.40 for `attestation verify`)  # noqa: package-latest
+      # state: latest is INTENTIONAL here — the `gh_attest_check.rc != 0`
+      # guard above ensures this task runs ONLY when the installed gh
+      # lacks `attestation` (i.e. ubuntu apt-default 2.34). state: present
+      # would be a no-op when gh-2.34 is already installed; we need apt to
+      # actually upgrade to the cli.github.com version. After the first
+      # successful run, the check short-circuits the whole block on every
+      # subsequent deploy — no thrash, no per-deploy network call.
+      ansible.builtin.apt:
+        name: gh
+        state: latest
+        update_cache: true
+      when: gh_attest_check.rc != 0
+
+    # ------------------------------------------------------------------
     # Defensive cleanup of any stale binary from the prior descoped install
     # at /opt/mnemonic-mcp/bin/mnemonic-mcp. If that path lingered on PATH
     # the discovery cascade below would pick it up first and the smoke
