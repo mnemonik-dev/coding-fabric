@@ -4,7 +4,7 @@
 # everywhere via the discovered fact `mnemonic_mcp_binary` (see tasks/main.yml).
 #
 # The binary spelling has drifted across versions (`mnemonik-mcp` with K on
-# 0.2.4 — current upstream — vs `mnemonic-mcp` without K on older builds).
+# current upstream — vs `mnemonic-mcp` without K on older builds).
 # Don't hardcode it; the discovery cascade `which mnemonik-mcp || which
 # mnemonic-mcp` resolves whichever name the pinned version actually shipped.
 mnemonic_mcp_enabled: true
@@ -13,7 +13,7 @@ mnemonic_mcp_enabled: true
 # is reproducible. Transitive dependencies are pinned via the checked-in
 # files/package-lock.json (consumed by `npm ci`).
 mnemonik_mcp_npm_package: "@mnemonik-xyz/mcp"
-mnemonik_mcp_npm_version: "0.2.5"
+mnemonik_mcp_npm_version: "0.2.6"
 
 # Where the role drops package.json + package-lock.json for the `npm ci` step.
 # The binary itself is symlinked onto /usr/local/bin/mnemonik-mcp regardless

@@ -48,7 +48,7 @@ legacy `/etc/systemd/system/mnemonic-mcp.service` from older VMs.
    The binary on PATH is the exact byte sequence the lockfile pinned.
 4. **Binary discovery**: `which mnemonik-mcp || which mnemonic-mcp`.
    Upstream has shipped the bin under both spellings (current
-   `@mnemonik-xyz/mcp@0.2.4` ships `mnemonik-mcp` with K; older builds
+   `@mnemonik-xyz/mcp@0.2.6` ships `mnemonik-mcp` with K; older builds
    shipped `mnemonic-mcp` without K). The symlink in step 3 is the
    resolution; the cascade is kept as defense-in-depth for the case
    where a future bump reverts the spelling and a maintainer extends
@@ -95,7 +95,7 @@ legacy `/etc/systemd/system/mnemonic-mcp.service` from older VMs.
 |----------|---------|-------------|
 | `mnemonic_mcp_enabled` | `true` | Master switch (re-enabled after descope cleanup). |
 | `mnemonik_mcp_npm_package` | `@mnemonik-xyz/mcp` | Scoped package name. |
-| `mnemonik_mcp_npm_version` | `0.2.4` | Pinned root version. Bumping requires re-generating `files/package-lock.json`. |
+| `mnemonik_mcp_npm_version` | `0.2.6` | Pinned root version. Bumping requires re-generating `files/package-lock.json`. |
 | `mnemonik_mcp_install_dir` | `/opt/mnemonik-mcp` | Where `package.json` + lockfile live; not the binary path. |
 
 ## Facts exposed to downstream roles
@@ -183,7 +183,7 @@ pytest infrastructure/ansible/roles/mnemonic-mcp/tests/ -v
 ```
 
 These assert: npm package + version pinned; binary discovery cascade
-present with `failed_when rc != 0`; systemd unit uses the fact;
+present with `failed_when rc != 0`; legacy systemd unit is absent/removed;
 `files/package-lock.json` is valid JSON with `lockfileVersion >= 2` and
 contains `@mnemonik-xyz/mcp`; descoped artefacts removed; no
 the descoped one-shot signing subcommand string anywhere; `ansible-lint` + playbook

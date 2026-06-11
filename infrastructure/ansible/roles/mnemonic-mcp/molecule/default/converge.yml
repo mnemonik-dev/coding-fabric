@@ -8,7 +8,7 @@
     ansible_python_interpreter: /usr/bin/python3
     mnemonic_mcp_enabled: true
     mnemonik_mcp_npm_package: "@mnemonik-xyz/mcp"
-    mnemonik_mcp_npm_version: "0.2.4"
+    mnemonik_mcp_npm_version: "0.2.6"
     mnemonik_mcp_install_dir: /opt/mnemonik-mcp
   roles:
     - role: mnemonic-mcp
