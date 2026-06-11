@@ -1,12 +1,13 @@
 ---
-- name: Reload mnemonic-mcp systemd
+# mnemonic-mcp is installed for per-spawn subprocess use by consumers
+# (content-publisher attest, future bot `.mcp.json`), NOT as a daemon —
+# see tasks/main.yml header comment for rationale.
+#
+# Only handler: clean systemd reload when the legacy daemon unit (carried
+# over from an older role iteration) is removed. Runs at most once per
+# play; no-op on fresh VMs where the unit was never present.
+
+- name: Reload systemd after mnemonic-mcp unit removal
   ansible.builtin.systemd:
     daemon_reload: true
-  listen: reload mnemonic-mcp systemd
-
-- name: Restart mnemonic-mcp service
-  ansible.builtin.systemd:
-    name: "{{ mnemonic_mcp_systemd_unit }}"
-    state: restarted
-    enabled: true
-  listen: restart mnemonic-mcp service
+  listen: reload systemd after mnemonic-mcp unit removal

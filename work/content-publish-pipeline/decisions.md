@@ -247,3 +247,30 @@ Task 11 remediation (F-001 / F-003 / F-004) — ad-hoc fixer `fixer-bot-test-gap
 **Deferred to post-deploy:** 10 criteria require live verification (AC7, AC16, AC-T2, AC-T3, AC-T4 + partial AC3/AC6/AC11/AC12/AC15). See `deferredToPostDeploy` in `logs/pre-deploy-qa.json` — each entry has criterion id, reason, verificationCondition, and concrete steps for Task 14.
 
 **Recommendation:** `proceed_to_deploy` — Task 13 is unblocked.
+
+## Task 2 (post-deploy refactor 2026-06-11): retire systemd daemon; mnemonic-mcp is per-spawn
+
+**Status:** Done (refactor commit pending in same wave as VM cutover)
+**Triggered by:** Deploy run 27321103516 — Ansible failed at `Wait for mnemonic-mcp to become active` after the user/group fix landed. The binary started under `mnemonic-mcp.service` (`Type=simple`, `ExecStart={{ mnemonic_mcp_binary }} mcp-stdio`, default `StandardInput=null`) and immediately core-dumped: `status=5/TRAP`, `Result=core-dump`, restarted 3× to `StartLimitBurst`, unit went `failed`.
+**Diagnosis:** MCP-stdio is the wrong shape for a daemon. The protocol reads JSON-RPC frames from stdin and writes to stdout; it terminates on EOF. Under systemd with no stdin source, the binary read EOF on first byte of the `initialize` handshake and trapped. This is not a binary bug — it's a unit-design mismatch with the protocol's per-spawn intent. Consumers (verified: `fabric/content-publisher/src/content_publisher/mcp_client.py:139` — `asyncio.create_subprocess_exec(binary, "mcp-stdio", stdin=PIPE, stdout=PIPE)`) already spawn the binary themselves for each attest, exchange a handshake + one or more `tools/call`, and close stdin to terminate the child. The role's daemon wrapper was redundant **and** structurally broken; nothing in the system actually wanted a long-running service.
+**Decision:** Retire the daemon. The role now:
+  1. Installs `@mnemonik-xyz/mcp@0.2.4` via `npm ci` (unchanged) — supply-chain pin preserved.
+  2. Symlinks `node_modules/.bin/mnemonik-mcp` → `/usr/local/bin/mnemonik-mcp` (unchanged) — binary on PATH for `op`-spawned content-publisher and any future bot Claude Code `.mcp.json` consumer.
+  3. **Removes** any pre-existing `/etc/systemd/system/mnemonic-mcp.service` (idempotent; `daemon-reload` only if a removal occurred) — VMs from the prior deploy attempt are cleaned up.
+  4. Smoke-tests via the **same** subprocess pattern consumers use: spawn `mnemonik-mcp mcp-stdio` → push initialize frame on stdin → assert `protocolVersion` in the response.
+  5. **No** dedicated `mnemonic-mcp` user/group/home. Without a daemon there is no service-identity; install-dir is `root:root` mode 0755, binary is world-exec. `content-publisher` worker runs as `op` and exec's the symlink directly.
+**Files changed:**
+  - `infrastructure/ansible/roles/mnemonic-mcp/tasks/main.yml` — removed: group create, user create, render unit, daemon-reload, enable/start, wait-active. Added: legacy-unit removal + conditional daemon-reload. Ownership simplified to root.
+  - `infrastructure/ansible/roles/mnemonic-mcp/defaults/main.yml` — removed: `mnemonic_mcp_systemd_unit`, `mnemonic_mcp_service_user`, `mnemonic_mcp_service_group`.
+  - `infrastructure/ansible/roles/mnemonic-mcp/handlers/main.yml` — emptied (no daemon → no handlers).
+  - `infrastructure/ansible/roles/mnemonic-mcp/templates/mnemonic-mcp.service.j2` — deleted; directory removed.
+  - `infrastructure/ansible/roles/mnemonic-mcp/molecule/default/{converge,verify}.yml` — dropped service vars; verify now asserts unit absence.
+  - `infrastructure/ansible/roles/mnemonic-mcp/README.md` — top-of-file "Why no systemd unit" rationale; runbook + smoke commands rewritten; Variables table trimmed.
+  - `infrastructure/ansible/roles/mnemonic-mcp/tests/test_role_contract.py` — `test_systemd_template_uses_binary_fact` replaced by two regression guards: `test_no_systemd_unit_template_present` + `test_tasks_remove_legacy_systemd_unit`; `test_descoped_artifacts_removed` extended with `mnemonic-mcp.service.j2`.
+**Downstream impact:** None observed.
+  - `content-publisher` role only consumes the fact `mnemonic_mcp_binary` — unchanged.
+  - `fabric/content-publisher/src/content_publisher/mcp_client.py` already spawns per-attest — unchanged.
+  - Bot Claude Code is not yet wired to `mnemonic-mcp` via `.mcp.json` — when it is, it will spawn per-tool-call (Claude Code's stdio-server pattern), matching the role's design.
+  - No other ansible role references the unit name or the dropped variables (grep-verified).
+**Verification:** Local pytest passes on the rewritten contract tests; deploy run after this commit will be the live confirmation (no daemon to wait for, role passes through to subsequent roles, content-publisher attest exercised post-deploy via Task 14 AC7).
+**Why this wasn't caught earlier:** Task 2's review focused on supply-chain pin + binary-name discovery + descoped-artefact cleanup; the daemon shape was carried forward from the prior binary-download role without challenge. The molecule + contract tests asserted **structure** of the unit (ExecStart references the fact, no LoadCredential) but never executed it. The smoke handshake in `tasks/main.yml` runs the binary as a subprocess, which **does work** — that's why CI test green and live-VM daemon start both happen on different invocation paths. The mismatch only surfaced when systemd actually executed the daemon path with `StandardInput=null` on the live VM during Task 13.

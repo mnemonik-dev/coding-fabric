@@ -1,15 +1,36 @@
 # Role: mnemonic-mcp
 
-Installs the **Mnemonik MCP server** from the upstream-supported npm
+Installs the **Mnemonik MCP binary** from the upstream-supported npm
 distribution channel (`@mnemonik-xyz/mcp`), discovers the actual binary
-name shipped by the pinned version, and runs the server under systemd
-as a `mcp-stdio` daemon. The discovered binary name is exposed as the
-Ansible fact `mnemonic_mcp_binary` and consumed downstream by the
+name shipped by the pinned version, and exposes it on `PATH` for
+**per-spawn use** by consumers. The discovered binary name is published
+as the Ansible fact `mnemonic_mcp_binary` and consumed downstream by the
 `content-publisher` role (`/etc/blogger.mcp.json` template) and by the
 content-publisher worker for attestation calls.
 
 Anchored to `work/content-publish-pipeline/tech-spec.md` Decision 3 +
-Architecture step 4.
+Architecture step 4. Post-deploy refactor 2026-06-11 retired the daemon
+design — see [Why no systemd unit](#why-no-systemd-unit) below.
+
+## Why no systemd unit
+
+MCP-stdio is a **per-spawn subprocess pattern**, not a long-running
+service. A consumer (e.g. `content_publisher.mcp_client.sign_memory`)
+spawns `mnemonik-mcp mcp-stdio` over `subprocess.PIPE` stdin/stdout,
+exchanges a JSON-RPC `initialize` handshake, calls one or more
+`tools/call` frames, then closes stdin — the child exits. One attest,
+one subprocess.
+
+The earlier design wrapped this in a `systemd` `Type=simple` unit with
+`ExecStart={{ binary }} mcp-stdio`. systemd defaults `StandardInput=null`,
+so the binary read EOF on the very first byte of the handshake and
+SIGTRAPped (`status=5/TRAP`, `Result=core-dump`); `Restart=on-failure`
+looped it until `StartLimitBurst` tripped. The pattern was structurally
+unworkable for stdio servers.
+
+This role now installs the binary + smoke-tests it via the **same**
+subprocess pattern consumers use, and idempotently removes any
+legacy `/etc/systemd/system/mnemonic-mcp.service` from older VMs.
 
 ## Install path
 
@@ -32,23 +53,32 @@ Architecture step 4.
    resolution; the cascade is kept as defense-in-depth for the case
    where a future bump reverts the spelling and a maintainer extends
    the role.
-5. **systemd unit**: `templates/mnemonic-mcp.service.j2` renders
-   `ExecStart={{ mnemonic_mcp_binary }} mcp-stdio` and inherits the
-   hardening block (`NoNewPrivileges`, `ProtectSystem=strict`,
-   `ProtectHome`, etc.).
+5. **Legacy daemon cleanup**: any pre-existing
+   `/etc/systemd/system/mnemonic-mcp.service` (from the retired daemon
+   design) is removed; `daemon-reload` is triggered only when a removal
+   actually occurred.
 6. **Post-install smoke**: spawn `<mnemonic_mcp_binary> mcp-stdio`, feed
    a JSON-RPC `initialize` envelope on stdin, assert `protocolVersion`
-   in the response. Replaces the bogus `--selftest` probe; this is the
-   real surface (see tech-spec Decision 3).
+   in the response. This is the exact subprocess pattern consumers use
+   in production — the role validates the binary the same way the
+   content-publisher worker will use it (see tech-spec Decision 3).
 
 ## What it does *not* install
 
+- **No systemd service unit.** MCP-stdio is per-spawn (see
+  [Why no systemd unit](#why-no-systemd-unit)). Consumers spawn the
+  binary themselves; nothing is enabled or started by this role.
+- **No dedicated system user / group.** Without a daemon there is no
+  service-identity. Consumers run under their own UID and exec the
+  symlink at `/usr/local/bin/mnemonik-mcp` — `content-publisher` runs
+  as `op`, future bot Claude Code runs as the bot's UID. Files in
+  `/opt/mnemonik-mcp/` are owned by `root` and world-readable; the
+  binary symlink is mode `0755`.
 - No Vaultwarden signing-key materialisation. The previous flow pulled
   a key out of `bw`, mode-0600'd it under `/run/credentials/`, then
   systemd `LoadCredential=`'d it. The new npm distribution channel
   doesn't use the same on-disk signing-key contract; signing flows
-  through MCP JSON-RPC tools, not a bound-at-startup credential. The
-  `LoadCredential=` directive is gone from the unit.
+  through MCP JSON-RPC tools, not a bound-at-startup credential.
 - No `--selftest` probe and no one-shot signing CLI subcommand.
   Neither exists on the npm-shipped binary; both are bygone artefacts of
   the descoped binary-download era. The npm-shipped binary only exposes
@@ -57,7 +87,7 @@ Architecture step 4.
   real MCP-stdio handshake instead.
 - No molyanov hook scripts, no `config.yml`, no `protocol-qa.env`. The
   old role was attestation-DAG-hooks-shaped; this role is
-  long-running-stdio-server-shaped.
+  binary-on-PATH-for-per-spawn-shaped.
 
 ## Variables
 
@@ -67,9 +97,6 @@ Architecture step 4.
 | `mnemonik_mcp_npm_package` | `@mnemonik-xyz/mcp` | Scoped package name. |
 | `mnemonik_mcp_npm_version` | `0.2.4` | Pinned root version. Bumping requires re-generating `files/package-lock.json`. |
 | `mnemonik_mcp_install_dir` | `/opt/mnemonik-mcp` | Where `package.json` + lockfile live; not the binary path. |
-| `mnemonic_mcp_systemd_unit` | `mnemonic-mcp.service` | systemd unit filename. |
-| `mnemonic_mcp_service_user` | `mnemonic-mcp` | Dedicated system user; isolated from `op`. |
-| `mnemonic_mcp_service_group` | `mnemonic-mcp` | Group. |
 
 ## Facts exposed to downstream roles
 
@@ -101,8 +128,8 @@ Architecture step 4.
    binary; the discovery cascade handles `mnemonik-mcp` and
    `mnemonic-mcp`):
    ```bash
-   ssh root@<vm> journalctl -u mnemonic-mcp --since '5 minutes ago'
-   ssh root@<vm> "$mnemonic_mcp_binary doctor"
+   ssh root@<vm> mnemonik-mcp doctor       # binary on PATH, version + checks
+   ssh root@<vm> 'sudo -u op ls -l /usr/local/bin/mnemonik-mcp'  # readable by `op`
    ```
 7. **If upstream introduces a THIRD binary spelling** (e.g.
    `mnemonik-mcp-server`): extend the cascade in
@@ -134,9 +161,10 @@ those are independent.
 ## Smoke (manual, post-deploy)
 
 ```bash
-ssh root@<vm> systemctl is-active mnemonic-mcp           # active
-ssh root@<vm> "$mnemonic_mcp_binary --help"              # lists mcp-stdio
-ssh root@<vm> 'printf "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"manual\",\"version\":\"0.1\"}}}\n" | "$mnemonic_mcp_binary" mcp-stdio | head -1 | python3 -c "import json,sys; r=json.loads(sys.stdin.read()); assert \"protocolVersion\" in r.get(\"result\",{}), r"'
+# No `systemctl is-active` — there is no daemon. Verify the binary path:
+ssh root@<vm> 'test ! -f /etc/systemd/system/mnemonic-mcp.service && echo "unit absent (correct)"'
+ssh root@<vm> mnemonik-mcp --help                       # lists mcp-stdio
+ssh root@<vm> 'printf "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"manual\",\"version\":\"0.1\"}}}\n" | mnemonik-mcp mcp-stdio | head -1 | python3 -c "import json,sys; r=json.loads(sys.stdin.read()); assert \"protocolVersion\" in r.get(\"result\",{}), r"'
 ```
 
 Lockfile drift check:
@@ -174,12 +202,11 @@ content-publish-pipeline feature dir.
 
 ## Files
 
-- `tasks/main.yml` — install, discover binary, render unit, smoke.
+- `tasks/main.yml` — install, discover binary, clean any legacy unit, smoke.
 - `defaults/main.yml` — variable defaults.
-- `handlers/main.yml` — `reload mnemonic-mcp systemd`, `restart
-  mnemonic-mcp service`.
-- `templates/mnemonic-mcp.service.j2` — systemd unit.
+- `handlers/main.yml` — empty (no daemon → nothing to restart).
 - `files/package-lock.json` — supply-chain pin for the npm transitive
   tree (consumed by `npm ci`).
-- `tests/test_role_contract.py` — pytest contract tests.
+- `tests/test_role_contract.py` — pytest contract tests (includes a
+  regression guard against re-introducing the systemd unit).
 - `molecule/default/` — local-only docker scenario.

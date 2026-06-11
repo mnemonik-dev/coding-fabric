@@ -110,17 +110,43 @@ def test_no_sign_memory_anywhere():
     assert hits == [], f"`sign-memory` must not appear; found in: {hits}"
 
 
-def test_systemd_template_uses_binary_fact():
-    unit = (ROLE_DIR / "templates" / "mnemonic-mcp.service.j2").read_text()
-    exec_lines = [
-        ln for ln in unit.splitlines() if ln.startswith("ExecStart=")
-    ]
-    assert exec_lines, "service unit must define ExecStart="
-    assert any(
-        "{{ mnemonic_mcp_binary }} mcp-stdio" in ln for ln in exec_lines
-    ), f"ExecStart must invoke `{{{{ mnemonic_mcp_binary }}}} mcp-stdio`; got {exec_lines}"
-    assert "LoadCredential=" not in unit, \
-        "LoadCredential should be removed (no Vaultwarden signing-key flow)"
+def test_no_systemd_unit_template_present():
+    """MCP-stdio is a per-spawn subprocess pattern, not a daemon.
+
+    A long-running systemd unit that runs `mnemonik-mcp mcp-stdio` immediately
+    hits EOF on systemd's StandardInput=null and core-dumps (SIGTRAP). The
+    binary is installed for spawn-per-attest use by content-publisher's
+    mcp_client.py. Defense-in-depth: assert no service template is checked in.
+    """
+    leftover = ROLE_DIR / "templates" / "mnemonic-mcp.service.j2"
+    assert not leftover.exists(), (
+        f"{leftover.relative_to(ROLE_DIR)} must not exist — the role no longer "
+        "registers a systemd daemon (per-spawn pattern, see tasks/main.yml header)"
+    )
+
+
+def test_tasks_remove_legacy_systemd_unit():
+    """The role must idempotently delete any legacy mnemonic-mcp.service on the VM.
+
+    Regression guard: a deploy onto an old VM where the previous role had
+    enabled the daemon must clean it up; otherwise systemd keeps trying to
+    start a failed unit on every reboot.
+    """
+    tasks_root = _load_yaml(ROLE_DIR / "tasks" / "main.yml")
+    tasks = list(_iter_tasks(tasks_root))
+    removers = []
+    for t in tasks:
+        spec = t.get("file") or t.get("ansible.builtin.file") or {}
+        if (
+            isinstance(spec, dict)
+            and spec.get("path") == "/etc/systemd/system/mnemonic-mcp.service"
+            and spec.get("state") == "absent"
+        ):
+            removers.append(t)
+    assert removers, (
+        "expected a `file: state=absent` task removing the legacy "
+        "/etc/systemd/system/mnemonic-mcp.service"
+    )
 
 
 def test_package_lock_checked_in_and_valid_json():
@@ -142,6 +168,9 @@ def test_descoped_artifacts_removed():
         ROLE_DIR / "templates" / "protocol-qa.env.j2",
         ROLE_DIR / "templates" / "molyanov-mnemonic-hooks.yml.j2",
         ROLE_DIR / "templates" / "hooks",
+        # Daemon design retired post-deploy 2026-06-11: MCP-stdio is
+        # per-spawn, not a long-running service. Unit must not return.
+        ROLE_DIR / "templates" / "mnemonic-mcp.service.j2",
     ]
     leftovers = [str(p.relative_to(ROLE_DIR)) for p in must_not_exist if p.exists()]
     assert leftovers == [], f"descoped artifacts still present: {leftovers}"

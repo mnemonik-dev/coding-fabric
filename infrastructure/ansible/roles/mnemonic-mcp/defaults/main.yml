@@ -16,11 +16,7 @@ mnemonik_mcp_npm_package: "@mnemonik-xyz/mcp"
 mnemonik_mcp_npm_version: "0.2.4"
 
 # Where the role drops package.json + package-lock.json for the `npm ci` step.
-# The binary itself lands on PATH (npm global prefix, typically /usr/local/bin)
-# regardless of this path.
+# The binary itself is symlinked onto /usr/local/bin/mnemonik-mcp regardless
+# of this path. Owned by root — no dedicated service user, because the binary
+# is spawned per-attest by callers (content-publisher worker runs as `op`).
 mnemonik_mcp_install_dir: /opt/mnemonik-mcp
-
-# systemd identity
-mnemonic_mcp_systemd_unit: mnemonic-mcp.service
-mnemonic_mcp_service_user: mnemonic-mcp
-mnemonic_mcp_service_group: mnemonic-mcp

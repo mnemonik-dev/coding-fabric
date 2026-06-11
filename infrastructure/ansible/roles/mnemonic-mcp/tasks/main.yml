@@ -1,15 +1,23 @@
 ---
-# Install + run the Mnemonik MCP server from the npm scoped package
+# Install the Mnemonik MCP binary from the npm scoped package
 # `@mnemonik-xyz/mcp@<version>`. After install, discover the actual binary
 # name (drifted between `mnemonik-mcp` and `mnemonic-mcp` across versions)
 # and expose it as fact `mnemonic_mcp_binary` for downstream roles (Task 3
 # templates `/etc/blogger.mcp.json` from this fact).
+#
+# IMPORTANT — NOT a daemon. MCP-stdio is a per-spawn subprocess pattern:
+# consumers (content-publisher attest, future bot Claude Code `.mcp.json`)
+# spawn `mnemonik-mcp mcp-stdio` themselves over PIPE stdin/stdout, exchange
+# a JSON-RPC initialize handshake + tools/call, close stdin → child exits.
+# A long-running systemd unit immediately hits EOF on stdin and core-dumps.
+# This role installs the binary and validates it via a one-shot handshake
+# only; it does NOT register a systemd service.
 
 # When the role is disabled, set the fact to an empty sentinel so downstream
 # roles that reference `mnemonic_mcp_binary` (Task 3's blogger.mcp.json
 # template) get a clearly-empty `command:` field rather than a cryptic
-# Jinja `UndefinedError`. The downstream service will fail-loud on the
-# empty command at start, which is the right failure mode.
+# Jinja `UndefinedError`. Downstream consumers fail-loud on the empty
+# command at first attest, which is the right failure mode.
 - name: Set empty mnemonic_mcp_binary sentinel when role is disabled
   ansible.builtin.set_fact:
     mnemonic_mcp_binary: ""
@@ -18,27 +26,12 @@
 - name: Mnemonik MCP install + configure
   when: mnemonic_mcp_enabled | bool
   block:
-    - name: Ensure mnemonic-mcp service group exists
-      ansible.builtin.group:
-        name: "{{ mnemonic_mcp_service_group }}"
-        system: true
-        state: present
-
-    - name: Ensure mnemonic-mcp service user exists
-      ansible.builtin.user:
-        name: "{{ mnemonic_mcp_service_user }}"
-        group: "{{ mnemonic_mcp_service_group }}"
-        home: /var/lib/mnemonic-mcp
-        shell: /usr/sbin/nologin
-        system: true
-        createhome: true
-
     - name: Ensure Mnemonik MCP install dir exists
       ansible.builtin.file:
         path: "{{ mnemonik_mcp_install_dir }}"
         state: directory
-        owner: "{{ mnemonic_mcp_service_user }}"
-        group: "{{ mnemonic_mcp_service_group }}"
+        owner: root
+        group: root
         mode: "0755"
 
     # ------------------------------------------------------------------
@@ -99,8 +92,8 @@
             }
           }
         dest: "{{ mnemonik_mcp_install_dir }}/package.json"
-        owner: "{{ mnemonic_mcp_service_user }}"
-        group: "{{ mnemonic_mcp_service_group }}"
+        owner: root
+        group: root
         mode: "0644"
       register: mnemonik_packagejson_copy
 
@@ -108,8 +101,8 @@
       ansible.builtin.copy:
         src: package-lock.json
         dest: "{{ mnemonik_mcp_install_dir }}/package-lock.json"
-        owner: "{{ mnemonic_mcp_service_user }}"
-        group: "{{ mnemonic_mcp_service_group }}"
+        owner: root
+        group: root
         mode: "0644"
       register: mnemonik_lockfile_copy
 
@@ -161,38 +154,25 @@
       ansible.builtin.set_fact:
         mnemonic_mcp_binary: "{{ mnemonik_which.stdout | trim }}"
 
-    - name: Render systemd unit for Mnemonik MCP
-      ansible.builtin.template:
-        src: mnemonic-mcp.service.j2
-        dest: /etc/systemd/system/{{ mnemonic_mcp_systemd_unit }}
-        owner: root
-        group: root
-        mode: "0644"
-      notify: reload mnemonic-mcp systemd
-
-    - name: Reload systemd daemon
-      ansible.builtin.systemd:
-        daemon_reload: true
-
-    - name: Enable + start mnemonic-mcp service
-      ansible.builtin.systemd:
-        name: "{{ mnemonic_mcp_systemd_unit }}"
-        enabled: true
-        state: started
-
-    - name: Wait for mnemonic-mcp to become active
-      ansible.builtin.systemd:
-        name: "{{ mnemonic_mcp_systemd_unit }}"
-      register: mnemonik_active
-      until: mnemonik_active.status.ActiveState == 'active'
-      retries: 5
-      delay: 2
+    # ------------------------------------------------------------------
+    # Remove any systemd unit left over from earlier role iterations that
+    # tried to run `mnemonik-mcp mcp-stdio` as a long-running daemon. That
+    # design crashed on first start (SIGTRAP — EOF on systemd-supplied
+    # StandardInput=null). Defense-in-depth: idempotently delete the unit
+    # so a re-deploy onto an old VM doesn't leave a failed/loaded service.
+    - name: Remove obsolete mnemonic-mcp.service (per-spawn pattern only)
+      ansible.builtin.file:
+        path: /etc/systemd/system/mnemonic-mcp.service
+        state: absent
+      notify: reload systemd after mnemonic-mcp unit removal
 
     # ------------------------------------------------------------------
-    # Smoke: MCP-stdio JSON-RPC initialize handshake. Replaces the bogus
-    # `--selftest` probe; this proves the binary actually speaks MCP over
-    # stdio (Decision 3 + Architecture step 4). Full payload via stdin —
-    # nothing of substance in argv (R2 — no `ps` leakage).
+    # Smoke: MCP-stdio JSON-RPC initialize handshake. This is the SAME
+    # subprocess pattern content-publisher uses in production — spawn the
+    # binary, push initialize on stdin, read one JSON-RPC frame, close.
+    # Proves the binary speaks MCP over stdio (Decision 3 + Architecture
+    # step 4). Full payload via stdin — nothing of substance in argv
+    # (R2 — no `ps` leakage).
     - name: Smoke MCP-stdio initialize handshake
       ansible.builtin.shell: |
         set -euo pipefail

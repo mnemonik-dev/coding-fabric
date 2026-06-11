@@ -5,21 +5,7 @@
   gather_facts: true
   vars:
     mnemonik_mcp_install_dir: /opt/mnemonik-mcp
-    mnemonic_mcp_service_user: mnemonic-mcp
   tasks:
-    - name: Verify mnemonic-mcp service user exists
-      ansible.builtin.user:
-        name: "{{ mnemonic_mcp_service_user }}"
-        state: present
-      check_mode: true
-      register: mnemonic_mcp_user_check
-
-    - name: Assert mnemonic-mcp service user exists
-      ansible.builtin.assert:
-        that:
-          - not mnemonic_mcp_user_check.changed
-        fail_msg: mnemonic-mcp service user does not exist
-
     - name: Verify pinned package-lock.json present in install dir
       ansible.builtin.stat:
         path: "{{ mnemonik_mcp_install_dir }}/package-lock.json"
@@ -47,27 +33,18 @@
           - (which_check.stdout | trim) | length > 0
         fail_msg: neither mnemonik-mcp nor mnemonic-mcp on PATH
 
-    - name: Verify systemd unit exists
+    # The role explicitly removes any legacy systemd unit. Assert it stays
+    # gone so a regression that re-introduces the daemon would fail verify.
+    - name: Verify obsolete mnemonic-mcp.service is absent
       ansible.builtin.stat:
         path: /etc/systemd/system/mnemonic-mcp.service
-      register: service_stat
+      register: legacy_unit_stat
 
-    - name: Assert systemd unit exists
+    - name: Assert obsolete mnemonic-mcp.service is absent
       ansible.builtin.assert:
         that:
-          - service_stat.stat.exists
-        fail_msg: systemd unit check failed
-
-    - name: Verify systemd unit ExecStart references discovered binary
-      ansible.builtin.lineinfile:
-        path: /etc/systemd/system/mnemonic-mcp.service
-        line: "ExecStart={{ which_check.stdout | trim }} mcp-stdio"
-        state: present
-      check_mode: true
-      register: execstart_check
-
-    - name: Assert ExecStart matches discovered binary
-      ansible.builtin.assert:
-        that:
-          - not execstart_check.changed
-        fail_msg: ExecStart in unit does not reference the discovered binary
+          - not legacy_unit_stat.stat.exists
+        fail_msg: |
+          mnemonic-mcp.service exists; this role no longer ships a daemon
+          (MCP-stdio is a per-spawn subprocess pattern, not a long-lived
+          service). Old unit must be removed.
