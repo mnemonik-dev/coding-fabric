@@ -342,13 +342,21 @@
         - content_publisher_queue_path is defined
         - not tg_content_publisher_source.stat.exists
 
-    - name: Install content-publisher shared queue package into bot venv
-      ansible.builtin.pip:
-        name: "."
-        chdir: "{{ fabric_target_dir | default('/opt/fabric') }}/content-publisher"
-        virtualenv: "{{ telegram_ai_agent_home }}/.venv"
-        extra_args: "--no-deps"
+    - name: Install content-publisher shared queue package into bot venv (via uv)
+      # The bot venv is created by `uv sync` (above), and uv-managed venvs
+      # ship WITHOUT pip by design — `ansible.builtin.pip` therefore fails
+      # with "Unable to find pip in the virtualenv … pip3, pip" (run
+      # 28295067700). Use `uv pip install` which targets the venv via
+      # UV_PROJECT_ENVIRONMENT and does not require pip inside the venv.
+      ansible.builtin.shell: |
+        /usr/local/bin/uv pip install --no-deps \
+          "{{ fabric_target_dir | default('/opt/fabric') }}/content-publisher"
+      environment:
+        UV_PROJECT_ENVIRONMENT: "{{ telegram_ai_agent_home }}/.venv"
       register: tg_content_publisher_pip
+      changed_when: >-
+        'Installed' in tg_content_publisher_pip.stdout
+        or 'installed' in tg_content_publisher_pip.stdout
       notify: Reload telegram-ai-agent
       when: content_publisher_queue_path is defined
 
