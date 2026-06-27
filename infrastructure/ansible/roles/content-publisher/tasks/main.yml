@@ -220,8 +220,7 @@
   become_user: "{{ base_operator_user }}"
   ansible.builtin.command:
     cmd: >
-      {{ blogger_install_dir }}/venv/bin/python -c "
-      from pathlib import Path;
+      {{ blogger_install_dir }}/venv/bin/python -c "from pathlib import Path;
       from inspect import signature;
       from mnemonik_blogger.config import Platform, Settings;
       from mnemonik_blogger.content.ingest import ingest_article;
@@ -231,8 +230,7 @@
       required = {'article','platforms','settings'};
       assert required <= set(sig.parameters), 'missing kwargs: ' + repr(required - set(sig.parameters));
       assert all(sig.parameters[n].kind.name == 'KEYWORD_ONLY' for n in required), 'run_campaign_from_article args must be keyword-only';
-      assert Platform.TELEGRAM.value == 'telegram', 'Platform.TELEGRAM.value drifted'
-      "
+      assert Platform.TELEGRAM.value == 'telegram', 'Platform.TELEGRAM.value drifted'"
   changed_when: false
 
 - name: Verify claude-blog scorer is reachable
