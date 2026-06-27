@@ -150,16 +150,31 @@ jobs:
           echo "VM_IP=$VM_IP" >> "$GITHUB_ENV"
           echo "VM connectivity verified"
 
-      - name: Copy smoke.sh to VM
-        timeout-minutes: 5
+      - name: Resolve VM_IP (avoid MagicDNS ghost-peer collisions)
+        # Same logic as Validate Tailscale connectivity above, but its
+        # export only lives inside that step's $GITHUB_ENV — re-export
+        # explicitly so the IP is reused across all downstream steps and
+        # we never depend on MagicDNS resolving `mnemonic-fabric` to the
+        # right peer (the tailnet has stale ghost peers from old CI runs).
         env:
           VM_HOSTNAME: ${{ inputs.vm_hostname }}
+        run: echo "VM_TARGET=op@${VM_IP:-$VM_HOSTNAME}" >> "$GITHUB_ENV"
+
+      - name: Copy smoke.sh to VM
+        timeout-minutes: 5
         run: |
-          # smoke.sh is deployed by fabric-services Ansible role to /usr/local/bin/fabric-smoke.sh
-          # However, we copy per-run to ensure CI-tested version runs (prevents stale deploy drift)
-          if ! scp -o StrictHostKeyChecking=no \
-            scripts/e2e/smoke.sh \
-            "op@${VM_HOSTNAME}:/tmp/smoke.sh"; then
+          # smoke.sh is deployed by fabric-services Ansible role to
+          # /usr/local/bin/fabric-smoke.sh, but we copy per-run to ensure
+          # the CI-tested version runs (prevents stale-deploy drift).
+          #
+          # Use `tailscale ssh` + stdin-redirect instead of `scp`: the
+          # runner is on the tailnet (authkey) but has NO SSH keypair
+          # for op@, so plain scp/ssh on port 22 hangs to timeout
+          # (run 28297360776). `tailscale ssh` authenticates via tailnet
+          # identity, which we already have.
+          if ! tailscale ssh "${VM_TARGET}" \
+              "cat > /tmp/smoke.sh && chmod +x /tmp/smoke.sh" \
+              < scripts/e2e/smoke.sh; then
             echo "ERROR: Failed to copy smoke.sh to VM"
             exit 1
           fi
@@ -170,13 +185,12 @@ jobs:
         timeout-minutes: 10
         env:
           FEATURE_NAME: ${{ inputs.feature_name }}
-          VM_HOSTNAME: ${{ inputs.vm_hostname }}
         run: |
           echo "Starting smoke test with feature_name=$FEATURE_NAME"
 
           # feature_name is regex-validated upstream to ^[a-z0-9-]{1,64}$, so the remote
           # single-quoted argv is safe (no quotes / shell metas possible).
-          if ! tailscale ssh "op@${VM_HOSTNAME}" \
+          if ! tailscale ssh "${VM_TARGET}" \
             "bash /tmp/smoke.sh '${FEATURE_NAME}'"; then
             echo "ERROR: smoke.sh failed"
             exit 1
@@ -217,7 +231,7 @@ jobs:
           # workspace-manager binds to 127.0.0.1:8080 on the VM; we tunnel via
           # tailscale ssh and curl the /worktrees endpoint. Success criterion:
           # zero active worktrees after smoke run completes.
-          WORKTREES_JSON=$(tailscale ssh "op@${VM_HOSTNAME}" \
+          WORKTREES_JSON=$(tailscale ssh "${VM_TARGET}" \
             "curl -fsS http://127.0.0.1:8080/worktrees" 2>&1 || echo "FAILED")
 
           if [ "$WORKTREES_JSON" = "FAILED" ]; then
@@ -258,7 +272,7 @@ jobs:
           while [ $POLL_COUNT -lt $MAX_POLLS ]; do
             echo "Poll #$((POLL_COUNT + 1))/$MAX_POLLS (${POLL_COUNT}*30s elapsed)..."
 
-            DAG_OUTPUT=$(tailscale ssh "op@${VM_HOSTNAME}" \
+            DAG_OUTPUT=$(tailscale ssh "${VM_TARGET}" \
               "mnemonic_recall --feature='${FEATURE_NAME}' --json 2>/dev/null" || echo "")
 
             if [ -z "$DAG_OUTPUT" ]; then
@@ -348,7 +362,7 @@ jobs:
         run: |
           echo "Signing smoke run attestation..."
 
-          ATTESTATION=$(tailscale ssh "op@${VM_HOSTNAME}" \
+          ATTESTATION=$(tailscale ssh "${VM_TARGET}" \
             "mnemonic_sign_memory --feature='${FEATURE_NAME}' --phase=e2e-smoke-pass --type=agent.state 2>/dev/null" || echo "")
 
           if [ -z "$ATTESTATION" ]; then
@@ -407,7 +421,7 @@ jobs:
           fi
 
           # Collect last 50 lines of diagnostic via SSH
-          DIAGNOSTIC=$(tailscale ssh "op@${VM_HOSTNAME}" \
+          DIAGNOSTIC=$(tailscale ssh "${VM_TARGET}" \
             "journalctl -u smoke-test -n 50 2>/dev/null || tail -50 /tmp/smoke-test.log 2>/dev/null" || echo "No diagnostic log available")
 
           # Sanitize secrets: strip sk-* (OpenAI keys), api_* (Anthropic), base58 keys (43-44 chars), and JWK fragments
