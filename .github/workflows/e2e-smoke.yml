@@ -250,11 +250,12 @@ jobs:
         run: |
           echo "Verifying worktree cleanup via workspace-manager HTTP API..."
 
-          # workspace-manager binds to 127.0.0.1:8080 on the VM; we tunnel via
-          # tailscale ssh and curl the /worktrees endpoint. Success criterion:
-          # zero active worktrees after smoke run completes.
-          WORKTREES_JSON=$(ssh $SSH_OPTS "${VM_TARGET}" \
-            "curl -fsS http://127.0.0.1:8080/worktrees" 2>&1 || echo "FAILED")
+          # workspace-manager binds to the VM's tailnet IP (not 127.0.0.1)
+          # per deploy.yml workspace_manager_listen_ip=tailscale_ip, so
+          # `curl 127.0.0.1:8080` from inside the VM gets ECONNREFUSED
+          # (run 28297620246). The runner is also on the tailnet — just
+          # curl the VM's tailnet IP directly, no SSH hop needed.
+          WORKTREES_JSON=$(curl -fsS --max-time 30 "http://${VM_IP}:8080/worktrees" 2>&1 || echo "FAILED")
 
           if [ "$WORKTREES_JSON" = "FAILED" ]; then
             echo "ERROR: workspace-manager /worktrees endpoint unreachable"
