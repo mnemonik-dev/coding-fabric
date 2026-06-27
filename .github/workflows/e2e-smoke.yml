@@ -31,6 +31,8 @@ on:
     secrets:
       TAILSCALE_AUTH_KEY:
         required: true
+      CI_SSH_PRIVATE_KEY:
+        required: true
       TELEGRAM_OPS_BOT_TOKEN:
         required: false
       TELEGRAM_OPS_CHAT_ID:
@@ -150,15 +152,29 @@ jobs:
           echo "VM_IP=$VM_IP" >> "$GITHUB_ENV"
           echo "VM connectivity verified"
 
-      - name: Resolve VM_IP (avoid MagicDNS ghost-peer collisions)
-        # Same logic as Validate Tailscale connectivity above, but its
-        # export only lives inside that step's $GITHUB_ENV — re-export
-        # explicitly so the IP is reused across all downstream steps and
-        # we never depend on MagicDNS resolving `mnemonic-fabric` to the
-        # right peer (the tailnet has stale ghost peers from old CI runs).
+      - name: Load CI SSH private key (same key deploy-fabric uses for Ansible)
+        # Tailscale-SSH is intentionally NOT enabled on the VM (the tailscale
+        # role drops --ssh because it conflicts with OpenSSH on port 22 and
+        # cloud-init blocks on its interactive auth — runs 26170050584 +
+        # deploy.yml:660). So `tailscale ssh` from the runner exits
+        # immediately (run 28297478564). Instead, reuse the stable
+        # CI_SSH_PRIVATE_KEY (matching pubkey is already on op@VM via
+        # cloud-init / TF_VAR_ci_ssh_pubkey) and SSH over the tailnet
+        # interface, which UFW allows. Same auth path Ansible uses.
         env:
-          VM_HOSTNAME: ${{ inputs.vm_hostname }}
-        run: echo "VM_TARGET=op@${VM_IP:-$VM_HOSTNAME}" >> "$GITHUB_ENV"
+          CI_SSH_PRIVATE_KEY: ${{ secrets.CI_SSH_PRIVATE_KEY }}
+        run: |
+          if [ -z "$CI_SSH_PRIVATE_KEY" ]; then
+            echo "ERROR: CI_SSH_PRIVATE_KEY secret is empty"
+            exit 1
+          fi
+          printf '%s\n' "$CI_SSH_PRIVATE_KEY" > /tmp/ci_deploy_key
+          chmod 600 /tmp/ci_deploy_key
+          echo "CI keypair restored (fp $(ssh-keygen -lf /tmp/ci_deploy_key | awk '{print $2}'))"
+          # Reused across every ssh/scp below — VM_IP came from the
+          # connectivity-probe step's $GITHUB_ENV export.
+          echo "VM_TARGET=op@${VM_IP}" >> "$GITHUB_ENV"
+          echo "SSH_OPTS=-i /tmp/ci_deploy_key -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/ci_known_hosts -o ConnectTimeout=15" >> "$GITHUB_ENV"
 
       - name: Copy smoke.sh to VM
         timeout-minutes: 5
@@ -166,18 +182,11 @@ jobs:
           # smoke.sh is deployed by fabric-services Ansible role to
           # /usr/local/bin/fabric-smoke.sh, but we copy per-run to ensure
           # the CI-tested version runs (prevents stale-deploy drift).
-          #
-          # Use `tailscale ssh` + stdin-redirect instead of `scp`: the
-          # runner is on the tailnet (authkey) but has NO SSH keypair
-          # for op@, so plain scp/ssh on port 22 hangs to timeout
-          # (run 28297360776). `tailscale ssh` authenticates via tailnet
-          # identity, which we already have.
-          if ! tailscale ssh "${VM_TARGET}" \
-              "cat > /tmp/smoke.sh && chmod +x /tmp/smoke.sh" \
-              < scripts/e2e/smoke.sh; then
+          if ! scp $SSH_OPTS scripts/e2e/smoke.sh "${VM_TARGET}:/tmp/smoke.sh"; then
             echo "ERROR: Failed to copy smoke.sh to VM"
             exit 1
           fi
+          ssh $SSH_OPTS "${VM_TARGET}" "chmod +x /tmp/smoke.sh"
           echo "smoke.sh copied successfully"
 
       - name: Run smoke test on VM
@@ -190,7 +199,7 @@ jobs:
 
           # feature_name is regex-validated upstream to ^[a-z0-9-]{1,64}$, so the remote
           # single-quoted argv is safe (no quotes / shell metas possible).
-          if ! tailscale ssh "${VM_TARGET}" \
+          if ! ssh $SSH_OPTS "${VM_TARGET}" \
             "bash /tmp/smoke.sh '${FEATURE_NAME}'"; then
             echo "ERROR: smoke.sh failed"
             exit 1
@@ -231,7 +240,7 @@ jobs:
           # workspace-manager binds to 127.0.0.1:8080 on the VM; we tunnel via
           # tailscale ssh and curl the /worktrees endpoint. Success criterion:
           # zero active worktrees after smoke run completes.
-          WORKTREES_JSON=$(tailscale ssh "${VM_TARGET}" \
+          WORKTREES_JSON=$(ssh $SSH_OPTS "${VM_TARGET}" \
             "curl -fsS http://127.0.0.1:8080/worktrees" 2>&1 || echo "FAILED")
 
           if [ "$WORKTREES_JSON" = "FAILED" ]; then
@@ -272,7 +281,7 @@ jobs:
           while [ $POLL_COUNT -lt $MAX_POLLS ]; do
             echo "Poll #$((POLL_COUNT + 1))/$MAX_POLLS (${POLL_COUNT}*30s elapsed)..."
 
-            DAG_OUTPUT=$(tailscale ssh "${VM_TARGET}" \
+            DAG_OUTPUT=$(ssh $SSH_OPTS "${VM_TARGET}" \
               "mnemonic_recall --feature='${FEATURE_NAME}' --json 2>/dev/null" || echo "")
 
             if [ -z "$DAG_OUTPUT" ]; then
@@ -362,7 +371,7 @@ jobs:
         run: |
           echo "Signing smoke run attestation..."
 
-          ATTESTATION=$(tailscale ssh "${VM_TARGET}" \
+          ATTESTATION=$(ssh $SSH_OPTS "${VM_TARGET}" \
             "mnemonic_sign_memory --feature='${FEATURE_NAME}' --phase=e2e-smoke-pass --type=agent.state 2>/dev/null" || echo "")
 
           if [ -z "$ATTESTATION" ]; then
@@ -421,7 +430,7 @@ jobs:
           fi
 
           # Collect last 50 lines of diagnostic via SSH
-          DIAGNOSTIC=$(tailscale ssh "${VM_TARGET}" \
+          DIAGNOSTIC=$(ssh $SSH_OPTS "${VM_TARGET}" \
             "journalctl -u smoke-test -n 50 2>/dev/null || tail -50 /tmp/smoke-test.log 2>/dev/null" || echo "No diagnostic log available")
 
           # Sanitize secrets: strip sk-* (OpenAI keys), api_* (Anthropic), base58 keys (43-44 chars), and JWK fragments
