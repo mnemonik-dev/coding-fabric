@@ -52,24 +52,58 @@
   when: fabric_repo_stat.stat.exists | default(false)
   changed_when: true
 
+- name: Hash the controller-side tarball (content-aware idempotency marker)
+  # A plain `.deployed-marker` skipped the unarchive whenever the marker
+  # existed, regardless of what was in the tarball. Result: adding a new
+  # fabric/ component (e.g. content-publisher) on the controller silently
+  # got skipped on every subsequent deploy because the marker from an
+  # earlier sync was still there (run 28294649096: "/opt/fabric/content-
+  # publisher/pyproject.toml is missing"). Hash-named markers fix that —
+  # any change to fabric/ produces a new marker name, so the unarchive
+  # runs once for every distinct tarball.
+  delegate_to: localhost
+  become: false
+  ansible.builtin.stat:
+    path: /tmp/fabric-source.tar.gz
+    checksum_algorithm: sha256
+    get_checksum: true
+  when: fabric_repo_stat.stat.exists | default(false)
+  register: fabric_tar_stat
+
 - name: Upload + extract fabric tarball to target
   ansible.builtin.unarchive:
     src: /tmp/fabric-source.tar.gz
     dest: "{{ fabric_target_dir }}/.."
     owner: "{{ base_operator_user }}"
     group: "{{ base_operator_user }}"
-    creates: "{{ fabric_target_dir }}/.deployed-marker"
+    creates: "{{ fabric_target_dir }}/.deployed-{{ fabric_tar_stat.stat.checksum }}.marker"
   when: fabric_repo_stat.stat.exists | default(false)
   register: fabric_sync
 
-- name: Touch deployed-marker so the unarchive is idempotent
+- name: Touch content-hash marker so the unarchive is idempotent
   ansible.builtin.file:
-    path: "{{ fabric_target_dir }}/.deployed-marker"
+    path: "{{ fabric_target_dir }}/.deployed-{{ fabric_tar_stat.stat.checksum }}.marker"
     state: touch
     owner: "{{ base_operator_user }}"
     group: "{{ base_operator_user }}"
     mode: '0644'
   when: fabric_repo_stat.stat.exists | default(false)
+
+- name: Garbage-collect stale content-hash markers (keep only current)
+  # Without cleanup the /opt/fabric/ root accumulates one marker file per
+  # historical tarball hash. Removing all markers except the current one
+  # keeps the directory clean and means a future `creates:` check still
+  # has exactly one valid marker to match against.
+  ansible.builtin.shell:
+    cmd: |
+      find "{{ fabric_target_dir }}" -maxdepth 1 -type f \
+        -name '.deployed-*.marker' \
+        ! -name '.deployed-{{ fabric_tar_stat.stat.checksum }}.marker' \
+        -delete
+      # Also evict the legacy un-hashed marker from the pre-content-hash era.
+      rm -f "{{ fabric_target_dir }}/.deployed-marker"
+  when: fabric_repo_stat.stat.exists | default(false)
+  changed_when: false
 
 - name: Clean up controller-side tarball
   delegate_to: localhost
