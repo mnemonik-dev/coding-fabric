@@ -263,9 +263,12 @@ jobs:
           fi
 
           echo "Response: $WORKTREES_JSON"
-          # `jq 'length == 0'` returns boolean; -e exits non-zero on false/null.
-          if ! echo "$WORKTREES_JSON" | jq -e 'length == 0' > /dev/null; then
-            COUNT=$(echo "$WORKTREES_JSON" | jq 'length' 2>/dev/null || echo "?")
+          # The endpoint returns {"worktrees":[...],"count":N,"capacity_used":N,
+          # "capacity_total":N}. Plain `length` returns the number of TOP-LEVEL
+          # KEYS (= 4), not the worktree count (run 28297670709). Use the
+          # `count` field directly.
+          if ! echo "$WORKTREES_JSON" | jq -e '.count == 0' > /dev/null; then
+            COUNT=$(echo "$WORKTREES_JSON" | jq '.count' 2>/dev/null || echo "?")
             echo "ERROR: expected zero active worktrees after smoke; got $COUNT"
             echo "$WORKTREES_JSON" | jq '.' || true
             exit 1
