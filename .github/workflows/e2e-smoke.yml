@@ -29,9 +29,7 @@ on:
         type: string
         default: ''
     secrets:
-      TAILSCALE_OAUTH_CLIENT_ID:
-        required: true
-      TAILSCALE_OAUTH_SECRET:
+      TAILSCALE_AUTH_KEY:
         required: true
       TELEGRAM_OPS_BOT_TOKEN:
         required: false
@@ -72,11 +70,6 @@ concurrency:
 env:
   E2E_TIMEOUT_MINUTES: 30
   DAG_POLL_MAX_MINUTES: 20
-  # Was `tag:ci-e2e` but our Tailscale OAuth client only owns `tag:ci`
-  # (run 28296505780: "requested tags [tag:ci-e2e] are invalid or not
-  # permitted"). Reusing the already-owned tag avoids a Tailscale ACL
-  # edit; bump back to a dedicated tag once tagOwners is updated.
-  TAILSCALE_TAG: tag:ci
 
 jobs:
   smoke:
@@ -115,11 +108,16 @@ jobs:
           fetch-depth: 1
 
       - name: Tailscale up (ephemeral)
+        # Use the pre-shared authkey that deploy-fabric already uses
+        # successfully (TAILSCALE_AUTH_KEY). The OAuth-client path needs
+        # the client to appear in `tagOwners` in the tailnet ACL, which
+        # is not currently configured — every tag we tried (tag:ci-e2e,
+        # tag:ci) was rejected with "invalid or not permitted" (runs
+        # 28296505780 + 28296922990). The authkey carries its own tag
+        # baked in at creation time, so no ACL edit is needed here.
         uses: tailscale/github-action@v3
         with:
-          oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
-          tags: ${{ env.TAILSCALE_TAG }}
+          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
 
       - name: Validate Tailscale connectivity
         timeout-minutes: 5
