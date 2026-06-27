@@ -346,13 +346,14 @@
       # The bot venv is created by `uv sync` (above), and uv-managed venvs
       # ship WITHOUT pip by design — `ansible.builtin.pip` therefore fails
       # with "Unable to find pip in the virtualenv … pip3, pip" (run
-      # 28295067700). Use `uv pip install` which targets the venv via
-      # UV_PROJECT_ENVIRONMENT and does not require pip inside the venv.
+      # 28295067700). Use `uv pip install` with VIRTUAL_ENV pointing at the
+      # bot venv (UV_PROJECT_ENVIRONMENT is only honored by `uv sync` /
+      # `uv run` — raw `uv pip` needs VIRTUAL_ENV; run 28295643010).
       ansible.builtin.shell: |
         /usr/local/bin/uv pip install --no-deps \
           "{{ fabric_target_dir | default('/opt/fabric') }}/content-publisher"
       environment:
-        UV_PROJECT_ENVIRONMENT: "{{ telegram_ai_agent_home }}/.venv"
+        VIRTUAL_ENV: "{{ telegram_ai_agent_home }}/.venv"
       register: tg_content_publisher_pip
       changed_when: >-
         'Installed' in tg_content_publisher_pip.stdout
