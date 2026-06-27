@@ -194,13 +194,26 @@ jobs:
         timeout-minutes: 10
         env:
           FEATURE_NAME: ${{ inputs.feature_name }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          # smoke.sh reads $DOCS_TOPIC_ID and uses it as the Telegram
+          # `chat_id` (variable name is historical — it's the chat id,
+          # not a forum topic id). Fed from TELEGRAM_FORUM_CHAT_ID.
+          DOCS_TOPIC_ID: ${{ secrets.TELEGRAM_FORUM_CHAT_ID }}
         run: |
           echo "Starting smoke test with feature_name=$FEATURE_NAME"
 
-          # feature_name is regex-validated upstream to ^[a-z0-9-]{1,64}$, so the remote
-          # single-quoted argv is safe (no quotes / shell metas possible).
+          # Pass secrets to the remote shell via stdin (bash -s) instead
+          # of argv, so the literal token never appears in `ps`/auditd
+          # on the VM (audit finding F-004 — same threat model as the
+          # TG_URL composition inside smoke.sh itself).
+          # feature_name is regex-validated upstream to ^[a-z0-9-]{1,64}$.
           if ! ssh $SSH_OPTS "${VM_TARGET}" \
-            "bash /tmp/smoke.sh '${FEATURE_NAME}'"; then
+              "bash -s -- '${FEATURE_NAME}'" <<REMOTE
+          export TELEGRAM_BOT_TOKEN='${TELEGRAM_BOT_TOKEN}'
+          export DOCS_TOPIC_ID='${DOCS_TOPIC_ID}'
+          bash /tmp/smoke.sh "\$1"
+          REMOTE
+          then
             echo "ERROR: smoke.sh failed"
             exit 1
           fi
