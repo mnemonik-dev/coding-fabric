@@ -72,7 +72,11 @@ concurrency:
 env:
   E2E_TIMEOUT_MINUTES: 30
   DAG_POLL_MAX_MINUTES: 20
-  TAILSCALE_TAG: tag:ci-e2e
+  # Was `tag:ci-e2e` but our Tailscale OAuth client only owns `tag:ci`
+  # (run 28296505780: "requested tags [tag:ci-e2e] are invalid or not
+  # permitted"). Reusing the already-owned tag avoids a Tailscale ACL
+  # edit; bump back to a dedicated tag once tagOwners is updated.
+  TAILSCALE_TAG: tag:ci
 
 jobs:
   smoke:
