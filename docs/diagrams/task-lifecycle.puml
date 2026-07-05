@@ -1,0 +1,48 @@
+@startuml task-lifecycle
+title Autonomous task lifecycle - intent to merged PR
+
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+autonumber
+
+actor "Operator" as OP
+participant "telegram-ai-agent" as Bot
+participant "Kaneo\n(tickets = durable state)" as K
+participant "Symphony\n(in workspace-manager)" as Sym
+participant "Engine subprocess\n(claude / codex)" as Eng
+participant "GitHub" as GH
+
+OP -> Bot : intent in repo topic\n("do X in core")
+Bot -> Eng : spawn claude for the turn\n(cwd resolved via workspace-manager)
+Eng -> K : create_task via Kaneo MCP\n(label stage:code)
+
+loop every 30 s
+  Sym -> K : list active tickets\n(to-do ... ready-to-merge)
+end
+
+Sym -> Sym : stage from label ->\nload .symphony/workflows/code.md
+Sym -> Sym : lease workspace\n~/code/symphony-workspaces/TASK-ID
+Sym -> Eng : spawn engine from workflow\nfront-matter (semaphore = 3)
+Eng -> GH : TDD implementation,\nopen PR "feat(...): closes TASK-ID"
+Eng -> K : comment + ticket -> review
+
+Sym -> Eng : review stage - codex,\nread-only tools (cross-engine)
+Eng -> K : findings; approve -> qa\nor stays review (changes-requested)
+
+Sym -> Eng : qa stage - claude +\nPlaywright MCP (30-min budget)
+Eng -> K : pass -> ready-to-merge\nor back to review (qa-fail)
+
+Sym -> Bot : veto notice to ops topic
+note over Sym, K
+  24 h veto window; deadline persisted
+  as a Kaneo comment, re-read each tick
+  (restart-safe)
+end note
+
+alt operator sends /reject
+  Sym -> K : ticket -> review (cancelled)
+else window expires
+  Sym -> GH : gh pr merge --squash
+  Sym -> K : ticket -> done
+end
+@enduml

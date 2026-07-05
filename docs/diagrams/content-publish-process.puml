@@ -1,0 +1,75 @@
+@startuml content-publish-process
+title content-publisher - end-to-end publish process
+
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+
+|Telegram bot|
+start
+:operator posts brief in
+blogger-prompts topic;
+:append job to queue.jsonl
+(flock, append-only);
+
+|content-publisher worker|
+:queue-poll loop picks job (~5 s);
+:CAS queued -> writing;
+:spawn claude --skill blog-writer
+(prompt via stdin, allowlisted env);
+:article.md written to worktree;
+:CAS writing -> scoring;
+:run analyze_blog.py subprocess;
+if (score >= MNEMONIK_MIN_SCORE (80)?) then (yes)
+  :CAS scoring -> preview-sent;
+else (no)
+  :CAS scoring -> failed;
+  stop
+endif
+
+|Telegram bot|
+:send byte-identical preview
+with Publish / Reject / Regenerate
+buttons (HMAC-signed callbacks);
+if (operator decision\n(or approval deadline)) then (publish / timeout / auto)
+  :CAS preview-sent -> publishing;
+elseif (reject) then
+  :CAS preview-sent -> rejected;
+  stop
+else (regenerate)
+  :CAS preview-sent -> regenerated;
+  :new job appended to queue;
+  stop
+endif
+
+|content-publisher worker|
+:rate ceiling check (20 posts/h);
+:write tentative_publish_started_at
+forensic marker;
+:mnemonik_blogger.run_campaign_from_article
+-> posts to @mnemonik channel;
+if (publish ok?) then (yes)
+  :CAS publishing -> published
+  (post_url, message_ids, content_sha256);
+else (no)
+  :CAS publishing -> publish-failed;
+  stop
+endif
+:spawn mnemonik-mcp mcp-stdio;
+:JSON-RPC initialize +
+tools/call mnemonic_sign_memory;
+if (attestation ok?) then (yes)
+  :CAS published -> done
+  (attestation_hash recorded);
+else (no)
+  :CAS published -> attest-pending;
+  repeat
+    :retry attestation (every 5 min);
+  repeat while (still failing and < 24 h?) is (yes)
+  -> 24 h escalation window elapsed;
+  :CAS attest-pending -> attest-failed;
+  stop
+endif
+:cleanup-gc after 24 h -
+rmtree worktree, archive job line;
+stop
+@enduml

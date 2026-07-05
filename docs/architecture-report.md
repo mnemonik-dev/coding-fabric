@@ -15,7 +15,7 @@ The coding fabric is an **autonomous, self-hosting development loop for the Mnem
 - **Mnemonic attestation is descoped by default** (`mnemonic_mcp_enabled: false`); the 5-node attestation DAG is parked in the backlog feature `mnemonic-attestation-integration`. The MCP binary was re-introduced for the content-publish pipeline, but **as a per-spawn stdio process, not a daemon** (the daemon was retired 2026-06-11 after a live deploy failure).
 - A second product surface, the **content-publish pipeline** (Telegram-brief → claude-written article → scored → operator-approved → published to the public `@mnemonik` channel → attested), was built on top of the fabric in June 2026 and has passed pre-deploy QA.
 
-**Answer to "do we have information flow diagrams?": No — until this report.** The repository contained no Mermaid, PlantUML, drawio, or image diagrams anywhere. The only diagram of any kind was a single ASCII task-lifecycle sketch inside `work/coding-fabric-autonomous/architecture.md` (a draft). Section 6 of this report provides a full set of information-flow diagrams (Mermaid, rendered natively by GitHub).
+**Answer to "do we have information flow diagrams?": No — until this report.** The repository contained no Mermaid, PlantUML, drawio, or image diagrams anywhere. The only diagram of any kind was a single ASCII task-lifecycle sketch inside `work/coding-fabric-autonomous/architecture.md` (a draft). Section 6 of this report provides a full set of information-flow diagrams (Mermaid, rendered natively by GitHub), and §6.6 adds **PlantUML process-flow diagrams** — pre-rendered SVGs embedded below, with editable sources in [`docs/diagrams/`](diagrams/).
 
 Overall assessment: the codebase is **well-engineered at the component level** (consistent atomic-persistence patterns, a mandatory log-sanitizer chokepoint, fail-closed guards, strong test coverage — ~7,200 test LOC across the Python services) but carries **documentation drift** (the root `spec.md` still describes the pre-ruflo-drop architecture), a handful of **stale integrations** left behind by the mnemonic-mcp daemon retirement, and the inherent **single-VM SPOF** accepted by design. Findings are in §10.
 
@@ -273,6 +273,64 @@ flowchart LR
     TG -->|"/turn-into-task alert_id"| KC["Kaneo card<br/>(idempotent by alert_id)"]
 ```
 
+### 6.6 PlantUML process flow diagrams
+
+The diagrams below are the PlantUML companion set to §6.1–6.5, with two additions that Mermaid renders poorly: the **content-publisher job state machine** (taken verbatim from `models.py::allowed_transitions`) and the **auto-merge veto process**. Each SVG is pre-rendered and committed; the editable `.puml` sources live in [`docs/diagrams/`](diagrams/). To re-render after editing:
+
+```bash
+plantuml -tsvg docs/diagrams/*.puml   # requires graphviz for the component/state diagrams
+```
+
+#### 6.6.1 System context (component view)
+
+[Source](diagrams/system-context.puml)
+
+![System context](diagrams/system-context.svg)
+
+#### 6.6.2 Autonomous task lifecycle (sequence)
+
+[Source](diagrams/task-lifecycle.puml)
+
+![Task lifecycle](diagrams/task-lifecycle.svg)
+
+#### 6.6.3 Worktree provisioning with rollback (activity)
+
+[Source](diagrams/worktree-provisioning.puml)
+
+![Worktree provisioning](diagrams/worktree-provisioning.svg)
+
+#### 6.6.4 Content-publish process (activity, swimlanes)
+
+[Source](diagrams/content-publish-process.puml)
+
+![Content publish process](diagrams/content-publish-process.svg)
+
+#### 6.6.5 Content-publisher job state machine (state)
+
+Transitions mirror `fabric/content-publisher/src/content_publisher/models.py` exactly; dashed edges are the boot-recovery resets applied by `recovery.py` outside the CAS graph.
+
+[Source](diagrams/content-publisher-job-states.puml)
+
+![Job state machine](diagrams/content-publisher-job-states.svg)
+
+#### 6.6.6 Auto-merge veto window (activity)
+
+[Source](diagrams/auto-merge-veto.puml)
+
+![Auto-merge veto window](diagrams/auto-merge-veto.svg)
+
+#### 6.6.7 Deploy, self-hosting and incident recovery (activity, swimlanes)
+
+[Source](diagrams/deploy-recovery.puml)
+
+![Deploy and recovery](diagrams/deploy-recovery.svg)
+
+#### 6.6.8 Watchdog tick (activity, fork/join)
+
+[Source](diagrams/watchdog-tick.puml)
+
+![Watchdog tick](diagrams/watchdog-tick.svg)
+
 ---
 
 ## 7. Data & state stores
@@ -342,7 +400,7 @@ Ordered by severity. None are release blockers; F1–F3 are the ones worth sched
 ```
 coding-fabric/
 ├── spec.md                      # original attested spec v0.1.1 (historical — see F1)
-├── docs/                        # this report
+├── docs/                        # this report + diagrams/ (PlantUML sources + rendered SVGs)
 ├── fabric/                      # the services layer (§5.1)
 │   ├── workspace-manager/       # worktree API + Symphony orchestrator
 │   ├── watchdog/                # 9-check ops daemon
