@@ -1,0 +1,17 @@
+---
+galaxy_info:
+  author: "Mnemonic Protocol"
+  description: "Deploy the Mnemonic MCP server (Rust GHCR image) + co-located Ollama, fronted by the shared Caddy"
+  company: "Mnemonic Protocol"
+  license: "MIT"
+  min_ansible_version: "2.15"
+  tags:
+    - docker
+    - mcp
+    - mnemonik
+    - ollama
+    - caddy
+
+dependencies: []
+# Ordering enforced by the playbook (deploy.yml roles list): must run after
+# vaultwarden (owns the shared Caddy + external network) and kaneo.

@@ -1,0 +1,20 @@
+# Public ingress for the Mnemonic MCP server. Real Let's Encrypt cert obtained
+# automatically via Caddy's ACME on first request. Requires:
+#   - DNS A record {{ mnemonik_public_domain }} → VM public IPv4
+#   - Hetzner firewall opens TCP 80 + 443 from 0.0.0.0/0 (main.tf — already so)
+#   - caddy_acme_email role var set (Let's Encrypt contact)
+# The mcp container joins the shared caddy network with alias `mnemonik-mcp`
+# (see the mnemonik-server docker-compose template).
+{{ mnemonik_public_domain }} {
+  encode gzip
+  reverse_proxy http://mnemonik-mcp:{{ mnemonik_mcp_container_port }} {
+    header_up X-Real-IP {remote_host}
+    header_up X-Forwarded-For {remote_host}
+    header_up X-Forwarded-Proto {scheme}
+  }
+
+  header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+  header X-Content-Type-Options "nosniff"
+  header X-Frame-Options "SAMEORIGIN"
+  header Referrer-Policy "same-origin"
+}

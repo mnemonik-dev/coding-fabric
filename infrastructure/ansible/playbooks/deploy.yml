@@ -114,6 +114,11 @@
         vault_blogger_repo_ref:              "{{ sops.blogger_repo_ref | default('') }}"
         vault_claude_blog_repo_ref:          "{{ sops.claude_blog_repo_ref | default('') }}"
         vault_publish_callback_hmac_secrets: "{{ sops.publish_callback_hmac_secrets | default('') }}"
+        # Mnemonic MCP server (mnemonik-server role) hosted-mode secrets.
+        # Generate each once (openssl rand -base64 32) and keep stable;
+        # empty/safe default so a deploy with the role disabled never fails.
+        vault_mnemonik_mcp_jwt_secret:       "{{ sops.mnemonik_mcp_jwt_secret | default('') }}"
+        vault_mnemonik_mcp_refresh_salt:     "{{ sops.mnemonik_mcp_refresh_salt | default('') }}"
       no_log: true
 
     - name: Wait for system to stabilize post-boot
@@ -179,6 +184,21 @@
         # Public ingress — set to a domain whose DNS A record points
         # at the VM's public IPv4. Empty = tailnet-only (default).
         kaneo_public_domain: "{{ sops.kaneo_public_domain | default('kaneo.mnemonik.xyz') }}"
+
+    # Mnemonic protocol SERVER (Rust MCP image from GHCR + local Ollama),
+    # co-located and fronted by the shared Caddy. Distinct from the
+    # `mnemonic-mcp` role (that installs the CLIENT binary). Disabled by
+    # default: enable once DNS (mcp.mnemonik.xyz → VM IP) + sops secrets are
+    # in place — set mnemonik_server_enabled=true (group_vars or -e).
+    - role: mnemonik-server
+      tags: [mnemonik-server, mcp]
+      when: mnemonik_server_enabled | default(false) | bool
+      vars:
+        mnemonik_mcp_jwt_secret: "{{ vault_mnemonik_mcp_jwt_secret | default('') }}"
+        mnemonik_mcp_refresh_salt: "{{ vault_mnemonik_mcp_refresh_salt | default('') }}"
+        # GHCR pull auth — reuse the sops github PAT for private packages.
+        # Leave the token empty if the GHCR package is public.
+        mnemonik_ghcr_token: "{{ vault_github_deploy_pat | default('') }}"
 
     - role: telegram-init
       tags: [telegram-init, communication]

@@ -1,0 +1,231 @@
+---
+# mnemonik-server: co-located Mnemonic MCP server (Rust image from GHCR) +
+# local Ollama, fronted by the shared Caddy. See defaults/main.yml for the
+# upstream-adaptation notes.
+
+- name: Skip mnemonik-server (disabled)
+  ansible.builtin.debug:
+    msg: >-
+      mnemonik_server_enabled is false — skipping. Enable via group_vars or
+      -e mnemonik_server_enabled=true once DNS + sops secrets are in place.
+  when: not (mnemonik_server_enabled | default(false) | bool)
+
+- name: Deploy mnemonik-server
+  when: mnemonik_server_enabled | default(false) | bool
+  block:
+    - name: Assert required MCP secrets are present
+      ansible.builtin.assert:
+        that:
+          - mnemonik_mcp_jwt_secret is defined and mnemonik_mcp_jwt_secret | string | length >= 16
+          - mnemonik_mcp_refresh_salt is defined and mnemonik_mcp_refresh_salt | string | length >= 16
+        fail_msg: |
+          FATAL: Mnemonic MCP hosted-mode secrets missing. Add to sops and
+          wire through deploy.yml (vault_mnemonik_mcp_*). Generate each once
+          and keep stable across deploys:
+            mnemonik_mcp_jwt_secret    (openssl rand -base64 32)
+            mnemonik_mcp_refresh_salt  (openssl rand -base64 32)
+          Rotating MCP_REFRESH_SALT invalidates every live refresh token.
+      no_log: true
+
+    # --- Swap: ollama + fastembed headroom ---------------------------------
+    - name: Configure swap file
+      when: mnemonik_server_swap_enabled | default(true) | bool
+      become: true
+      block:
+        - name: Check whether swap file already exists
+          ansible.builtin.stat:
+            path: "{{ mnemonik_server_swap_path }}"
+          register: mnemonik_swap_stat
+
+        - name: Allocate swap file
+          ansible.builtin.command:
+            cmd: "fallocate -l {{ mnemonik_server_swap_size_mb }}M {{ mnemonik_server_swap_path }}"
+          when: not mnemonik_swap_stat.stat.exists
+          changed_when: true
+          register: mnemonik_swap_alloc
+
+        - name: Secure swap file permissions
+          ansible.builtin.file:
+            path: "{{ mnemonik_server_swap_path }}"
+            owner: root
+            group: root
+            mode: "0600"
+          when: not mnemonik_swap_stat.stat.exists
+
+        - name: Format swap file
+          ansible.builtin.command:
+            cmd: "mkswap {{ mnemonik_server_swap_path }}"
+          when: not mnemonik_swap_stat.stat.exists
+          changed_when: true
+
+        - name: Enable swap file (persist in fstab)
+          ansible.posix.mount:
+            path: none
+            src: "{{ mnemonik_server_swap_path }}"
+            fstype: swap
+            opts: sw
+            state: present
+
+        - name: Activate swap now
+          ansible.builtin.command:
+            cmd: "swapon {{ mnemonik_server_swap_path }}"
+          when: not mnemonik_swap_stat.stat.exists
+          changed_when: true
+
+    # --- State on the Hetzner persistent volume ----------------------------
+    - name: Find Hetzner data volume mountpoint (block device /dev/sdb)
+      ansible.builtin.set_fact:
+        mnemonik_volume_mount: >-
+          {{ ansible_facts.mounts
+             | selectattr('device', 'equalto', '/dev/sdb')
+             | map(attribute='mount')
+             | first | default('') }}
+
+    - name: Assert the data volume is mounted
+      ansible.builtin.assert:
+        that:
+          - mnemonik_volume_mount | length > 0
+        fail_msg: |
+          /dev/sdb (Hetzner data volume) is not mounted. Mnemonic MCP server
+          identity (id.json) + attestation DB must live on the persistent
+          volume. Check hcloud_volume_attachment in tofu/hetzner/main.tf.
+
+    - name: Set state dir on the persistent volume
+      ansible.builtin.set_fact:
+        mnemonik_state_dir: "{{ mnemonik_volume_mount }}/mnemonik"
+
+    - name: Ensure state subdirs exist on the persistent volume
+      become: true
+      ansible.builtin.file:
+        path: "{{ mnemonik_state_dir }}/{{ item }}"
+        state: directory
+        owner: op
+        group: op
+        mode: "0700"
+      loop:
+        - data
+        - keypair
+        - ollama
+
+    - name: Create install dir
+      become: true
+      ansible.builtin.file:
+        path: "{{ mnemonik_server_install_dir }}"
+        state: directory
+        owner: op
+        group: op
+        mode: "0750"
+
+    # --- GHCR pull auth (only if a token was supplied) ---------------------
+    - name: Log in to GHCR (private package pull)
+      when: mnemonik_ghcr_token | default('') | length > 0
+      become: true
+      become_user: op
+      ansible.builtin.command:
+        cmd: "docker login ghcr.io -u {{ mnemonik_ghcr_username }} --password-stdin"
+        stdin: "{{ mnemonik_ghcr_token }}"
+      changed_when: false
+      no_log: true
+
+    # --- Render compose + env + Caddy vhost --------------------------------
+    - name: Render docker-compose.yml
+      become: true
+      ansible.builtin.template:
+        src: docker-compose.yml.j2
+        dest: "{{ mnemonik_server_install_dir }}/docker-compose.yml"
+        owner: op
+        group: op
+        mode: "0640"
+      register: mnemonik_compose_template
+      notify: Restart mnemonik-server
+
+    - name: Render mcp.env
+      become: true
+      ansible.builtin.template:
+        src: mcp.env.j2
+        dest: "{{ mnemonik_server_install_dir }}/mcp.env"
+        owner: op
+        group: op
+        mode: "0600"
+      no_log: true
+      register: mnemonik_env_template
+      notify: Restart mnemonik-server
+
+    - name: Render Caddy vhost snippet into shared conf.d
+      become: true
+      ansible.builtin.template:
+        src: Caddyfile.snippet.j2
+        dest: "{{ mnemonik_caddy_conf_d }}/mnemonik-mcp.conf"
+        owner: op
+        group: op
+        mode: "0644"
+      register: mnemonik_caddy_snippet
+      notify: Reload caddy for mnemonik vhost
+
+    # --- Bring the stack up ------------------------------------------------
+    - name: Run docker compose to start the mnemonik stack
+      community.docker.docker_compose_v2:
+        project_src: "{{ mnemonik_server_install_dir }}"
+        state: present
+        pull: always
+      environment:
+        COMPOSE_PROJECT_NAME: "{{ mnemonik_server_compose_project }}"
+      become: true
+      become_user: op
+      register: mnemonik_compose_result
+
+    - name: Wait for Ollama to accept commands
+      become: true
+      become_user: op
+      ansible.builtin.command:
+        cmd: "docker exec mnemonik-ollama-1 ollama list"
+      register: mnemonik_ollama_ready
+      until: mnemonik_ollama_ready.rc == 0
+      retries: 30
+      delay: 2
+      changed_when: false
+
+    - name: Pull the Ollama model (idempotent — no-op if already present)
+      become: true
+      become_user: op
+      ansible.builtin.command:
+        cmd: "docker exec mnemonik-ollama-1 ollama pull {{ mnemonik_ollama_model }}"
+      register: mnemonik_ollama_pull
+      changed_when: "'pulling' in (mnemonik_ollama_pull.stdout | default('') + mnemonik_ollama_pull.stderr | default(''))"
+
+    - name: Warm up the Ollama model (non-fatal)
+      become: true
+      become_user: op
+      ansible.builtin.command:
+        cmd: >-
+          docker exec mnemonik-ollama-1 sh -c
+          'ollama run {{ mnemonik_ollama_model }} hello >/dev/null 2>&1 || true'
+      changed_when: false
+      failed_when: false
+
+    # --- Caddy reload must precede the public health probe -----------------
+    - name: Flush handlers so Caddy reload runs before the health probe
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait for MCP /health via Caddy (public TLS)
+      # Probes the real public hostname the same way an external client would.
+      # start_period is 180s (fastembed load) so allow a generous window.
+      ansible.builtin.uri:
+        url: "https://{{ mnemonik_public_domain }}/health"
+        method: GET
+        status_code: 200
+      register: mnemonik_health
+      until: mnemonik_health.status == 200
+      retries: "{{ mnemonik_mcp_health_retries }}"
+      delay: "{{ mnemonik_mcp_health_delay }}"
+      changed_when: false
+
+    - name: Fail if MCP health check exceeded timeout
+      ansible.builtin.fail:
+        msg: |
+          Mnemonic MCP health check failed. Inspect on the VM:
+            docker compose -f {{ mnemonik_server_install_dir }}/docker-compose.yml logs --tail=200
+            docker compose -f {{ mnemonik_server_install_dir }}/docker-compose.yml ps
+          Also confirm DNS ({{ mnemonik_public_domain }} → VM IP) and that
+          Caddy obtained a Let's Encrypt cert (caddy_acme_email set).
+      when: mnemonik_health.status is not defined or mnemonik_health.status != 200

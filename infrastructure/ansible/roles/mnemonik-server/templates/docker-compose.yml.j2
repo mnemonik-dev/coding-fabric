@@ -1,0 +1,79 @@
+# Mnemonic MCP server stack (co-located on the fabric VM).
+# Rendered by the mnemonik-server role — DO NOT edit on the box; edit the
+# template. Adapted from mnemonik-xyz/monorepo docker-compose.yml: the `mcp`
+# and `ollama` services are kept; `nginx` + `certbot` are dropped because the
+# shared Caddy (vaultwarden role) terminates TLS and reverse-proxies instead.
+services:
+  mcp:
+    image: "{{ mnemonik_mcp_image }}:{{ mnemonik_mcp_image_tag }}"
+    container_name: mnemonik-mcp-1
+    restart: unless-stopped
+    env_file:
+      - mcp.env
+    environment:
+      OLLAMA_URL: "http://ollama:11434"
+    depends_on:
+      ollama:
+        condition: service_healthy
+        required: false
+    # No host port publish: Caddy reaches this over the shared network by the
+    # `mnemonik-mcp` alias below. The server still listens on 0.0.0.0:{{ mnemonik_mcp_container_port }}
+    # inside the container.
+    expose:
+      - "{{ mnemonik_mcp_container_port }}"
+    volumes:
+      # State on the Hetzner persistent volume — server identity (id.json)
+      # and attestation DB survive a VM rebuild.
+      - "{{ mnemonik_state_dir }}/data:/data"
+      - "{{ mnemonik_state_dir }}/keypair:/keypair"
+    networks:
+      # Internal — mcp <-> ollama only.
+      mnemonik: {}
+      # Shared external network (vaultwarden role) so Caddy can route
+      # mcp.mnemonik.xyz to this container. Without the alias, Caddy fails
+      # with "mnemonik-mcp: no such host" on the reverse_proxy directive.
+      "{{ mnemonik_shared_caddy_network }}":
+        aliases:
+          - mnemonik-mcp
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:{{ mnemonik_mcp_container_port }}/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 180s
+      retries: 5
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  ollama:
+    image: "{{ mnemonik_ollama_image }}"
+    container_name: mnemonik-ollama-1
+    restart: unless-stopped
+    volumes:
+      # Model cache on the persistent volume — {{ mnemonik_ollama_model }} is
+      # pulled once (post-up task) and survives redeploys / rebuilds.
+      - "{{ mnemonik_state_dir }}/ollama:/root/.ollama"
+    networks:
+      - mnemonik
+    healthcheck:
+      # Stock ollama image has no curl; `ollama list` exits 0 once the server
+      # is up (connects to the local :11434 API).
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+networks:
+  mnemonik:
+    name: mnemonik
+    driver: bridge
+  "{{ mnemonik_shared_caddy_network }}":
+    external: true
