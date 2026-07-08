@@ -117,7 +117,11 @@
         mode: "0750"
 
     # --- GHCR pull auth (only if a token was supplied) ---------------------
-    - name: Log in to GHCR (private package pull)
+    # Non-fatal: if the package is PUBLIC, an empty/invalid token or a failed
+    # login must not abort the deploy — the subsequent `compose pull` still
+    # fetches a public image anonymously. Login only matters for a private
+    # package, and there a failure surfaces later as a pull error anyway.
+    - name: Log in to GHCR (private package pull; non-fatal)
       when: mnemonik_ghcr_token | default('') | length > 0
       become: true
       become_user: op
@@ -125,6 +129,7 @@
         cmd: "docker login ghcr.io -u {{ mnemonik_ghcr_username }} --password-stdin"
         stdin: "{{ mnemonik_ghcr_token }}"
       changed_when: false
+      failed_when: false
       no_log: true
 
     # --- Render compose + env + Caddy vhost --------------------------------
