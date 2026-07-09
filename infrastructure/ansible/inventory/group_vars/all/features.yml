@@ -1,0 +1,14 @@
+---
+# Feature enable flags, loaded by ansible from group_vars/all (adjacent to the
+# CI-generated inventory hosts.yml). Higher precedence than role defaults,
+# lower than the play's role vars in deploy.yml.
+
+# mnemonik-server: co-located Mnemonic MCP server (Rust GHCR image + local
+# Ollama), fronted by the shared Caddy. Enabled 2026-07-09 once the GHCR
+# package went public and a build passed.
+mnemonik_server_enabled: true
+
+# Pin to the confirmed-good build rather than :latest for a reproducible
+# deploy. Bump when a newer build is verified. Package is public, so the
+# fail-soft GHCR login is skipped/ignored and the pull is anonymous.
+mnemonik_mcp_image_tag: "sha-61fdb3e"
