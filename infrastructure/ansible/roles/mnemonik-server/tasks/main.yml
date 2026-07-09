@@ -95,36 +95,35 @@
         mnemonik_state_dir: "{{ mnemonik_volume_mount }}/mnemonik"
 
     - name: Ensure state subdirs exist on the persistent volume
+      # /data holds the fastembed model cache (FASTEMBED_CACHE_DIR=/data/model-cache),
+      # RAG seed, and SQLite DB; /keypair holds the server identity. The image
+      # pre-creates /data/model-cache + /data/rag_chunks, but a bind mount masks
+      # them, so create them on the host too.
       become: true
       ansible.builtin.file:
         path: "{{ mnemonik_state_dir }}/{{ item }}"
         state: directory
-        owner: op
-        group: op
-        mode: "0700"
+        mode: "0755"
       loop:
         - data
+        - data/model-cache
+        - data/rag_chunks
         - keypair
         - ollama
 
-    # The mcp image pre-creates /data/model-cache + /data/rag_chunks and writes
-    # its first-boot fastembed model (~22MB, FASTEMBED_CACHE_DIR=/data/model-cache)
-    # and RAG seed there. Bind-mounting the empty host /data masks those dirs,
-    # so fastembed can't write the model and the server FATALs with "No
-    # embedding provider available" in a restart loop (run 29005805686). Create
-    # them on the host bind; 0777 sidesteps any container-user uid mismatch on
-    # these non-sensitive caches.
-    - name: Ensure MCP /data cache subdirs exist (fastembed model + RAG seed)
+    - name: Own MCP state dirs by the image's runtime uid (mnemonic = 10001:999)
+      # The mcp image runs as uid 10001 / gid 999. Bind-mounting host dirs owned
+      # by op(1000) made /data unreadable to the container ("Permission denied"
+      # on /data/model-cache, confirmed via debug probe run 29010408334), so
+      # fastembed FATALed with "No embedding provider available" in a restart
+      # loop. chown to the container's uid so it can read/write its model cache,
+      # identity, and DB. (The monorepo sidesteps this with named volumes, which
+      # inherit the image's ownership; we keep bind mounts for persistent-volume
+      # durability and set ownership explicitly.)
       become: true
-      ansible.builtin.file:
-        path: "{{ mnemonik_state_dir }}/data/{{ item }}"
-        state: directory
-        owner: op
-        group: op
-        mode: "0777"
-      loop:
-        - model-cache
-        - rag_chunks
+      ansible.builtin.command:
+        cmd: "chown -R 10001:999 {{ mnemonik_state_dir }}/data {{ mnemonik_state_dir }}/keypair"
+      changed_when: true
 
     - name: Create install dir
       become: true
@@ -245,8 +244,10 @@
           https://{{ mnemonik_public_domain }}/health
       register: mnemonik_health
       until: mnemonik_health.rc == 0
-      retries: 40
-      delay: 3
+      # ~6 min: first boot downloads the ~22MB fastembed model + runs the RAG
+      # seed before /health goes 200 (image start_period is 180s).
+      retries: 90
+      delay: 4
       changed_when: false
       failed_when: false
 
@@ -263,22 +264,6 @@
         docker exec mnemonik-mcp-1 curl -fsS -m 5 http://localhost:3000/health 2>&1; echo "(exec rc=$?)"
         echo "=== mnemonik-mcp-1 logs (tail 120) ==="
         docker logs mnemonik-mcp-1 --tail 120 2>&1 || true
-        echo "=== debug container: fastembed env + DNS + HF egress + cache dir ==="
-        docker rm -f mcp-dbg >/dev/null 2>&1 || true
-        docker run -d --name mcp-dbg --entrypoint sleep \
-          --network mnemonik --env-file {{ mnemonik_server_install_dir }}/mcp.env \
-          -v {{ mnemonik_state_dir }}/data:/data \
-          {{ mnemonik_mcp_image }}:{{ mnemonik_mcp_image_tag }} 180 >/dev/null 2>&1 || echo "dbg-run-fail"
-        docker network connect vaultwarden_vaultwarden mcp-dbg >/dev/null 2>&1 || echo "dbg-net2-fail"
-        docker exec mcp-dbg sh -c '
-          echo "-- env --"; env | grep -iE "embed|cache|hf_|^home=|onnx|openai" | sort
-          echo "-- whoami --"; id 2>&1
-          echo "-- dns --"; getent hosts huggingface.co 2>&1 || echo dns-FAIL
-          echo "-- egress HF --"; curl -sS -m 10 -o /dev/null -w "hf=%{http_code}\n" https://huggingface.co 2>&1 || echo hf-FAIL
-          echo "-- egress HF CDN --"; curl -sS -m 10 -o /dev/null -w "cdn=%{http_code}\n" https://cdn-lfs.huggingface.co 2>&1 || echo cdn-FAIL
-          echo "-- cache dir --"; ls -la /data/model-cache 2>&1 | head
-        ' 2>&1 | head -40
-        docker rm -f mcp-dbg >/dev/null 2>&1 || true
       register: mnemonik_diag
       changed_when: false
       failed_when: false
