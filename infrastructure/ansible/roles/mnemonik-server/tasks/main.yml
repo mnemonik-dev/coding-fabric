@@ -107,6 +107,25 @@
         - keypair
         - ollama
 
+    # The mcp image pre-creates /data/model-cache + /data/rag_chunks and writes
+    # its first-boot fastembed model (~22MB, FASTEMBED_CACHE_DIR=/data/model-cache)
+    # and RAG seed there. Bind-mounting the empty host /data masks those dirs,
+    # so fastembed can't write the model and the server FATALs with "No
+    # embedding provider available" in a restart loop (run 29005805686). Create
+    # them on the host bind; 0777 sidesteps any container-user uid mismatch on
+    # these non-sensitive caches.
+    - name: Ensure MCP /data cache subdirs exist (fastembed model + RAG seed)
+      become: true
+      ansible.builtin.file:
+        path: "{{ mnemonik_state_dir }}/data/{{ item }}"
+        state: directory
+        owner: op
+        group: op
+        mode: "0777"
+      loop:
+        - model-cache
+        - rag_chunks
+
     - name: Create install dir
       become: true
       ansible.builtin.file:
