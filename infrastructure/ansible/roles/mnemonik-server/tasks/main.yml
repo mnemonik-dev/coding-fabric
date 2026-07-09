@@ -263,6 +263,22 @@
         docker exec mnemonik-mcp-1 curl -fsS -m 5 http://localhost:3000/health 2>&1; echo "(exec rc=$?)"
         echo "=== mnemonik-mcp-1 logs (tail 120) ==="
         docker logs mnemonik-mcp-1 --tail 120 2>&1 || true
+        echo "=== debug container: fastembed env + DNS + HF egress + cache dir ==="
+        docker rm -f mcp-dbg >/dev/null 2>&1 || true
+        docker run -d --name mcp-dbg --entrypoint sleep \
+          --network mnemonik --env-file {{ mnemonik_server_install_dir }}/mcp.env \
+          -v {{ mnemonik_state_dir }}/data:/data \
+          {{ mnemonik_mcp_image }}:{{ mnemonik_mcp_image_tag }} 180 >/dev/null 2>&1 || echo "dbg-run-fail"
+        docker network connect vaultwarden_vaultwarden mcp-dbg >/dev/null 2>&1 || echo "dbg-net2-fail"
+        docker exec mcp-dbg sh -c '
+          echo "-- env --"; env | grep -iE "embed|cache|hf_|^home=|onnx|openai" | sort
+          echo "-- whoami --"; id 2>&1
+          echo "-- dns --"; getent hosts huggingface.co 2>&1 || echo dns-FAIL
+          echo "-- egress HF --"; curl -sS -m 10 -o /dev/null -w "hf=%{http_code}\n" https://huggingface.co 2>&1 || echo hf-FAIL
+          echo "-- egress HF CDN --"; curl -sS -m 10 -o /dev/null -w "cdn=%{http_code}\n" https://cdn-lfs.huggingface.co 2>&1 || echo cdn-FAIL
+          echo "-- cache dir --"; ls -la /data/model-cache 2>&1 | head
+        ' 2>&1 | head -40
+        docker rm -f mcp-dbg >/dev/null 2>&1 || true
       register: mnemonik_diag
       changed_when: false
       failed_when: false
