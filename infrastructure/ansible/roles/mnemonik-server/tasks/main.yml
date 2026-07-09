@@ -190,21 +190,19 @@
       delay: 2
       changed_when: false
 
-    - name: Pull the Ollama model (idempotent — no-op if already present)
+    # Fire-and-forget: pulling {{ mnemonik_ollama_model }} (~2GB) can take many
+    # minutes and MUST NOT block or fail the deploy — a synchronous pull here
+    # held the SSH run until it was killed (run 29000156212). The MCP server's
+    # /health + core tools do not need the model; only /chat does, and ollama
+    # serves it once the background pull finishes. async+poll:0 detaches it on
+    # the target so the play proceeds straight to the Caddy reload + health gate.
+    - name: Pull the Ollama model in the background (non-blocking, non-fatal)
       become: true
       become_user: op
       ansible.builtin.command:
         cmd: "docker exec mnemonik-ollama-1 ollama pull {{ mnemonik_ollama_model }}"
-      register: mnemonik_ollama_pull
-      changed_when: "'pulling' in (mnemonik_ollama_pull.stdout | default('') + mnemonik_ollama_pull.stderr | default(''))"
-
-    - name: Warm up the Ollama model (non-fatal)
-      become: true
-      become_user: op
-      ansible.builtin.command:
-        cmd: >-
-          docker exec mnemonik-ollama-1 sh -c
-          'ollama run {{ mnemonik_ollama_model }} hello >/dev/null 2>&1 || true'
+      async: 1800
+      poll: 0
       changed_when: false
       failed_when: false
 
@@ -225,12 +223,33 @@
       delay: "{{ mnemonik_mcp_health_delay }}"
       changed_when: false
 
+    # Dump container state + MCP logs into the CI log on failure — the deploy
+    # runner can't be SSH'd into afterward, so surface diagnostics inline.
+    - name: Capture MCP diagnostics on health failure
+      when: mnemonik_health.status is not defined or mnemonik_health.status != 200
+      become: true
+      become_user: op
+      ansible.builtin.shell: |
+        echo "=== docker ps (mnemonik) ==="
+        docker ps -a --filter name=mnemonik
+        echo "=== mnemonik-mcp-1 logs (tail 100) ==="
+        docker logs mnemonik-mcp-1 --tail 100 2>&1 || true
+        echo "=== local curl to mcp:3000/health from host ==="
+        curl -sS -m 5 -o /dev/null -w 'container_health_http=%{http_code}\n' http://127.0.0.1:3000/health 2>&1 || echo "host-3000 not published (expected)"
+      register: mnemonik_diag
+      changed_when: false
+      failed_when: false
+
+    - name: Show MCP diagnostics
+      when: mnemonik_health.status is not defined or mnemonik_health.status != 200
+      ansible.builtin.debug:
+        var: mnemonik_diag.stdout_lines
+
     - name: Fail if MCP health check exceeded timeout
       ansible.builtin.fail:
         msg: |
-          Mnemonic MCP health check failed. Inspect on the VM:
-            docker compose -f {{ mnemonik_server_install_dir }}/docker-compose.yml logs --tail=200
-            docker compose -f {{ mnemonik_server_install_dir }}/docker-compose.yml ps
-          Also confirm DNS ({{ mnemonik_public_domain }} → VM IP) and that
-          Caddy obtained a Let's Encrypt cert (caddy_acme_email set).
+          Mnemonic MCP health check failed. See "Show MCP diagnostics" above for
+          container state + mnemonik-mcp-1 logs. Also confirm DNS
+          ({{ mnemonik_public_domain }} → VM IP) and that Caddy obtained a
+          Let's Encrypt cert (caddy_acme_email set).
       when: mnemonik_health.status is not defined or mnemonik_health.status != 200
