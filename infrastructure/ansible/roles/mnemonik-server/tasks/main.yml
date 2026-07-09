@@ -210,46 +210,51 @@
     - name: Flush handlers so Caddy reload runs before the health probe
       ansible.builtin.meta: flush_handlers
 
-    - name: Wait for MCP /health via Caddy (public TLS)
-      # Probes the real public hostname the same way an external client would.
-      # start_period is 180s (fastembed load) so allow a generous window.
-      ansible.builtin.uri:
-        url: "https://{{ mnemonik_public_domain }}/health"
-        method: GET
-        status_code: 200
+    - name: Probe MCP /health via Caddy on loopback (avoids hairpin NAT)
+      # Probing the PUBLIC hostname from the VM itself relies on hairpin NAT to
+      # the box's own public IP, which frequently hangs — every retry then
+      # stalls for the full timeout and the SSH run dies (~15 min), showing up
+      # as a cancelled CI job (runs 29000156212 / 29003276564). Resolve the
+      # vhost to 127.0.0.1 so we hit the local Caddy directly (real cert, SNI
+      # match), with a hard -m 5 per attempt. Fast-fail so the play completes
+      # and the diagnostics below are readable.
+      become: true
+      become_user: op
+      ansible.builtin.command:
+        cmd: >-
+          curl -fsS -m 5 --resolve {{ mnemonik_public_domain }}:443:127.0.0.1
+          https://{{ mnemonik_public_domain }}/health
       register: mnemonik_health
-      until: mnemonik_health.status == 200
-      retries: "{{ mnemonik_mcp_health_retries }}"
-      delay: "{{ mnemonik_mcp_health_delay }}"
+      until: mnemonik_health.rc == 0
+      retries: 40
+      delay: 3
       changed_when: false
+      failed_when: false
 
-    # Dump container state + MCP logs into the CI log on failure — the deploy
-    # runner can't be SSH'd into afterward, so surface diagnostics inline.
-    - name: Capture MCP diagnostics on health failure
-      when: mnemonik_health.status is not defined or mnemonik_health.status != 200
+    # Always capture container state + MCP logs + a direct-to-container health
+    # probe — the CI runner can't be SSH'd into afterward, so this inline dump
+    # is the only diagnostic channel. Cheap; invaluable when /health isn't 200.
+    - name: Capture MCP diagnostics
       become: true
       become_user: op
       ansible.builtin.shell: |
         echo "=== docker ps (mnemonik) ==="
         docker ps -a --filter name=mnemonik
-        echo "=== mnemonik-mcp-1 logs (tail 100) ==="
-        docker logs mnemonik-mcp-1 --tail 100 2>&1 || true
-        echo "=== local curl to mcp:3000/health from host ==="
-        curl -sS -m 5 -o /dev/null -w 'container_health_http=%{http_code}\n' http://127.0.0.1:3000/health 2>&1 || echo "host-3000 not published (expected)"
+        echo "=== mnemonik-mcp-1 direct /health (docker exec localhost:3000) ==="
+        docker exec mnemonik-mcp-1 curl -fsS -m 5 http://localhost:3000/health 2>&1; echo "(exec rc=$?)"
+        echo "=== mnemonik-mcp-1 logs (tail 120) ==="
+        docker logs mnemonik-mcp-1 --tail 120 2>&1 || true
       register: mnemonik_diag
       changed_when: false
       failed_when: false
 
     - name: Show MCP diagnostics
-      when: mnemonik_health.status is not defined or mnemonik_health.status != 200
       ansible.builtin.debug:
         var: mnemonik_diag.stdout_lines
 
-    - name: Fail if MCP health check exceeded timeout
+    - name: Fail if MCP /health not 200 via Caddy
       ansible.builtin.fail:
-        msg: |
-          Mnemonic MCP health check failed. See "Show MCP diagnostics" above for
-          container state + mnemonik-mcp-1 logs. Also confirm DNS
-          ({{ mnemonik_public_domain }} → VM IP) and that Caddy obtained a
-          Let's Encrypt cert (caddy_acme_email set).
-      when: mnemonik_health.status is not defined or mnemonik_health.status != 200
+        msg: >-
+          Mnemonic MCP /health did not return 200 via Caddy (loopback). See
+          "Show MCP diagnostics" above for container state + mnemonik-mcp-1 logs.
+      when: mnemonik_health.rc != 0
