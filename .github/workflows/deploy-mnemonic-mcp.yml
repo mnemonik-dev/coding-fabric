@@ -118,6 +118,21 @@ jobs:
           echo "=== caddy vhost snippets ==="
           sudo -n ls /opt/vaultwarden/caddy_conf_d/ 2>/dev/null || true
           sudo -n grep -l 'mcp' /opt/vaultwarden/caddy_conf_d/* 2>/dev/null || echo "no mcp vhost snippet found"
+          echo "=== live compose dir: /opt/mnemonik-server ==="
+          sudo -n ls -la /opt/mnemonik-server/ 2>/dev/null || echo "absent"
+          echo "--- docker-compose.yml ---"
+          sudo -n cat /opt/mnemonik-server/docker-compose.yml 2>/dev/null || true
+          echo "--- env files (key names + image/tag lines only, no secret values) ---"
+          for f in /opt/mnemonik-server/.env /opt/mnemonik-server/mcp.env; do
+            if sudo -n test -f "\$f"; then
+              echo "\$f keys: \$(sudo -n cut -d= -f1 \$f | grep -v '^#' | grep . | tr '\n' ' ')"
+              sudo -n grep -E '^(MCP_IMAGE|OLLAMA_IMAGE|COMPOSE_)' "\$f" 2>/dev/null || true
+            fi
+          done
+          echo "=== mcp container networks + env source ==="
+          \$DOCKER inspect mnemonik-mcp-1 --format '{{json .NetworkSettings.Networks}}' 2>/dev/null | jq -r 'keys[]' || true
+          echo "--- caddy vhost content ---"
+          sudo -n cat /opt/vaultwarden/caddy_conf_d/mnemonik-mcp.conf 2>/dev/null || true
           REMOTE_EOF
 
       - name: Deploy or rollback on VM
