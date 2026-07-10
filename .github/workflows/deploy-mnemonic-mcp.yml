@@ -152,45 +152,59 @@ jobs:
           set -euo pipefail
           REPO="${REPO_DIR}"
           if docker info >/dev/null 2>&1; then DOCKER="docker"; else DOCKER="sudo -n docker"; fi
-          if [ ! -d "\$REPO/.git" ]; then
-            echo "Bootstrapping monorepo checkout at \$REPO"
-            sudo -n install -d -o "\$(id -un)" -g "\$(id -gn)" "\$REPO"
-            git clone --quiet https://github.com/mnemonik-xyz/monorepo.git "\$REPO"
-          fi
-          cd "\$REPO"
-          if [ ! -f "\$REPO/mcp.env" ]; then
-            echo "::error::\$REPO/mcp.env missing — create from mcp/deploy/compose.env.example (fill MCP_JWT_SECRET, MCP_REFRESH_SALT, OAuth). Refusing to deploy."
+
+          # The fabric layout (diagnose runs 29097832194 + 29098014471):
+          # /opt/mnemonik-server holds an Ansible-rendered compose file (NOT a
+          # git checkout) with the image tag PINNED in the file, plus mcp.env
+          # with the full secret set. Caddy reaches the container via the
+          # shared vaultwarden network alias; there is NO host :3000, so
+          # health is read from the container's own healthcheck.
+          if [ ! -f "\$REPO/docker-compose.yml" ] || [ ! -f "\$REPO/mcp.env" ]; then
+            echo "::error::\$REPO does not look like the mnemonik-server compose dir (need docker-compose.yml + mcp.env). Run action=diagnose."
             exit 1
           fi
-          git fetch --tags --quiet origin
-          git checkout --quiet "${REF}"
-          git reset --hard "origin/\$(git symbolic-ref --short HEAD 2>/dev/null || echo ${REF})" 2>/dev/null \
-            || git reset --hard "${REF}"
-          case "${REF}" in v*) IMAGE_TAG="${REF}" ;; *) IMAGE_TAG="latest" ;; esac
-          echo "Deploying image tag: \$IMAGE_TAG (action=${ACTION})"
-          sed -i '/^MCP_IMAGE_TAG=/d' "\$REPO/mcp.env"; echo "MCP_IMAGE_TAG=\$IMAGE_TAG" >> "\$REPO/mcp.env"
+          cd "\$REPO"
+
+          case "${REF}" in
+            v*|sha-*) IMAGE_TAG="${REF}" ;;
+            *)        IMAGE_TAG="latest" ;;
+          esac
+          OLD_TAG=\$(grep -oE 'mnemonic-mcp:[A-Za-z0-9._-]+' docker-compose.yml | head -1 | cut -d: -f2)
+          echo "Image tag: \$OLD_TAG -> \$IMAGE_TAG (action=${ACTION}; rollback = re-dispatch with ref=\$OLD_TAG)"
+          # NOTE: in-place edit drifts from the mnemonik-server Ansible
+          # template — keep the template's tag in sync when re-applying it.
+          sed -i -E "s|(ghcr.io/mnemonik-xyz/mnemonic-mcp:)[A-Za-z0-9._-]+|\\1\$IMAGE_TAG|" docker-compose.yml
+
           if [ "${FORCE_RESEED}" = "true" ]; then
-            sed -i '/^MNEMONIC_FORCE_RESEED=/d' "\$REPO/mcp.env"; echo "MNEMONIC_FORCE_RESEED=1" >> "\$REPO/mcp.env"
+            sed -i '/^MNEMONIC_FORCE_RESEED=/d' mcp.env; echo "MNEMONIC_FORCE_RESEED=1" >> mcp.env
           fi
-          sed -i '/^CHAIN_STATS_WALLETS=/d' "\$REPO/mcp.env"; echo "CHAIN_STATS_WALLETS=${CHAIN_STATS_WALLETS}" >> "\$REPO/mcp.env"
-          sed -i '/^SOLANA_RPC_URL=/d' "\$REPO/mcp.env"; echo "SOLANA_RPC_URL=${SOLANA_RPC_URL}" >> "\$REPO/mcp.env"
-          # ONLY the mcp service — Caddy owns 80/443 on this VM.
-          \$DOCKER compose --env-file "\$REPO/mcp.env" pull mcp
-          \$DOCKER compose --env-file "\$REPO/mcp.env" up -d mcp
+          # Chain-backed traction stats env (needed from image >= #194).
+          sed -i '/^CHAIN_STATS_WALLETS=/d' mcp.env; echo "CHAIN_STATS_WALLETS=${CHAIN_STATS_WALLETS}" >> mcp.env
+          sed -i '/^SOLANA_RPC_URL=/d' mcp.env; echo "SOLANA_RPC_URL=${SOLANA_RPC_URL}" >> mcp.env
+
+          \$DOCKER compose pull mcp
+          \$DOCKER compose up -d mcp
+
+          cid=\$(\$DOCKER compose ps -q mcp)
           ok=0
-          for i in \$(seq 1 30); do
-            curl -fsS --max-time 5 http://127.0.0.1:3000/health >/dev/null 2>&1 && { ok=1; break; }
+          for i in \$(seq 1 72); do
+            status=\$(\$DOCKER inspect --format '{{.State.Health.Status}}' "\$cid" 2>/dev/null || echo starting)
+            if [ "\$status" = "healthy" ]; then ok=1; break; fi
+            if [ "\$status" = "unhealthy" ]; then break; fi
             sleep 5
           done
           if [ "\$ok" != "1" ]; then
-            \$DOCKER compose --env-file "\$REPO/mcp.env" logs --tail 60 mcp; exit 1
+            echo "::error::mcp container did not become healthy (status=\$status)"
+            \$DOCKER compose logs --tail 80 mcp || true
+            exit 1
           fi
-          echo "mcp healthy"
+          echo "mcp healthy (tag \$IMAGE_TAG)"
+
           if [ "${FORCE_RESEED}" = "true" ]; then
-            sed -i '/^MNEMONIC_FORCE_RESEED=/d' "\$REPO/mcp.env"
+            sed -i '/^MNEMONIC_FORCE_RESEED=/d' mcp.env
           fi
           \$DOCKER image prune -f >/dev/null 2>&1 || true
-          \$DOCKER compose --env-file "\$REPO/mcp.env" logs --since 60s mcp \
+          \$DOCKER compose logs --since 120s mcp \
             | grep -iE 'seed|protocol-knowledge|Identity:|listening|chain-stats' || true
           REMOTE_EOF
 
