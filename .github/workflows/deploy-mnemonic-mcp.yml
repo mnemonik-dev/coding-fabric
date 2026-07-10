@@ -1,0 +1,192 @@
+name: deploy-mnemonic-mcp
+
+# Deploys the mnemonik-xyz/monorepo containerized MCP stack (mcp.mnemonik.xyz)
+# onto THIS repo's fabric VM, reusing THIS repo's known-good TAILSCALE_AUTH_KEY
+# + CI_SSH_PRIVATE_KEY secrets. Companion / fallback to monorepo's own
+# "Deploy MCP" workflow (same remote script — see
+# .claude/skills/project-knowledge/references/monorepo-mcp-deploy-contract.md).
+# Exists because the secret COPIES in the monorepo may drift/mangle (run
+# 29097590943 there failed key validation) while this repo's originals work.
+#
+# Actions:
+#   diagnose — read-only: where does the live stack run, is repo_dir usable
+#   apply    — git-sync compose files at <ref>, pull GHCR image, up -d mcp
+#   rollback — same as apply with an earlier tag as <ref>
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'diagnose (read-only VM state), apply (deploy), rollback'
+        type: choice
+        required: true
+        default: diagnose
+        options: [diagnose, apply, rollback]
+      ref:
+        description: 'monorepo git ref for compose files AND image tag: main -> :latest, vX.Y.Z -> :vX.Y.Z'
+        type: string
+        required: false
+        default: main
+      force_reseed:
+        description: 'Set MNEMONIC_FORCE_RESEED=1 for one boot (docs -> chat corpus)'
+        type: boolean
+        required: false
+        default: true
+      repo_dir:
+        description: 'monorepo checkout dir on the VM (compose + mcp.env live here)'
+        type: string
+        required: false
+        default: /mcp
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-mnemonic-mcp
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: ${{ inputs.action }} mnemonic-mcp on fabric VM
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      SERVER_NAME: mnemonic-fabric
+    steps:
+      - name: Tailscale up (ephemeral)
+        uses: tailscale/github-action@v3
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          args: --accept-dns --hostname=gh-runner-${{ github.run_id }}
+
+      - name: Resolve online VM peer + load CI SSH key
+        env:
+          CI_SSH_PRIVATE_KEY: ${{ secrets.CI_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do
+            VM_IP=$(tailscale status --json 2>/dev/null | jq -r --arg name "$SERVER_NAME" '
+              [(.Peer // {} | to_entries[].value)
+                | select(.HostName == $name and .Online == true)
+                | (.TailscaleIPs // [])[]
+                | select(test("^100\\."))
+              ] | first // ""
+            ')
+            [ -n "$VM_IP" ] && break
+            echo "[$i/30] no ONLINE $SERVER_NAME peer yet"; sleep 10
+          done
+          if [ -z "$VM_IP" ]; then
+            echo "::error::no online $SERVER_NAME peer in 5 min"; tailscale status || true; exit 1
+          fi
+          printf '%s\n' "$CI_SSH_PRIVATE_KEY" > /tmp/ci_deploy_key
+          chmod 600 /tmp/ci_deploy_key
+          ssh-keygen -y -P '' -f /tmp/ci_deploy_key >/dev/null
+          echo "VM_IP=$VM_IP" >> "$GITHUB_ENV"
+          echo "VM_TARGET=op@${VM_IP}" >> "$GITHUB_ENV"
+          echo "SSH_OPTS=-i /tmp/ci_deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/ci_known_hosts -o ConnectTimeout=15" >> "$GITHUB_ENV"
+
+      - name: Diagnose VM state (read-only)
+        if: ${{ inputs.action == 'diagnose' }}
+        env:
+          REPO_DIR: ${{ inputs.repo_dir }}
+        run: |
+          set -euo pipefail
+          ssh $SSH_OPTS "$VM_TARGET" bash -s <<REMOTE_EOF
+          set -u
+          if docker info >/dev/null 2>&1; then DOCKER="docker"; else DOCKER="sudo -n docker"; fi
+          echo "=== containers ==="
+          \$DOCKER ps --format '{{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}' || true
+          echo "=== compose projects ==="
+          \$DOCKER compose ls -a || true
+          echo "=== compose working dirs (per running container) ==="
+          \$DOCKER ps -q | while read -r c; do
+            \$DOCKER inspect "\$c" --format '{{.Name}} {{ index .Config.Labels "com.docker.compose.project.working_dir" }}' 2>/dev/null
+          done || true
+          echo "=== port 3000 listener ==="
+          sudo -n ss -ltnp | grep ':3000' || echo "nothing on :3000"
+          echo "=== mnemonic systemd units ==="
+          systemctl list-units --type=service --all 2>/dev/null | grep -i mnemonic || echo "none"
+          echo "=== candidate repo dirs ==="
+          for d in "${REPO_DIR}" /opt/mnemonik/monorepo /root/monorepo /home/op/monorepo /home/claude/monorepo; do
+            if sudo -n test -d "\$d"; then
+              echo "\$d: EXISTS  git=\$(sudo -n test -d \$d/.git && echo yes || echo no)  mcp.env=\$(sudo -n test -f \$d/mcp.env && echo yes || echo no)"
+              sudo -n test -f "\$d/mcp.env" && echo "   mcp.env keys: \$(sudo -n cut -d= -f1 \$d/mcp.env | grep -v '^#' | grep . | tr '\n' ' ')"
+            else
+              echo "\$d: absent"
+            fi
+          done
+          echo "=== caddy vhost snippets ==="
+          sudo -n ls /opt/vaultwarden/caddy_conf_d/ 2>/dev/null || true
+          sudo -n grep -l 'mcp' /opt/vaultwarden/caddy_conf_d/* 2>/dev/null || echo "no mcp vhost snippet found"
+          REMOTE_EOF
+
+      - name: Deploy or rollback on VM
+        if: ${{ inputs.action == 'apply' || inputs.action == 'rollback' }}
+        env:
+          ACTION: ${{ inputs.action }}
+          REF: ${{ inputs.ref }}
+          FORCE_RESEED: ${{ inputs.force_reseed }}
+          REPO_DIR: ${{ inputs.repo_dir }}
+          CHAIN_STATS_WALLETS: ${{ vars.CHAIN_STATS_WALLETS || 'DYVu4Bry3BzGVsR3Hj2iGVT5fNdWFoHw2zRxsdTmrG25' }}
+          SOLANA_RPC_URL: ${{ vars.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com' }}
+        run: |
+          set -euo pipefail
+          REPO_DIR="$(echo "$REPO_DIR" | xargs)"
+          case "$REPO_DIR" in /?*) ;; *) echo "::error::repo_dir must be absolute"; exit 1 ;; esac
+          ssh $SSH_OPTS "$VM_TARGET" bash -s <<REMOTE_EOF
+          set -euo pipefail
+          REPO="${REPO_DIR}"
+          if docker info >/dev/null 2>&1; then DOCKER="docker"; else DOCKER="sudo -n docker"; fi
+          if [ ! -d "\$REPO/.git" ]; then
+            echo "Bootstrapping monorepo checkout at \$REPO"
+            sudo -n install -d -o "\$(id -un)" -g "\$(id -gn)" "\$REPO"
+            git clone --quiet https://github.com/mnemonik-xyz/monorepo.git "\$REPO"
+          fi
+          cd "\$REPO"
+          if [ ! -f "\$REPO/mcp.env" ]; then
+            echo "::error::\$REPO/mcp.env missing — create from mcp/deploy/compose.env.example (fill MCP_JWT_SECRET, MCP_REFRESH_SALT, OAuth). Refusing to deploy."
+            exit 1
+          fi
+          git fetch --tags --quiet origin
+          git checkout --quiet "${REF}"
+          git reset --hard "origin/\$(git symbolic-ref --short HEAD 2>/dev/null || echo ${REF})" 2>/dev/null \
+            || git reset --hard "${REF}"
+          case "${REF}" in v*) IMAGE_TAG="${REF}" ;; *) IMAGE_TAG="latest" ;; esac
+          echo "Deploying image tag: \$IMAGE_TAG (action=${ACTION})"
+          sed -i '/^MCP_IMAGE_TAG=/d' "\$REPO/mcp.env"; echo "MCP_IMAGE_TAG=\$IMAGE_TAG" >> "\$REPO/mcp.env"
+          if [ "${FORCE_RESEED}" = "true" ]; then
+            sed -i '/^MNEMONIC_FORCE_RESEED=/d' "\$REPO/mcp.env"; echo "MNEMONIC_FORCE_RESEED=1" >> "\$REPO/mcp.env"
+          fi
+          sed -i '/^CHAIN_STATS_WALLETS=/d' "\$REPO/mcp.env"; echo "CHAIN_STATS_WALLETS=${CHAIN_STATS_WALLETS}" >> "\$REPO/mcp.env"
+          sed -i '/^SOLANA_RPC_URL=/d' "\$REPO/mcp.env"; echo "SOLANA_RPC_URL=${SOLANA_RPC_URL}" >> "\$REPO/mcp.env"
+          # ONLY the mcp service — Caddy owns 80/443 on this VM.
+          \$DOCKER compose --env-file "\$REPO/mcp.env" pull mcp
+          \$DOCKER compose --env-file "\$REPO/mcp.env" up -d mcp
+          ok=0
+          for i in \$(seq 1 30); do
+            curl -fsS --max-time 5 http://127.0.0.1:3000/health >/dev/null 2>&1 && { ok=1; break; }
+            sleep 5
+          done
+          if [ "\$ok" != "1" ]; then
+            \$DOCKER compose --env-file "\$REPO/mcp.env" logs --tail 60 mcp; exit 1
+          fi
+          echo "mcp healthy"
+          if [ "${FORCE_RESEED}" = "true" ]; then
+            sed -i '/^MNEMONIC_FORCE_RESEED=/d' "\$REPO/mcp.env"
+          fi
+          \$DOCKER image prune -f >/dev/null 2>&1 || true
+          \$DOCKER compose --env-file "\$REPO/mcp.env" logs --since 60s mcp \
+            | grep -iE 'seed|protocol-knowledge|Identity:|listening|chain-stats' || true
+          REMOTE_EOF
+
+      - name: Public smoke (health + tools/list)
+        if: ${{ inputs.action == 'apply' || inputs.action == 'rollback' }}
+        run: |
+          set -euo pipefail
+          curl -fsS --max-time 10 https://mcp.mnemonik.xyz/health | tee /tmp/h.json
+          test "$(jq -r .status </tmp/h.json)" = "ok"
+          curl -fsS --max-time 10 -X POST https://mcp.mnemonik.xyz/mcp \
+            -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+            | jq -e '(.result.tools | length) >= 7' >/dev/null
+          echo "public smoke OK"
