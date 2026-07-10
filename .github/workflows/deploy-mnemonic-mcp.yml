@@ -165,6 +165,17 @@ jobs:
           fi
           cd "\$REPO"
 
+          # The stack was originally brought up under compose project
+          # 'mnemonik' (explicit -p / COMPOSE_PROJECT_NAME in the Ansible
+          # role), NOT the directory-derived 'mnemonik-server'. Without -p,
+          # compose tries to CREATE duplicate containers and dies on the
+          # fixed container_name conflict (run 29098248218). Detect the
+          # project from the running container's label; fall back to
+          # 'mnemonik' if the container is gone.
+          PROJ=\$(\$DOCKER inspect mnemonik-mcp-1 --format '{{index .Config.Labels "com.docker.compose.project"}}' 2>/dev/null || true)
+          PROJ="\${PROJ:-mnemonik}"
+          echo "compose project: \$PROJ"
+
           case "${REF}" in
             v*|sha-*) IMAGE_TAG="${REF}" ;;
             *)        IMAGE_TAG="latest" ;;
@@ -182,10 +193,10 @@ jobs:
           sed -i '/^CHAIN_STATS_WALLETS=/d' mcp.env; echo "CHAIN_STATS_WALLETS=${CHAIN_STATS_WALLETS}" >> mcp.env
           sed -i '/^SOLANA_RPC_URL=/d' mcp.env; echo "SOLANA_RPC_URL=${SOLANA_RPC_URL}" >> mcp.env
 
-          \$DOCKER compose pull mcp
-          \$DOCKER compose up -d mcp
+          \$DOCKER compose -p "\$PROJ" pull mcp
+          \$DOCKER compose -p "\$PROJ" up -d mcp
 
-          cid=\$(\$DOCKER compose ps -q mcp)
+          cid=\$(\$DOCKER compose -p "\$PROJ" ps -q mcp)
           ok=0
           for i in \$(seq 1 72); do
             status=\$(\$DOCKER inspect --format '{{.State.Health.Status}}' "\$cid" 2>/dev/null || echo starting)
@@ -195,7 +206,7 @@ jobs:
           done
           if [ "\$ok" != "1" ]; then
             echo "::error::mcp container did not become healthy (status=\$status)"
-            \$DOCKER compose logs --tail 80 mcp || true
+            \$DOCKER compose -p "\$PROJ" logs --tail 80 mcp || true
             exit 1
           fi
           echo "mcp healthy (tag \$IMAGE_TAG)"
@@ -204,7 +215,7 @@ jobs:
             sed -i '/^MNEMONIC_FORCE_RESEED=/d' mcp.env
           fi
           \$DOCKER image prune -f >/dev/null 2>&1 || true
-          \$DOCKER compose logs --since 120s mcp \
+          \$DOCKER compose -p "\$PROJ" logs --since 120s mcp \
             | grep -iE 'seed|protocol-knowledge|Identity:|listening|chain-stats' || true
           REMOTE_EOF
 
