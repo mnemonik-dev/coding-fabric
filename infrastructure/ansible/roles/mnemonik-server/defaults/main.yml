@@ -49,10 +49,27 @@ mnemonik_mcp_embed_provider: "fastembed"
 mnemonik_mcp_turbo_bits: 4
 mnemonik_mcp_payment_mode: "none"
 mnemonik_mcp_rust_log: "info"
+
+# fastembed cache dir inside the container (bind-mounted from persistent
+# volume via docker-compose.yml). Set explicitly so model downloads survive
+# VM rebuilds and land in a writable, pre-created directory.
+mnemonik_mcp_fastembed_cache_dir: "/data/model-cache"
+
+# Chain-backed traction stats (required by server images >= #194).
+# Defaults are safe/public; override in sops/group_vars for real tracking.
+mnemonik_chain_stats_wallets: ""
+mnemonik_solana_rpc_url: "https://api.mainnet-beta.solana.com"
 # Origin advertised in OAuth metadata + challenge envelopes. MUST match the
 # public hostname external clients (Cursor/Claude.ai) connect to — RFC 8707
 # origin check is enforced. No trailing slash.
 mnemonik_mcp_public_base_url: "https://mcp.mnemonik.xyz"
+
+# CORS origin for the webapp frontend. Set to the exact origin the browser
+# sends (e.g. "https://mnemonik.xyz"). Empty string disables CORS headers at
+# the Caddy layer — useful if the MCP server handles CORS itself or if the
+# frontend is not yet deployed. Do NOT use "*" with credentials.
+mnemonik_mcp_cors_origin: ""
+
 # Port the mcp server listens on inside the container. Caddy reverse-proxies
 # to this over the shared docker network; NOT published to a host port.
 mnemonik_mcp_container_port: 3000

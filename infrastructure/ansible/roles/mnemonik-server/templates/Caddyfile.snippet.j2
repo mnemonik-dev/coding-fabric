@@ -7,6 +7,27 @@
 # (see the mnemonik-server docker-compose template).
 {{ mnemonik_public_domain }} {
   encode gzip
+
+{% if mnemonik_mcp_cors_origin | default('') | length > 0 %}
+  # CORS for the browser-based webapp frontend.
+  # Preflight OPTIONS must short-circuit before reverse_proxy.
+  @cors_origin header Origin "{{ mnemonik_mcp_cors_origin }}"
+  @cors_preflight method OPTIONS
+
+  handle @cors_preflight {
+    header Access-Control-Allow-Origin "{{ mnemonik_mcp_cors_origin }}"
+    header Access-Control-Allow-Methods "GET, POST, OPTIONS"
+    header Access-Control-Allow-Headers "Content-Type, Authorization"
+    header Vary "Origin"
+    respond 204
+  }
+
+  header @cors_origin Access-Control-Allow-Origin "{{ mnemonik_mcp_cors_origin }}"
+  header @cors_origin Access-Control-Allow-Methods "GET, POST, OPTIONS"
+  header @cors_origin Access-Control-Allow-Headers "Content-Type, Authorization"
+  header @cors_origin Vary "Origin"
+{% endif %}
+
   reverse_proxy http://mnemonik-mcp:{{ mnemonik_mcp_container_port }} {
     header_up X-Real-IP {remote_host}
     header_up X-Forwarded-For {remote_host}

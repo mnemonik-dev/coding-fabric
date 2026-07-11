@@ -278,3 +278,20 @@
           Mnemonic MCP /health did not return 200 via Caddy (loopback). See
           "Show MCP diagnostics" above for container state + mnemonik-mcp-1 logs.
       when: mnemonik_health.rc != 0
+
+    # /health only proves the HTTP surface is up; it does NOT prove the
+    # embedding provider loaded. A missing model cache or failed fastembed
+    # download leaves the server running but recall/semantic search broken.
+    # Fail loud here so the operator sees the real problem in CI logs.
+    - name: Verify fastembed embedding provider initialized
+      become: true
+      become_user: op
+      ansible.builtin.shell: |
+        set -euo pipefail
+        docker logs mnemonik-mcp-1 --tail 80 2>&1 | grep -qE 'Embedder: fastembed|fastembed \(.*verifiable=true\)' && exit 0
+        echo "ERROR: fastembed embedding provider did not initialize in mnemonik-mcp-1"
+        echo "Check that FASTEMBED_CACHE_DIR is writable and the model can be downloaded."
+        exit 1
+      register: mnemonik_embed_check
+      changed_when: false
+      failed_when: mnemonik_embed_check.rc != 0

@@ -12,3 +12,6 @@ mnemonik_server_enabled: true
 # deploy. Bump when a newer build is verified. Package is public, so the
 # fail-soft GHCR login is skipped/ignored and the pull is anonymous.
 mnemonik_mcp_image_tag: "sha-61fdb3e"
+
+# Browser webapp origin. Caddy emits CORS headers only for this exact origin.
+mnemonik_mcp_cors_origin: "https://mnemonik.xyz"

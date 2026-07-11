@@ -92,6 +92,58 @@ def test_ollama_model_pulled_not_built():
     assert "ollama pull" in tasks
 
 
+def test_fastembed_cache_dir_explicit():
+    # FASTEMBED_CACHE_DIR must be set and point to the bind-mounted /data
+    # subdir so model downloads survive VM rebuilds.
+    env = _text("templates/mcp.env.j2")
+    assert "FASTEMBED_CACHE_DIR={{ mnemonik_mcp_fastembed_cache_dir }}" in env
+    defaults = _load("defaults/main.yml")
+    assert defaults["mnemonik_mcp_fastembed_cache_dir"] == "/data/model-cache"
+
+
+def test_chain_stats_env_defaults():
+    # Images >= #194 require these keys; defaults must be safe/public.
+    env = _text("templates/mcp.env.j2")
+    assert "CHAIN_STATS_WALLETS={{ mnemonik_chain_stats_wallets" in env
+    assert "SOLANA_RPC_URL={{ mnemonik_solana_rpc_url" in env
+    defaults = _load("defaults/main.yml")
+    assert defaults["mnemonik_solana_rpc_url"] == "https://api.mainnet-beta.solana.com"
+
+
+def test_cors_disabled_by_default():
+    # By default no CORS origin is configured; the snippet must NOT emit
+    # Access-Control-Allow-Origin, so we don't accidentally open the API.
+    from jinja2 import Environment
+
+    raw = _text("templates/Caddyfile.snippet.j2")
+    rendered = Environment().from_string(raw).render(
+        mnemonik_public_domain="mcp.mnemonik.xyz",
+        mnemonik_mcp_container_port=3000,
+        mnemonik_mcp_cors_origin="",
+    )
+    assert "Access-Control-Allow-Origin" not in rendered
+    defaults = _load("defaults/main.yml")
+    assert defaults["mnemonik_mcp_cors_origin"] == ""
+
+
+def test_cors_enabled_when_origin_set():
+    # Rendering with a webapp origin must produce the preflight + simple
+    # request CORS headers for that exact origin.
+    from jinja2 import Environment
+
+    raw = _text("templates/Caddyfile.snippet.j2")
+    rendered = Environment().from_string(raw).render(
+        mnemonik_public_domain="mcp.mnemonik.xyz",
+        mnemonik_mcp_container_port=3000,
+        mnemonik_mcp_cors_origin="https://mnemonik.xyz",
+    )
+    assert 'Access-Control-Allow-Origin "https://mnemonik.xyz"' in rendered
+    assert "Access-Control-Allow-Methods" in rendered
+    assert "Access-Control-Allow-Headers" in rendered
+    assert "@cors_preflight" in rendered
+    assert "respond 204" in rendered
+
+
 def test_distinct_from_client_binary_role():
     # Guard against confusion with the `mnemonic-mcp` client-binary role:
     # this role must not install an npm package or a PATH binary.
