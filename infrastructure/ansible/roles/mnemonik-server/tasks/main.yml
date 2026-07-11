@@ -292,6 +292,8 @@
         echo "ERROR: fastembed embedding provider did not initialize in mnemonik-mcp-1"
         echo "Check that FASTEMBED_CACHE_DIR is writable and the model can be downloaded."
         exit 1
+      args:
+        executable: /bin/bash
       register: mnemonik_embed_check
       changed_when: false
       failed_when: mnemonik_embed_check.rc != 0
