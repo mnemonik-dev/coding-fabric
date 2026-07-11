@@ -3,8 +3,11 @@
   # community.docker.docker_compose_v2 lacks `restarted:` on the runner's
   # collection (see kaneo handler note). Shell out; handler only fires when
   # a rendered template actually changed, so idempotency isn't needed here.
+  # `--force-recreate` ensures env_file/compose changes (e.g. FASTEMBED_CACHE_DIR)
+  # are picked up; `docker compose restart` alone keeps the old env in the
+  # container.
   ansible.builtin.command:
-    cmd: docker compose restart
+    cmd: docker compose up -d --force-recreate
     chdir: "{{ mnemonik_server_install_dir }}"
   environment:
     COMPOSE_PROJECT_NAME: "{{ mnemonik_server_compose_project }}"
