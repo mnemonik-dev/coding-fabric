@@ -142,6 +142,7 @@ def test_cors_enabled_when_origin_set():
     assert "Access-Control-Allow-Headers" in rendered
     assert "@cors_preflight" in rendered
     assert "respond 204" in rendered
+    assert "header_down -Access-Control-Allow-Origin" in rendered
 
 
 def test_distinct_from_client_binary_role():

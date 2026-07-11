@@ -32,6 +32,16 @@
     header_up X-Real-IP {remote_host}
     header_up X-Forwarded-For {remote_host}
     header_up X-Forwarded-Proto {scheme}
+
+{% if mnemonik_mcp_cors_origin | default('') | length > 0 %}
+    # The MCP server also emits CORS headers for its internal allowlist. Strip
+    # them so Caddy is the single source of truth and browsers see exactly one
+    # Access-Control-Allow-Origin value.
+    header_down -Access-Control-Allow-Origin
+    header_down -Access-Control-Allow-Methods
+    header_down -Access-Control-Allow-Headers
+    header_down -Vary
+{% endif %}
   }
 
   header Strict-Transport-Security "max-age=31536000; includeSubDomains"
