@@ -160,7 +160,6 @@
         group: op
         mode: "0640"
       register: mnemonik_compose_template
-      notify: Restart mnemonik-server
 
     - name: Render mcp.env
       become: true
@@ -172,7 +171,6 @@
         mode: "0600"
       no_log: true
       register: mnemonik_env_template
-      notify: Restart mnemonik-server
 
     - name: Render Caddy vhost snippet into shared conf.d
       become: true
@@ -187,14 +185,19 @@
 
     # --- Bring the stack up ------------------------------------------------
     - name: Run docker compose to start the mnemonik stack
-      community.docker.docker_compose_v2:
-        project_src: "{{ mnemonik_server_install_dir }}"
-        state: present
-        pull: always
+      # `--force-recreate` is required because Docker Compose does not recreate
+      # a container when only the env_file contents change; `restart` keeps the
+      # old env inside the running container. Always recreate on deploy so the
+      # MCP server picks up new env vars (FASTEMBED_CACHE_DIR, CORS origin, etc.)
+      # and the latest pinned image.
+      ansible.builtin.command:
+        cmd: docker compose up -d --pull always --force-recreate
+        chdir: "{{ mnemonik_server_install_dir }}"
       environment:
         COMPOSE_PROJECT_NAME: "{{ mnemonik_server_compose_project }}"
       become: true
       become_user: op
+      changed_when: true
       register: mnemonik_compose_result
 
     - name: Wait for Ollama to accept commands
