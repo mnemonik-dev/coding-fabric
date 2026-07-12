@@ -40,6 +40,19 @@
     APT_LISTCHANGES_FRONTEND: none
 
   pre_tasks:
+    # Recovery: a prior failed mnemonik-server deploy may have left a broken
+    # Caddy snippet in the shared conf.d. The vaultwarden role starts the
+    # shared Caddy before mnemonik-server has a chance to rewrite the snippet,
+    # so an invalid snippet blocks the entire deploy. Remove any stale
+    # mnemonik-mcp.conf; mnemonik-server will render a validated one later.
+    - name: Remove stale mnemonik-mcp Caddy snippet if present
+      ansible.builtin.file:
+        path: /opt/vaultwarden/caddy_conf_d/mnemonik-mcp.conf
+        state: absent
+      become: true
+      failed_when: false
+      changed_when: false
+
     - name: Display deployment info
       debug:
         msg: |
@@ -266,10 +279,12 @@
         molyanov_skills_path: "/opt/molyanov/skills"
         molyanov_pk_guard_enabled: true
 
-    # Phase 6: Attestation + MCP (DESCOPED 2026-05 — disabled by default).
-    # The role still runs every deploy but installs only no-op stub hooks when
-    # `mnemonic_mcp_enabled` is false. Flip to true once the local Mnemonic MCP
-    # server is production-ready (backlog: work/mnemonic-attestation-integration/).
+    # Phase 6: Mnemonik MCP client binary (per-spawn stdio) for
+    # content-publisher attestation. Enabled by default; the discovered binary
+    # path is exposed as fact `mnemonic_mcp_binary` for downstream roles.
+    # (The legacy daemon + hook design was retired 2026-06; this role now
+    # installs only the npm-shipped client binary and runs an MCP handshake
+    # smoke test.)
     - role: mnemonic-mcp
       tags: [mnemonic-mcp, attestation]
       vars:
@@ -411,14 +426,14 @@
     - name: Verify all services are running
       block:
         - name: Check systemd services
-          # mnemonic-mcp only added to the loop when the role is enabled
-          # (descoped 2026-05; backlog: work/mnemonic-attestation-integration/)
+          # mnemonic-mcp is a per-spawn client binary, not a daemon; no
+          # systemd unit to check here. workspace-manager + telegram-ai-agent
+          # are the long-running fabric services.
           systemd:
             name: "{{ item }}"
             state: started
           register: service_check
-          loop: "{{ ['workspace-manager', 'telegram-ai-agent']
-                    + (['mnemonic-mcp'] if (mnemonic_mcp_enabled | default(false) | bool) else []) }}"
+          loop: "{{ ['workspace-manager', 'telegram-ai-agent'] }}"
           failed_when: false
 
         - name: Report service status
