@@ -19,7 +19,9 @@
 {% if _cors_origins | length > 0 %}
   # CORS for the browser-based webapp frontend.
   # Preflight OPTIONS must short-circuit before reverse_proxy.
-  @cors_origin header Origin{% for origin in _cors_origins %} "{{ origin }}"{% endfor %}
+  # Use an expression matcher so multiple origins can be ORed; Caddy's
+  # `header` matcher only accepts a single value.
+  @cors_origin expression `{% for origin in _cors_origins %}{% if not loop.first %} || {% endif %}{http.request.header.Origin} == "{{ origin }}"{% endfor %}`
   @cors_preflight method OPTIONS
 
   handle @cors_preflight {

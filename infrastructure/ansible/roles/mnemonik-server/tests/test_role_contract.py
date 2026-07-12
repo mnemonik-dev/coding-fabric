@@ -137,7 +137,8 @@ def test_cors_enabled_when_origin_set():
         mnemonik_mcp_container_port=3000,
         mnemonik_mcp_cors_origin="https://mnemonik.xyz",
     )
-    assert 'header Origin "https://mnemonik.xyz"' in rendered
+    assert '@cors_origin expression' in rendered
+    assert '{http.request.header.Origin} == "https://mnemonik.xyz"' in rendered
     assert 'Access-Control-Allow-Origin "{http.request.header.Origin}"' in rendered
     assert "Access-Control-Allow-Methods" in rendered
     assert "Access-Control-Allow-Headers" in rendered
@@ -159,7 +160,10 @@ def test_cors_enabled_with_multiple_origins():
             "https://mnemonik-webapp.pages.dev",
         ],
     )
-    assert 'header Origin "https://www.mnemonik.xyz" "https://mnemonik-webapp.pages.dev"' in rendered
+    assert '@cors_origin expression' in rendered
+    assert '{http.request.header.Origin} == "https://www.mnemonik.xyz"' in rendered
+    assert '{http.request.header.Origin} == "https://mnemonik-webapp.pages.dev"' in rendered
+    assert " || " in rendered
     assert 'Access-Control-Allow-Origin "{http.request.header.Origin}"' in rendered
     assert "@cors_preflight" in rendered
 

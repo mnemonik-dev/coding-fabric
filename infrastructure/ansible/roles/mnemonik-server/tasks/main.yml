@@ -261,12 +261,18 @@
       become: true
       become_user: op
       ansible.builtin.shell: |
+        echo "=== listening sockets ==="
+        ss -ltn 2>&1 || netstat -ltn 2>&1 || true
         echo "=== docker ps (mnemonik) ==="
         docker ps -a --filter name=mnemonik
+        echo "=== docker ps (caddy) ==="
+        docker ps -a --filter name=caddy
         echo "=== mnemonik-mcp-1 direct /health (docker exec localhost:3000) ==="
         docker exec mnemonik-mcp-1 curl -fsS -m 5 http://localhost:3000/health 2>&1; echo "(exec rc=$?)"
         echo "=== mnemonik-mcp-1 logs (tail 120) ==="
         docker logs mnemonik-mcp-1 --tail 120 2>&1 || true
+        echo "=== vaultwarden-caddy-1 logs (tail 120) ==="
+        docker logs vaultwarden-caddy-1 --tail 120 2>&1 || true
       register: mnemonik_diag
       changed_when: false
       failed_when: false
