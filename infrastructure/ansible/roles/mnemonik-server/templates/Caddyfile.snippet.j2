@@ -5,24 +5,32 @@
 #   - caddy_acme_email role var set (Let's Encrypt contact)
 # The mcp container joins the shared caddy network with alias `mnemonik-mcp`
 # (see the mnemonik-server docker-compose template).
+{% set _cors_origins = [] %}
+{% if mnemonik_mcp_cors_origin is defined %}
+{%   if mnemonik_mcp_cors_origin is string and mnemonik_mcp_cors_origin | length > 0 %}
+{%     set _cors_origins = [mnemonik_mcp_cors_origin] %}
+{%   elif mnemonik_mcp_cors_origin is iterable and mnemonik_mcp_cors_origin is not string %}
+{%     set _cors_origins = mnemonik_mcp_cors_origin | list %}
+{%   endif %}
+{% endif %}
 {{ mnemonik_public_domain }} {
   encode gzip
 
-{% if mnemonik_mcp_cors_origin | default('') | length > 0 %}
+{% if _cors_origins | length > 0 %}
   # CORS for the browser-based webapp frontend.
   # Preflight OPTIONS must short-circuit before reverse_proxy.
-  @cors_origin header Origin "{{ mnemonik_mcp_cors_origin }}"
+  @cors_origin header Origin{% for origin in _cors_origins %} "{{ origin }}"{% endfor %}
   @cors_preflight method OPTIONS
 
   handle @cors_preflight {
-    header Access-Control-Allow-Origin "{{ mnemonik_mcp_cors_origin }}"
+    header Access-Control-Allow-Origin "{http.request.header.Origin}"
     header Access-Control-Allow-Methods "GET, POST, OPTIONS"
     header Access-Control-Allow-Headers "Content-Type, Authorization"
     header Vary "Origin"
     respond 204
   }
 
-  header @cors_origin Access-Control-Allow-Origin "{{ mnemonik_mcp_cors_origin }}"
+  header @cors_origin Access-Control-Allow-Origin "{http.request.header.Origin}"
   header @cors_origin Access-Control-Allow-Methods "GET, POST, OPTIONS"
   header @cors_origin Access-Control-Allow-Headers "Content-Type, Authorization"
   header @cors_origin Vary "Origin"
@@ -33,7 +41,7 @@
     header_up X-Forwarded-For {remote_host}
     header_up X-Forwarded-Proto {scheme}
 
-{% if mnemonik_mcp_cors_origin | default('') | length > 0 %}
+{% if _cors_origins | length > 0 %}
     # The MCP server also emits CORS headers for its internal allowlist. Strip
     # them so Caddy is the single source of truth and browsers see exactly one
     # Access-Control-Allow-Origin value.

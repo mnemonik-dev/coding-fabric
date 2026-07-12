@@ -13,5 +13,8 @@ mnemonik_server_enabled: true
 # fail-soft GHCR login is skipped/ignored and the pull is anonymous.
 mnemonik_mcp_image_tag: "sha-61fdb3e"
 
-# Browser webapp origin. Caddy emits CORS headers only for this exact origin.
-mnemonik_mcp_cors_origin: "https://mnemonik.xyz"
+# Browser webapp origins. Caddy reflects the request Origin if it matches
+# one of these exact origins.
+mnemonik_mcp_cors_origin:
+  - "https://www.mnemonik.xyz"
+  - "https://mnemonik-webapp.pages.dev"

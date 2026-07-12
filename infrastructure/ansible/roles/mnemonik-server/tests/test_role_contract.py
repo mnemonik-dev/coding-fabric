@@ -127,8 +127,8 @@ def test_cors_disabled_by_default():
 
 
 def test_cors_enabled_when_origin_set():
-    # Rendering with a webapp origin must produce the preflight + simple
-    # request CORS headers for that exact origin.
+    # Rendering with a single webapp origin must produce the preflight + simple
+    # request CORS headers and reflect the request Origin.
     from jinja2 import Environment
 
     raw = _text("templates/Caddyfile.snippet.j2")
@@ -137,12 +137,31 @@ def test_cors_enabled_when_origin_set():
         mnemonik_mcp_container_port=3000,
         mnemonik_mcp_cors_origin="https://mnemonik.xyz",
     )
-    assert 'Access-Control-Allow-Origin "https://mnemonik.xyz"' in rendered
+    assert 'header Origin "https://mnemonik.xyz"' in rendered
+    assert 'Access-Control-Allow-Origin "{http.request.header.Origin}"' in rendered
     assert "Access-Control-Allow-Methods" in rendered
     assert "Access-Control-Allow-Headers" in rendered
     assert "@cors_preflight" in rendered
     assert "respond 204" in rendered
     assert "header_down -Access-Control-Allow-Origin" in rendered
+
+
+def test_cors_enabled_with_multiple_origins():
+    # A list of origins must be accepted and reflected.
+    from jinja2 import Environment
+
+    raw = _text("templates/Caddyfile.snippet.j2")
+    rendered = Environment().from_string(raw).render(
+        mnemonik_public_domain="mcp.mnemonik.xyz",
+        mnemonik_mcp_container_port=3000,
+        mnemonik_mcp_cors_origin=[
+            "https://www.mnemonik.xyz",
+            "https://mnemonik-webapp.pages.dev",
+        ],
+    )
+    assert 'header Origin "https://www.mnemonik.xyz" "https://mnemonik-webapp.pages.dev"' in rendered
+    assert 'Access-Control-Allow-Origin "{http.request.header.Origin}"' in rendered
+    assert "@cors_preflight" in rendered
 
 
 def test_distinct_from_client_binary_role():

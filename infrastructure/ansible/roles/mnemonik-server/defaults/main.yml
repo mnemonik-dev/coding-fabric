@@ -64,10 +64,10 @@ mnemonik_solana_rpc_url: "https://api.mainnet-beta.solana.com"
 # origin check is enforced. No trailing slash.
 mnemonik_mcp_public_base_url: "https://mcp.mnemonik.xyz"
 
-# CORS origin for the webapp frontend. Set to the exact origin the browser
-# sends (e.g. "https://mnemonik.xyz"). Empty string disables CORS headers at
-# the Caddy layer — useful if the MCP server handles CORS itself or if the
-# frontend is not yet deployed. Do NOT use "*" with credentials.
+# CORS origins for the webapp frontend. Set to the exact origin(s) the browser
+# sends (e.g. "https://mnemonik.xyz" or ["https://www.mnemonik.xyz",
+# "https://mnemonik-webapp.pages.dev"]). Empty string or empty list disables
+# CORS headers at the Caddy layer. Do NOT use "*" with credentials.
 mnemonik_mcp_cors_origin: ""
 
 # Port the mcp server listens on inside the container. Caddy reverse-proxies
