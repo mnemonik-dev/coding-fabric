@@ -92,6 +92,16 @@ def test_ollama_model_pulled_not_built():
     assert "ollama pull" in tasks
 
 
+def test_chat_llm_points_at_ollama_container():
+    # /chat uses the universal LLM client, which reads LLM_API_URL rather than
+    # OLLAMA_URL. Both must point at the co-located Ollama service.
+    env = _text("templates/mcp.env.j2")
+    assert "OLLAMA_URL=http://ollama:11434" in env
+    assert "LLM_PROVIDER=ollama" in env
+    assert "LLM_API_URL=http://ollama:11434" in env
+    assert "LLM_MODEL={{ mnemonik_ollama_model }}" in env
+
+
 def test_fastembed_cache_dir_explicit():
     # FASTEMBED_CACHE_DIR must be set and point to the bind-mounted /data
     # subdir so model downloads survive VM rebuilds.
