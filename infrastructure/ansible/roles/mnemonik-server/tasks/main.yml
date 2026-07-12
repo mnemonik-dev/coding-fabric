@@ -111,6 +111,35 @@
         - keypair
         - ollama
 
+    - name: Check for legacy MCP identity filename
+      become: true
+      ansible.builtin.stat:
+        path: "{{ mnemonik_state_dir }}/keypair/id.json"
+      register: mnemonik_legacy_identity
+
+    - name: Check for current MCP identity filename
+      become: true
+      ansible.builtin.stat:
+        path: "{{ mnemonik_state_dir }}/keypair/identity.json"
+      register: mnemonik_current_identity
+
+    - name: Migrate legacy MCP identity filename to identity.json
+      # The Dockerfile used to advertise MNEMONIC_KEYPAIR_PATH=/keypair/id.json,
+      # but the current binary reads MNEMONIC_CONFIG_DIR/identity.json through
+      # identity::ensure(). Preserve an existing funded signer if it is present
+      # on the persistent volume.
+      become: true
+      ansible.builtin.copy:
+        src: "{{ mnemonik_state_dir }}/keypair/id.json"
+        dest: "{{ mnemonik_state_dir }}/keypair/identity.json"
+        remote_src: true
+        owner: "10001"
+        group: "999"
+        mode: "0600"
+      when:
+        - mnemonik_legacy_identity.stat.exists
+        - not mnemonik_current_identity.stat.exists
+
     - name: Own MCP state dirs by the image's runtime uid (mnemonic = 10001:999)
       # The mcp image runs as uid 10001 / gid 999. Bind-mounting host dirs owned
       # by op(1000) made /data unreadable to the container ("Permission denied"

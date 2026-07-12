@@ -59,6 +59,9 @@ mnemonik_mcp_fastembed_cache_dir: "/data/model-cache"
 # Defaults are safe/public; override in sops/group_vars for real tracking.
 mnemonik_chain_stats_wallets: ""
 mnemonik_solana_rpc_url: "https://api.mainnet-beta.solana.com"
+mnemonik_arweave_url: "https://gateway.irys.xyz"
+mnemonik_chain_stats_graphql_url: "https://arweave.net/graphql"
+mnemonik_chain_stats_gateway_url: "https://gateway.irys.xyz"
 # Origin advertised in OAuth metadata + challenge envelopes. MUST match the
 # public hostname external clients (Cursor/Claude.ai) connect to — RFC 8707
 # origin check is enforced. No trailing slash.

@@ -75,6 +75,16 @@ def test_state_on_persistent_volume():
     assert "/dev/sdb" in _text("tasks/main.yml")  # discovers the volume mount
 
 
+def test_identity_config_dir_is_persisted_keypair_mount():
+    # The current binary ignores MNEMONIC_KEYPAIR_PATH and reads
+    # MNEMONIC_CONFIG_DIR/identity.json through identity::ensure().
+    env = _text("templates/mcp.env.j2")
+    tasks = _text("tasks/main.yml")
+    assert "MNEMONIC_CONFIG_DIR=/keypair" in env
+    assert "keypair/id.json" in tasks
+    assert "keypair/identity.json" in tasks
+
+
 def test_secrets_asserted_and_have_no_default():
     # Fails loudly if enabled without the hosted-mode secrets.
     defaults = _load("defaults/main.yml")
@@ -116,8 +126,13 @@ def test_chain_stats_env_defaults():
     env = _text("templates/mcp.env.j2")
     assert "CHAIN_STATS_WALLETS={{ mnemonik_chain_stats_wallets" in env
     assert "SOLANA_RPC_URL={{ mnemonik_solana_rpc_url" in env
+    assert "ARWEAVE_URL={{ mnemonik_arweave_url" in env
+    assert "CHAIN_STATS_GRAPHQL_URL={{ mnemonik_chain_stats_graphql_url" in env
+    assert "CHAIN_STATS_GATEWAY_URL={{ mnemonik_chain_stats_gateway_url" in env
     defaults = _load("defaults/main.yml")
     assert defaults["mnemonik_solana_rpc_url"] == "https://api.mainnet-beta.solana.com"
+    assert defaults["mnemonik_arweave_url"] == "https://gateway.irys.xyz"
+    assert defaults["mnemonik_chain_stats_gateway_url"] == "https://gateway.irys.xyz"
 
 
 def test_cors_disabled_by_default():
