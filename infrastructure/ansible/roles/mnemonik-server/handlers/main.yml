@@ -1,0 +1,25 @@
+---
+- name: Restart mnemonik-server
+  # community.docker.docker_compose_v2 lacks `restarted:` on the runner's
+  # collection (see kaneo handler note). Shell out; handler only fires when
+  # a rendered template actually changed, so idempotency isn't needed here.
+  # `--force-recreate` ensures env_file/compose changes (e.g. FASTEMBED_CACHE_DIR)
+  # are picked up; `docker compose restart` alone keeps the old env in the
+  # container.
+  ansible.builtin.command:
+    cmd: docker compose up -d --force-recreate
+    chdir: "{{ mnemonik_server_install_dir }}"
+  environment:
+    COMPOSE_PROJECT_NAME: "{{ mnemonik_server_compose_project }}"
+  become: true
+  become_user: op
+  changed_when: true
+
+- name: Reload caddy for mnemonik vhost
+  # `docker restart` of the shared Caddy — the same reliable hammer the kaneo
+  # role uses (admin-API reload has flaked on this stack). Caddy re-reads
+  # Caddyfile + conf.d/*.conf on boot and issues LE certs for new vhosts.
+  become: true
+  ansible.builtin.command:
+    cmd: "docker restart {{ vaultwarden_caddy_container_name }}"
+  changed_when: true

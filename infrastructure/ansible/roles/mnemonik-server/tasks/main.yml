@@ -1,0 +1,337 @@
+---
+# mnemonik-server: co-located Mnemonic MCP server (Rust image from GHCR) +
+# local Ollama, fronted by the shared Caddy. See defaults/main.yml for the
+# upstream-adaptation notes.
+
+- name: Skip mnemonik-server (disabled)
+  ansible.builtin.debug:
+    msg: >-
+      mnemonik_server_enabled is false — skipping. Enable via group_vars or
+      -e mnemonik_server_enabled=true once DNS + sops secrets are in place.
+  when: not (mnemonik_server_enabled | default(false) | bool)
+
+- name: Deploy mnemonik-server
+  when: mnemonik_server_enabled | default(false) | bool
+  block:
+    - name: Assert required MCP secrets are present
+      ansible.builtin.assert:
+        that:
+          - mnemonik_mcp_jwt_secret is defined and mnemonik_mcp_jwt_secret | string | length >= 16
+          - mnemonik_mcp_refresh_salt is defined and mnemonik_mcp_refresh_salt | string | length >= 16
+        fail_msg: |
+          FATAL: Mnemonic MCP hosted-mode secrets missing. Add to sops and
+          wire through deploy.yml (vault_mnemonik_mcp_*). Generate each once
+          and keep stable across deploys:
+            mnemonik_mcp_jwt_secret    (openssl rand -base64 32)
+            mnemonik_mcp_refresh_salt  (openssl rand -base64 32)
+          Rotating MCP_REFRESH_SALT invalidates every live refresh token.
+      no_log: true
+
+    # --- Swap: ollama + fastembed headroom ---------------------------------
+    - name: Configure swap file
+      when: mnemonik_server_swap_enabled | default(true) | bool
+      become: true
+      block:
+        - name: Check whether swap file already exists
+          ansible.builtin.stat:
+            path: "{{ mnemonik_server_swap_path }}"
+          register: mnemonik_swap_stat
+
+        - name: Allocate swap file
+          ansible.builtin.command:
+            cmd: "fallocate -l {{ mnemonik_server_swap_size_mb }}M {{ mnemonik_server_swap_path }}"
+          when: not mnemonik_swap_stat.stat.exists
+          changed_when: true
+          register: mnemonik_swap_alloc
+
+        - name: Secure swap file permissions
+          ansible.builtin.file:
+            path: "{{ mnemonik_server_swap_path }}"
+            owner: root
+            group: root
+            mode: "0600"
+          when: not mnemonik_swap_stat.stat.exists
+
+        - name: Format swap file
+          ansible.builtin.command:
+            cmd: "mkswap {{ mnemonik_server_swap_path }}"
+          when: not mnemonik_swap_stat.stat.exists
+          changed_when: true
+
+        - name: Enable swap file (persist in fstab)
+          ansible.posix.mount:
+            path: none
+            src: "{{ mnemonik_server_swap_path }}"
+            fstype: swap
+            opts: sw
+            state: present
+
+        - name: Activate swap now
+          ansible.builtin.command:
+            cmd: "swapon {{ mnemonik_server_swap_path }}"
+          when: not mnemonik_swap_stat.stat.exists
+          changed_when: true
+
+    # --- State on the Hetzner persistent volume ----------------------------
+    - name: Find Hetzner data volume mountpoint (block device /dev/sdb)
+      ansible.builtin.set_fact:
+        mnemonik_volume_mount: >-
+          {{ ansible_facts.mounts
+             | selectattr('device', 'equalto', '/dev/sdb')
+             | map(attribute='mount')
+             | first | default('') }}
+
+    - name: Assert the data volume is mounted
+      ansible.builtin.assert:
+        that:
+          - mnemonik_volume_mount | length > 0
+        fail_msg: |
+          /dev/sdb (Hetzner data volume) is not mounted. Mnemonic MCP server
+          identity (id.json) + attestation DB must live on the persistent
+          volume. Check hcloud_volume_attachment in tofu/hetzner/main.tf.
+
+    - name: Set state dir on the persistent volume
+      ansible.builtin.set_fact:
+        mnemonik_state_dir: "{{ mnemonik_volume_mount }}/mnemonik"
+
+    - name: Ensure state subdirs exist on the persistent volume
+      # /data holds the fastembed model cache (FASTEMBED_CACHE_DIR=/data/model-cache),
+      # RAG seed, and SQLite DB; /keypair holds the server identity. The image
+      # pre-creates /data/model-cache + /data/rag_chunks, but a bind mount masks
+      # them, so create them on the host too.
+      become: true
+      ansible.builtin.file:
+        path: "{{ mnemonik_state_dir }}/{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - data
+        - data/model-cache
+        - data/rag_chunks
+        - keypair
+        - ollama
+
+    - name: Check for legacy MCP identity filename
+      become: true
+      ansible.builtin.stat:
+        path: "{{ mnemonik_state_dir }}/keypair/id.json"
+      register: mnemonik_legacy_identity
+
+    - name: Check for current MCP identity filename
+      become: true
+      ansible.builtin.stat:
+        path: "{{ mnemonik_state_dir }}/keypair/identity.json"
+      register: mnemonik_current_identity
+
+    - name: Migrate legacy MCP identity filename to identity.json
+      # The Dockerfile used to advertise MNEMONIC_KEYPAIR_PATH=/keypair/id.json,
+      # but the current binary reads MNEMONIC_CONFIG_DIR/identity.json through
+      # identity::ensure(). Preserve an existing funded signer if it is present
+      # on the persistent volume.
+      become: true
+      ansible.builtin.copy:
+        src: "{{ mnemonik_state_dir }}/keypair/id.json"
+        dest: "{{ mnemonik_state_dir }}/keypair/identity.json"
+        remote_src: true
+        owner: "10001"
+        group: "999"
+        mode: "0600"
+      when:
+        - mnemonik_legacy_identity.stat.exists
+        - not mnemonik_current_identity.stat.exists
+
+    - name: Own MCP state dirs by the image's runtime uid (mnemonic = 10001:999)
+      # The mcp image runs as uid 10001 / gid 999. Bind-mounting host dirs owned
+      # by op(1000) made /data unreadable to the container ("Permission denied"
+      # on /data/model-cache, confirmed via debug probe run 29010408334), so
+      # fastembed FATALed with "No embedding provider available" in a restart
+      # loop. chown to the container's uid so it can read/write its model cache,
+      # identity, and DB. (The monorepo sidesteps this with named volumes, which
+      # inherit the image's ownership; we keep bind mounts for persistent-volume
+      # durability and set ownership explicitly.)
+      become: true
+      ansible.builtin.command:
+        cmd: "chown -R 10001:999 {{ mnemonik_state_dir }}/data {{ mnemonik_state_dir }}/keypair"
+      changed_when: true
+
+    - name: Create install dir
+      become: true
+      ansible.builtin.file:
+        path: "{{ mnemonik_server_install_dir }}"
+        state: directory
+        owner: op
+        group: op
+        mode: "0750"
+
+    # --- GHCR pull auth (only if a token was supplied) ---------------------
+    # Non-fatal: if the package is PUBLIC, an empty/invalid token or a failed
+    # login must not abort the deploy — the subsequent `compose pull` still
+    # fetches a public image anonymously. Login only matters for a private
+    # package, and there a failure surfaces later as a pull error anyway.
+    - name: Log in to GHCR (private package pull; non-fatal)
+      when: mnemonik_ghcr_token | default('') | length > 0
+      become: true
+      become_user: op
+      ansible.builtin.command:
+        cmd: "docker login ghcr.io -u {{ mnemonik_ghcr_username }} --password-stdin"
+        stdin: "{{ mnemonik_ghcr_token }}"
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    # --- Render compose + env + Caddy vhost --------------------------------
+    - name: Render docker-compose.yml
+      become: true
+      ansible.builtin.template:
+        src: docker-compose.yml.j2
+        dest: "{{ mnemonik_server_install_dir }}/docker-compose.yml"
+        owner: op
+        group: op
+        mode: "0640"
+      register: mnemonik_compose_template
+
+    - name: Render mcp.env
+      become: true
+      ansible.builtin.template:
+        src: mcp.env.j2
+        dest: "{{ mnemonik_server_install_dir }}/mcp.env"
+        owner: op
+        group: op
+        mode: "0600"
+      no_log: true
+      register: mnemonik_env_template
+
+    - name: Render Caddy vhost snippet into shared conf.d
+      become: true
+      ansible.builtin.template:
+        src: Caddyfile.snippet.j2
+        dest: "{{ mnemonik_caddy_conf_d }}/mnemonik-mcp.conf"
+        owner: op
+        group: op
+        mode: "0644"
+      register: mnemonik_caddy_snippet
+      notify: Reload caddy for mnemonik vhost
+
+    # --- Bring the stack up ------------------------------------------------
+    - name: Run docker compose to start the mnemonik stack
+      # `--force-recreate` is required because Docker Compose does not recreate
+      # a container when only the env_file contents change; `restart` keeps the
+      # old env inside the running container. Always recreate on deploy so the
+      # MCP server picks up new env vars (FASTEMBED_CACHE_DIR, CORS origin, etc.)
+      # and the latest pinned image.
+      ansible.builtin.command:
+        cmd: docker compose up -d --pull always --force-recreate
+        chdir: "{{ mnemonik_server_install_dir }}"
+      environment:
+        COMPOSE_PROJECT_NAME: "{{ mnemonik_server_compose_project }}"
+      become: true
+      become_user: op
+      changed_when: true
+      register: mnemonik_compose_result
+
+    - name: Wait for Ollama to accept commands
+      become: true
+      become_user: op
+      ansible.builtin.command:
+        cmd: "docker exec mnemonik-ollama-1 ollama list"
+      register: mnemonik_ollama_ready
+      until: mnemonik_ollama_ready.rc == 0
+      retries: 30
+      delay: 2
+      changed_when: false
+
+    # Fire-and-forget: pulling {{ mnemonik_ollama_model }} (~2GB) can take many
+    # minutes and MUST NOT block or fail the deploy — a synchronous pull here
+    # held the SSH run until it was killed (run 29000156212). The MCP server's
+    # /health + core tools do not need the model; only /chat does, and ollama
+    # serves it once the background pull finishes. async+poll:0 detaches it on
+    # the target so the play proceeds straight to the Caddy reload + health gate.
+    - name: Pull the Ollama model in the background (non-blocking, non-fatal)
+      become: true
+      become_user: op
+      ansible.builtin.command:
+        cmd: "docker exec mnemonik-ollama-1 ollama pull {{ mnemonik_ollama_model }}"
+      async: 1800
+      poll: 0
+      changed_when: false
+      failed_when: false
+
+    # --- Caddy reload must precede the public health probe -----------------
+    - name: Flush handlers so Caddy reload runs before the health probe
+      ansible.builtin.meta: flush_handlers
+
+    - name: Probe MCP /health via Caddy on loopback (avoids hairpin NAT)
+      # Probing the PUBLIC hostname from the VM itself relies on hairpin NAT to
+      # the box's own public IP, which frequently hangs — every retry then
+      # stalls for the full timeout and the SSH run dies (~15 min), showing up
+      # as a cancelled CI job (runs 29000156212 / 29003276564). Resolve the
+      # vhost to 127.0.0.1 so we hit the local Caddy directly (real cert, SNI
+      # match), with a hard -m 5 per attempt. Fast-fail so the play completes
+      # and the diagnostics below are readable.
+      become: true
+      become_user: op
+      ansible.builtin.command:
+        cmd: >-
+          curl -fsS -m 5 --resolve {{ mnemonik_public_domain }}:443:127.0.0.1
+          https://{{ mnemonik_public_domain }}/health
+      register: mnemonik_health
+      until: mnemonik_health.rc == 0
+      # ~6 min: first boot downloads the ~22MB fastembed model + runs the RAG
+      # seed before /health goes 200 (image start_period is 180s).
+      retries: 90
+      delay: 4
+      changed_when: false
+      failed_when: false
+
+    # Always capture container state + MCP logs + a direct-to-container health
+    # probe — the CI runner can't be SSH'd into afterward, so this inline dump
+    # is the only diagnostic channel. Cheap; invaluable when /health isn't 200.
+    - name: Capture MCP diagnostics
+      become: true
+      become_user: op
+      ansible.builtin.shell: |
+        echo "=== listening sockets ==="
+        ss -ltn 2>&1 || netstat -ltn 2>&1 || true
+        echo "=== docker ps (mnemonik) ==="
+        docker ps -a --filter name=mnemonik
+        echo "=== docker ps (caddy) ==="
+        docker ps -a --filter name=caddy
+        echo "=== mnemonik-mcp-1 direct /health (docker exec localhost:3000) ==="
+        docker exec mnemonik-mcp-1 curl -fsS -m 5 http://localhost:3000/health 2>&1; echo "(exec rc=$?)"
+        echo "=== mnemonik-mcp-1 logs (tail 120) ==="
+        docker logs mnemonik-mcp-1 --tail 120 2>&1 || true
+        echo "=== vaultwarden-caddy-1 logs (tail 120) ==="
+        docker logs vaultwarden-caddy-1 --tail 120 2>&1 || true
+      register: mnemonik_diag
+      changed_when: false
+      failed_when: false
+
+    - name: Show MCP diagnostics
+      ansible.builtin.debug:
+        var: mnemonik_diag.stdout_lines
+
+    - name: Fail if MCP /health not 200 via Caddy
+      ansible.builtin.fail:
+        msg: >-
+          Mnemonic MCP /health did not return 200 via Caddy (loopback). See
+          "Show MCP diagnostics" above for container state + mnemonik-mcp-1 logs.
+      when: mnemonik_health.rc != 0
+
+    # /health only proves the HTTP surface is up; it does NOT prove the
+    # embedding provider loaded. A missing model cache or failed fastembed
+    # download leaves the server running but recall/semantic search broken.
+    # Fail loud here so the operator sees the real problem in CI logs.
+    - name: Verify fastembed embedding provider initialized
+      become: true
+      become_user: op
+      ansible.builtin.shell: |
+        set -euo pipefail
+        docker logs mnemonik-mcp-1 --tail 500 2>&1 | grep -qE 'Embedder: fastembed|fastembed \(.*verifiable=true\)' && exit 0
+        echo "ERROR: fastembed embedding provider did not initialize in mnemonik-mcp-1"
+        echo "Check that FASTEMBED_CACHE_DIR is writable and the model can be downloaded."
+        exit 1
+      args:
+        executable: /bin/bash
+      register: mnemonik_embed_check
+      changed_when: false
+      failed_when: mnemonik_embed_check.rc != 0

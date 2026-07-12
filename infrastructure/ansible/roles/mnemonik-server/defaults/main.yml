@@ -1,0 +1,110 @@
+---
+# Role: mnemonik-server
+#
+# Deploys the SERVER side of the Mnemonic protocol — the Rust MCP HTTP server
+# (GHCR image ghcr.io/mnemonik-xyz/mnemonic-mcp) plus a co-located Ollama for
+# /chat — co-located on the fabric VM and fronted by the existing shared Caddy
+# (vaultwarden role), NOT by the monorepo's own nginx+certbot.
+#
+# NOTE: distinct from the `mnemonic-mcp` role. That role installs the CLIENT
+# binary (@mnemonik-xyz/mcp, per-spawn stdio) consumed by content-publisher.
+# This role hosts the SERVER the protocol clients connect to.
+#
+# Upstream reference (adapted): mnemonik-xyz/monorepo docker-compose.yml +
+# mcp/deploy/compose.env.example. We keep the `mcp` + `ollama` services and
+# drop `nginx` + `certbot` (Caddy terminates TLS and reverse-proxies instead).
+
+# Master switch. Disabled by default: enable per-environment (group_vars or
+# CLI -e) once DNS + sops secrets are in place. Mirrors the mnemonic-mcp /
+# restic gating pattern.
+mnemonik_server_enabled: false
+
+# --- Deploy dir + compose project ------------------------------------------
+mnemonik_server_install_dir: /opt/mnemonik-server
+mnemonik_server_compose_project: mnemonik
+
+# --- MCP server image ------------------------------------------------------
+# CI (monorepo build-mcp-image.yml) builds + pushes this to GHCR; the fabric
+# box only PULLS — it never compiles Rust. Pin a real tag (e.g. v0.2.8) for
+# reproducible redeploys instead of `latest`.
+mnemonik_mcp_image: "ghcr.io/mnemonik-xyz/mnemonic-mcp"
+mnemonik_mcp_image_tag: "latest"
+
+# GHCR pull auth. If the package is private, the role does `docker login`
+# using this token (reuse the sops github PAT). Leave empty if the GHCR
+# package is public (no login attempted).
+mnemonik_ghcr_username: "mnemonik-dev"
+mnemonik_ghcr_token: ""
+
+# --- Ollama (co-located, local inference) ----------------------------------
+# Stock upstream image + a post-up `ollama pull` (the monorepo's custom
+# `monorepo-ollama` image is just this base + a pre-pulled model + warm-up;
+# we replicate that without needing the monorepo build context on the box).
+mnemonik_ollama_image: "ollama/ollama:0.21.2"
+mnemonik_ollama_model: "qwen2.5:3b"
+
+# --- MCP runtime env (passed into the mcp container) -----------------------
+mnemonik_mcp_storage_mode: "local"
+mnemonik_mcp_embed_provider: "fastembed"
+mnemonik_mcp_turbo_bits: 4
+mnemonik_mcp_payment_mode: "none"
+mnemonik_mcp_rust_log: "info"
+
+# fastembed cache dir inside the container (bind-mounted from persistent
+# volume via docker-compose.yml). Set explicitly so model downloads survive
+# VM rebuilds and land in a writable, pre-created directory.
+mnemonik_mcp_fastembed_cache_dir: "/data/model-cache"
+
+# Chain-backed traction stats (required by server images >= #194).
+# Defaults are safe/public; override in sops/group_vars for real tracking.
+mnemonik_chain_stats_wallets: ""
+mnemonik_solana_rpc_url: "https://api.mainnet-beta.solana.com"
+mnemonik_arweave_url: "https://gateway.irys.xyz"
+mnemonik_chain_stats_graphql_url: "https://arweave.net/graphql"
+mnemonik_chain_stats_gateway_url: "https://gateway.irys.xyz"
+# Origin advertised in OAuth metadata + challenge envelopes. MUST match the
+# public hostname external clients (Cursor/Claude.ai) connect to — RFC 8707
+# origin check is enforced. No trailing slash.
+mnemonik_mcp_public_base_url: "https://mcp.mnemonik.xyz"
+
+# CORS origins for the webapp frontend. Set to the exact origin(s) the browser
+# sends (e.g. "https://mnemonik.xyz" or ["https://www.mnemonik.xyz",
+# "https://mnemonik-webapp.pages.dev"]). Empty string or empty list disables
+# CORS headers at the Caddy layer. Do NOT use "*" with credentials.
+mnemonik_mcp_cors_origin: ""
+
+# Port the mcp server listens on inside the container. Caddy reverse-proxies
+# to this over the shared docker network; NOT published to a host port.
+mnemonik_mcp_container_port: 3000
+
+# --- Caddy vhost (public, real Let's Encrypt) ------------------------------
+# Public hostname served on 443. Requires: DNS A record → VM public IPv4,
+# firewall 80+443 open (already the case), and caddy_acme_email set so LE
+# can issue. The webapp lives on Cloudflare Pages — this is the MCP host only.
+mnemonik_public_domain: "mcp.mnemonik.xyz"
+
+# Shared Caddy — cross-role contract with the vaultwarden role. Snippet is
+# dropped into its conf.d; the container is restarted to pick it up.
+vaultwarden_caddy_container_name: "vaultwarden-caddy-1"
+mnemonik_caddy_conf_d: "/opt/vaultwarden/caddy_conf_d"
+
+# External docker network created by the vaultwarden role's compose stack.
+# The mcp container joins it so Caddy can reverse_proxy by name.
+mnemonik_shared_caddy_network: "vaultwarden_vaultwarden"
+
+# --- Swap (ollama + fastembed headroom) ------------------------------------
+# Safety cushion recommended by the monorepo bootstrap. Idempotent.
+mnemonik_server_swap_enabled: true
+mnemonik_server_swap_size_mb: 4096
+mnemonik_server_swap_path: "/swapfile"
+
+# Health probe budget (post-up). MCP start_period is 180s (fastembed model
+# load), so give it generous retries.
+mnemonik_mcp_health_retries: 120
+mnemonik_mcp_health_delay: 3
+
+# CRITICAL: provided by the playbook via sops decryption (deploy.yml).
+# Not defined here so the role fails loudly if enabled without them.
+#   mnemonik_mcp_jwt_secret    — openssl rand -base64 32, stable across deploys
+#   mnemonik_mcp_refresh_salt  — openssl rand -base64 32, rotating invalidates
+#                                every live refresh token (deliberate event)
