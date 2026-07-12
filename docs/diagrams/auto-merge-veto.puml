@@ -1,0 +1,34 @@
+@startuml auto-merge-veto
+title Symphony auto-merge - 24 h veto window (policy: auto-with-veto)
+
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+
+start
+:QA stage transitions ticket
+to ready-to-merge;
+:Symphony tick finds ticket;
+if (veto deadline comment exists\non the Kaneo ticket?) then (no)
+  :post to ops Telegram topic -
+  "PR #N ready to auto-merge in 24 h.
+  Reply /reject TASK-ID to cancel";
+  :write "Window closes at <iso>"
+  comment on the ticket
+  (durable across Symphony restarts);
+else (yes)
+  :parse deadline from comment;
+endif
+repeat
+  :next Symphony tick (30 s);
+  if (/reject received?\n(cancel label on ticket)) then (yes)
+    :ticket -> review (cancelled);
+    stop
+  endif
+repeat while (deadline passed?) is (no)
+-> yes;
+:gh pr merge --squash --delete-branch;
+:ticket -> done;
+:last-known-good tag advanced
+(non-loop tasks; safe-mode hook);
+stop
+@enduml

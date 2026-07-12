@@ -1,0 +1,55 @@
+@startuml deploy-recovery
+title Deploy, self-hosting and incident recovery
+
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+
+|Cold start (CI)|
+start
+:git tag fabric-v*;
+:deploy-fabric.yml -
+tofu plan/apply (persistent VM);
+:runner joins tailnet
+(TAILSCALE_AUTH_KEY);
+:ansible-playbook deploy.yml
+over tailnet SSH (12 roles);
+:e2e-smoke (best-effort,
+continue-on-error);
+:Telegram ops notification;
+
+|Steady state (self-hosting)|
+:fabric PR on loop branch;
+:smoke-gate.yml - candidate fabric
+in docker-compose runs a trivial
+docs task end-to-end (15-min budget,
+required status check);
+if (smoke gate green?) then (yes)
+  :merge - live fabric
+  redeploys itself;
+  :last-known-good tag advanced
+  after each successful
+  non-loop task;
+else (no)
+  :merge blocked;
+  :sanitized failure log
+  to Telegram ops;
+  stop
+endif
+
+|Incident recovery|
+if (fabric broken?) then (yes)
+  :safe-mode-rollback.yml -
+  acquire /var/lock/fabric-safe-mode;
+  :stop fabric services;
+  :verify + checkout signed
+  last-known-good tag;
+  :re-run deploy.yml
+  --tags fabric-services;
+  :restart services;
+  :HIGH-severity banner
+  to Telegram ops topic;
+  stop
+else (no)
+  stop
+endif
+@enduml

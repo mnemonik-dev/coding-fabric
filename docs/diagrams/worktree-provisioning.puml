@@ -1,0 +1,42 @@
+@startuml worktree-provisioning
+title workspace-manager - POST /worktree provisioning with rollback
+
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+
+start
+:POST /worktree
+(task_id, repo, topic);
+if (capacity available?\nflock on state.json, cap 10) then (yes)
+  :register worktree in state.json
+  (tempfile + os.replace + dir fsync);
+else (no)
+  :HTTP 409 - capacity / exists;
+  stop
+endif
+:materialise secrets:
+bw get item mnemonic/topic/<topic>
+(session token via systemd LoadCredential);
+if (Vaultwarden reachable?) then (yes)
+  :write per-worktree .env
+  atomically, mode 0600;
+else (no)
+  :rollback - remove state entry;
+  :HTTP 503 - vault down;
+  stop
+endif
+:git worktree add --detach -- <path> <ref>
+(argument-injection defenses,
+path containment under worktrees_root);
+if (git succeeded?) then (yes)
+  :HTTP 201 - worktree path returned
+  (bot injects it as engine cwd);
+  stop
+else (no)
+  :full rollback -
+  delete .env, rmtree worktree,
+  remove state entry;
+  :HTTP 500;
+  stop
+endif
+@enduml
