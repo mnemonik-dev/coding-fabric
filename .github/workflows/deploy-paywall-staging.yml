@@ -13,15 +13,15 @@ on:
         default: diagnose
         options: [diagnose, apply, rollback]
       facilitator_image:
-        description: 'Immutable GHCR image reference (required for apply/rollback)'
+        description: 'Immutable GHCR digest reference (required for apply/rollback)'
         type: string
         required: false
       approval_ui_image:
-        description: 'Immutable approval UI GHCR image reference (required for apply/rollback)'
+        description: 'Immutable approval UI GHCR digest reference (required for apply/rollback)'
         type: string
         required: false
       mcp_image:
-        description: 'Immutable Mnemonic MCP GHCR image reference (required for apply/rollback)'
+        description: 'Immutable Mnemonic MCP GHCR digest reference (required for apply/rollback)'
         type: string
         required: false
 
@@ -56,11 +56,8 @@ jobs:
         run: |
           set -euo pipefail
           for image in "$FACILITATOR_IMAGE" "$APPROVAL_UI_IMAGE" "$MCP_IMAGE"; do
-            [[ "$image" =~ ^ghcr\.io/[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9][A-Za-z0-9._-]{6,127}$ ]] || {
-              echo '::error::each image must be an immutable ghcr.io image reference'; exit 1;
-            }
-            [[ "$image" != *':latest' && "$image" != *':staging' ]] || {
-              echo '::error::mutable image tags are forbidden'; exit 1;
+            [[ "$image" =~ ^ghcr\.io/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$ ]] || {
+              echo '::error::each image must be a pinned ghcr.io @sha256 digest reference'; exit 1;
             }
           done
 
@@ -75,7 +72,7 @@ jobs:
           CI_SSH_PRIVATE_KEY: ${{ secrets.CI_SSH_PRIVATE_KEY }}
         run: |
           set -euo pipefail
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             VM_IP=$(tailscale status --json 2>/dev/null | jq -r --arg name "$SERVER_NAME" '
               [(.Peer // {} | to_entries[].value)
                 | select(.HostName == $name and .Online == true)
@@ -95,7 +92,9 @@ jobs:
         if: ${{ inputs.action == 'diagnose' }}
         run: |
           set -euo pipefail
-          ssh $SSH_OPTS "$VM_TARGET" "STACK_DIR='$STACK_DIR' COMPOSE_PROJECT='$COMPOSE_PROJECT' bash -s" <<'REMOTE'
+          read -r -a ssh_opts <<< "$SSH_OPTS"
+          # shellcheck disable=SC2029
+          ssh "${ssh_opts[@]}" "$VM_TARGET" "STACK_DIR='$STACK_DIR' COMPOSE_PROJECT='$COMPOSE_PROJECT' bash -s" <<'REMOTE'
           set -euo pipefail
           docker_cmd() { docker info >/dev/null 2>&1 && docker "$@" || sudo -n docker "$@"; }
           echo '=== paywall staging files (names/modes only) ==='
@@ -116,9 +115,11 @@ jobs:
           MCP_IMAGE: ${{ inputs.mcp_image }}
         run: |
           set -euo pipefail
-          scp $SSH_OPTS infrastructure/paywall-staging/docker-compose.yml "$VM_TARGET:/tmp/paywall-staging-compose.yml"
-          scp $SSH_OPTS infrastructure/paywall-staging/paywall-staging.caddy.template "$VM_TARGET:/tmp/paywall-staging.caddy.template"
-          ssh $SSH_OPTS "$VM_TARGET" "STACK_DIR='$STACK_DIR' COMPOSE_PROJECT='$COMPOSE_PROJECT' FACILITATOR_IMAGE='$FACILITATOR_IMAGE' APPROVAL_UI_IMAGE='$APPROVAL_UI_IMAGE' MCP_IMAGE='$MCP_IMAGE' bash -s" <<'REMOTE'
+          read -r -a ssh_opts <<< "$SSH_OPTS"
+          scp "${ssh_opts[@]}" infrastructure/paywall-staging/docker-compose.yml "$VM_TARGET:/tmp/paywall-staging-compose.yml"
+          scp "${ssh_opts[@]}" infrastructure/paywall-staging/paywall-staging.caddy.template "$VM_TARGET:/tmp/paywall-staging.caddy.template"
+          # shellcheck disable=SC2029
+          ssh "${ssh_opts[@]}" "$VM_TARGET" "STACK_DIR='$STACK_DIR' COMPOSE_PROJECT='$COMPOSE_PROJECT' FACILITATOR_IMAGE='$FACILITATOR_IMAGE' APPROVAL_UI_IMAGE='$APPROVAL_UI_IMAGE' MCP_IMAGE='$MCP_IMAGE' bash -s" <<'REMOTE'
           set -euo pipefail
           docker_cmd() { docker info >/dev/null 2>&1 && docker "$@" || sudo -n docker "$@"; }
           sudo -n install -d -m 0750 -o op -g op "$STACK_DIR/secrets"
@@ -145,16 +146,22 @@ jobs:
           cd "$STACK_DIR"
           sudo -n docker compose --env-file .env -p "$COMPOSE_PROJECT" pull
           sudo -n docker compose --env-file .env -p "$COMPOSE_PROJECT" up -d
-          cid=$(sudo -n docker compose --env-file .env -p "$COMPOSE_PROJECT" ps -q mcp)
-          [ -n "$cid" ] || { echo '::error::facilitator container was not created'; exit 1; }
-          for i in $(seq 1 45); do
-            health=$(sudo -n docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}starting{{end}}' "$cid")
-            state=$(sudo -n docker inspect --format '{{.State.Status}}' "$cid")
-            [ "$state" = running ] && [ "$health" = healthy ] && break
-            [ "$state" = exited ] && { sudo -n docker logs --tail 80 "$cid"; exit 1; }
-            sleep 2
+          for service in facilitator mcp; do
+            cid=$(sudo -n docker compose --env-file .env -p "$COMPOSE_PROJECT" ps -q "$service")
+            [ -n "$cid" ] || { echo "::error::$service container was not created"; exit 1; }
+            for _ in $(seq 1 45); do
+              health=$(sudo -n docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}starting{{end}}' "$cid")
+              state=$(sudo -n docker inspect --format '{{.State.Status}}' "$cid")
+              [ "$state" = running ] && [ "$health" = healthy ] && break
+              [ "$state" = exited ] && { sudo -n docker logs --tail 80 "$cid"; exit 1; }
+              sleep 2
+            done
+            [ "$state" = running ] && [ "$health" = healthy ] || {
+              sudo -n docker logs --tail 80 "$cid"
+              echo "::error::$service did not become healthy"
+              exit 1
+            }
           done
-          [ "$state" = running ] && [ "$health" = healthy ] || { sudo -n docker logs --tail 80 "$cid"; echo '::error::facilitator did not become healthy'; exit 1; }
           caddy=$(sudo -n docker ps --filter name=vaultwarden-caddy --format '{{.Names}}' | head -1)
           [ -n "$caddy" ] || { echo '::error::Caddy container not found'; exit 1; }
           sudo -n docker exec "$caddy" caddy reload --config /etc/caddy/Caddyfile

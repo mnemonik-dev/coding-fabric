@@ -65,15 +65,16 @@ then preserves them and changes only reviewed immutable image references.
 
 ## Release procedure
 
-1. Publish facilitator and approval-UI images from Universal Paywall, and use
-   immutable SHA tags for both. Select a reviewed immutable MCP image too;
-   never use `latest` or `staging`.
+1. Publish facilitator and approval-UI images from Universal Paywall, then use
+   their immutable `@sha256:` digest references. Select a reviewed immutable
+   MCP digest too; tags such as `latest`, `staging`, and `sha-…` are not
+   accepted by the deployment gate because tags can be moved after approval.
 2. Run `deploy-paywall-staging` with `action=diagnose` to check the remote
    secret file modes, container state, and image without changing anything.
 3. After environment approval, run `action=apply` with all three immutable
    image references. The workflow installs only its compose/Caddy contracts,
    preserves the secret `.env`, checks the Base Sepolia/exact-only invariants,
-   and waits for MCP `/health` inside the container.
+   and waits for both MCP and facilitator health inside their containers.
 4. A rollback is a fresh approved dispatch using the previous immutable image
    reference. It does not delete the payment-store volume; preserving it is
    required for exact-payment receipt and retry safety.
