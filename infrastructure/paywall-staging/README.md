@@ -10,8 +10,8 @@ facilitator used by Mnemonic anchoring. It is deliberately an isolated stack:
 - durable state: the stack's own `facilitator-payment-store` volume
 
 It must not reuse `/opt/mnemonik-server`, its environment file, or any of its
-volumes. This stack deploys only the Paywall facilitator. Wiring the separately
-staged MCP and approval UI to it remains part of Task 07a.
+volumes. This stack deploys a separately staged Mnemonic MCP, its same-origin
+approval UI assets, and the Paywall facilitator.
 
 ## One-time operator bootstrap
 
@@ -33,14 +33,15 @@ This prevents a normal repository workflow from silently reaching the VPS.
 
 ## Release procedure
 
-1. Publish a facilitator image from Universal Paywall. Use its immutable SHA
-   tag, never `latest` or `staging`.
+1. Publish facilitator and approval-UI images from Universal Paywall, and use
+   immutable SHA tags for both. Select a reviewed immutable MCP image too;
+   never use `latest` or `staging`.
 2. Run `deploy-paywall-staging` with `action=diagnose` to check the remote
    secret file modes, container state, and image without changing anything.
-3. After environment approval, run `action=apply` with the immutable image
-   reference. The workflow installs only `docker-compose.yml`, preserves the
-   secret `.env`, checks the Base Sepolia/exact-only invariants, and waits for
-   `/health` inside the container.
+3. After environment approval, run `action=apply` with all three immutable
+   image references. The workflow installs only its compose/Caddy contracts,
+   preserves the secret `.env`, checks the Base Sepolia/exact-only invariants,
+   and waits for MCP `/health` inside the container.
 4. A rollback is a fresh approved dispatch using the previous immutable image
    reference. It does not delete the payment-store volume; preserving it is
    required for exact-payment receipt and retry safety.

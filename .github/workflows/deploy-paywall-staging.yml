@@ -16,6 +16,14 @@ on:
         description: 'Immutable GHCR image reference (required for apply/rollback)'
         type: string
         required: false
+      approval_ui_image:
+        description: 'Immutable approval UI GHCR image reference (required for apply/rollback)'
+        type: string
+        required: false
+      mcp_image:
+        description: 'Immutable Mnemonic MCP GHCR image reference (required for apply/rollback)'
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -43,14 +51,18 @@ jobs:
         if: ${{ inputs.action == 'apply' || inputs.action == 'rollback' }}
         env:
           FACILITATOR_IMAGE: ${{ inputs.facilitator_image }}
+          APPROVAL_UI_IMAGE: ${{ inputs.approval_ui_image }}
+          MCP_IMAGE: ${{ inputs.mcp_image }}
         run: |
           set -euo pipefail
-          [[ "$FACILITATOR_IMAGE" =~ ^ghcr\.io/[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9][A-Za-z0-9._-]{6,127}$ ]] || {
-            echo '::error::facilitator_image must be an immutable ghcr.io image reference'; exit 1;
-          }
-          [[ "$FACILITATOR_IMAGE" != *':latest' && "$FACILITATOR_IMAGE" != *':staging' ]] || {
-            echo '::error::mutable image tags are forbidden'; exit 1;
-          }
+          for image in "$FACILITATOR_IMAGE" "$APPROVAL_UI_IMAGE" "$MCP_IMAGE"; do
+            [[ "$image" =~ ^ghcr\.io/[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9][A-Za-z0-9._-]{6,127}$ ]] || {
+              echo '::error::each image must be an immutable ghcr.io image reference'; exit 1;
+            }
+            [[ "$image" != *':latest' && "$image" != *':staging' ]] || {
+              echo '::error::mutable image tags are forbidden'; exit 1;
+            }
+          done
 
       - name: Tailscale up (ephemeral)
         uses: tailscale/github-action@v3
@@ -100,15 +112,20 @@ jobs:
         if: ${{ inputs.action == 'apply' || inputs.action == 'rollback' }}
         env:
           FACILITATOR_IMAGE: ${{ inputs.facilitator_image }}
+          APPROVAL_UI_IMAGE: ${{ inputs.approval_ui_image }}
+          MCP_IMAGE: ${{ inputs.mcp_image }}
         run: |
           set -euo pipefail
           scp $SSH_OPTS infrastructure/paywall-staging/docker-compose.yml "$VM_TARGET:/tmp/paywall-staging-compose.yml"
-          ssh $SSH_OPTS "$VM_TARGET" "STACK_DIR='$STACK_DIR' COMPOSE_PROJECT='$COMPOSE_PROJECT' FACILITATOR_IMAGE='$FACILITATOR_IMAGE' bash -s" <<'REMOTE'
+          scp $SSH_OPTS infrastructure/paywall-staging/paywall-staging.caddy.template "$VM_TARGET:/tmp/paywall-staging.caddy.template"
+          ssh $SSH_OPTS "$VM_TARGET" "STACK_DIR='$STACK_DIR' COMPOSE_PROJECT='$COMPOSE_PROJECT' FACILITATOR_IMAGE='$FACILITATOR_IMAGE' APPROVAL_UI_IMAGE='$APPROVAL_UI_IMAGE' MCP_IMAGE='$MCP_IMAGE' bash -s" <<'REMOTE'
           set -euo pipefail
           docker_cmd() { docker info >/dev/null 2>&1 && docker "$@" || sudo -n docker "$@"; }
           sudo -n install -d -m 0750 -o op -g op "$STACK_DIR/secrets"
           sudo -n install -m 0640 -o op -g op /tmp/paywall-staging-compose.yml "$STACK_DIR/docker-compose.yml"
+          sudo -n install -m 0644 -o root -g root /tmp/paywall-staging.caddy.template /tmp/paywall-staging.caddy
           rm -f /tmp/paywall-staging-compose.yml
+          rm -f /tmp/paywall-staging.caddy.template
           [ -f "$STACK_DIR/.env" ] || { echo '::error::missing SOPS-rendered staging .env'; exit 1; }
           [ -f "$STACK_DIR/secrets/receipt-private-key.pem" ] || { echo '::error::missing receipt signing key'; exit 1; }
           [ "$(sudo -n stat -c '%a' "$STACK_DIR/.env")" = 600 ] || { echo '::error::.env must be mode 0600'; exit 1; }
@@ -118,10 +135,17 @@ jobs:
           grep -qx 'NETWORK=base-sepolia' "$STACK_DIR/.env" || { echo '::error::network must be base-sepolia'; exit 1; }
           grep -qx 'EXACT_PAYMENTS_ENABLED=1' "$STACK_DIR/.env" || { echo '::error::exact-only rail must be enabled'; exit 1; }
           grep -q '^FACILITATOR_IMAGE=' "$STACK_DIR/.env" && sudo -n sed -i 's|^FACILITATOR_IMAGE=.*|FACILITATOR_IMAGE='"$FACILITATOR_IMAGE"'|' "$STACK_DIR/.env" || echo "FACILITATOR_IMAGE=$FACILITATOR_IMAGE" | sudo -n tee -a "$STACK_DIR/.env" >/dev/null
+          grep -q '^APPROVAL_UI_IMAGE=' "$STACK_DIR/.env" && sudo -n sed -i 's|^APPROVAL_UI_IMAGE=.*|APPROVAL_UI_IMAGE='"$APPROVAL_UI_IMAGE"'|' "$STACK_DIR/.env" || echo "APPROVAL_UI_IMAGE=$APPROVAL_UI_IMAGE" | sudo -n tee -a "$STACK_DIR/.env" >/dev/null
+          grep -q '^MCP_IMAGE=' "$STACK_DIR/.env" && sudo -n sed -i 's|^MCP_IMAGE=.*|MCP_IMAGE='"$MCP_IMAGE"'|' "$STACK_DIR/.env" || echo "MCP_IMAGE=$MCP_IMAGE" | sudo -n tee -a "$STACK_DIR/.env" >/dev/null
+          domain=$(sudo -n sed -n 's|^MCP_PUBLIC_BASE_URL=https://\([^/]*\)/\?$|\1|p' "$STACK_DIR/.env")
+          [[ "$domain" =~ ^[A-Za-z0-9.-]+$ ]] || { echo '::error::MCP_PUBLIC_BASE_URL must be an HTTPS hostname without a path'; exit 1; }
+          sudo -n sed "s|__STAGING_DOMAIN__|$domain|g" /tmp/paywall-staging.caddy > /tmp/paywall-staging.rendered.caddy
+          sudo -n install -m 0644 -o root -g root /tmp/paywall-staging.rendered.caddy /opt/vaultwarden/caddy_conf_d/paywall-staging.conf
+          rm -f /tmp/paywall-staging.caddy /tmp/paywall-staging.rendered.caddy
           cd "$STACK_DIR"
-          sudo -n docker compose --env-file .env -p "$COMPOSE_PROJECT" pull facilitator
-          sudo -n docker compose --env-file .env -p "$COMPOSE_PROJECT" up -d facilitator
-          cid=$(sudo -n docker compose --env-file .env -p "$COMPOSE_PROJECT" ps -q facilitator)
+          sudo -n docker compose --env-file .env -p "$COMPOSE_PROJECT" pull
+          sudo -n docker compose --env-file .env -p "$COMPOSE_PROJECT" up -d
+          cid=$(sudo -n docker compose --env-file .env -p "$COMPOSE_PROJECT" ps -q mcp)
           [ -n "$cid" ] || { echo '::error::facilitator container was not created'; exit 1; }
           for i in $(seq 1 45); do
             health=$(sudo -n docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}starting{{end}}' "$cid")
@@ -131,5 +155,8 @@ jobs:
             sleep 2
           done
           [ "$state" = running ] && [ "$health" = healthy ] || { sudo -n docker logs --tail 80 "$cid"; echo '::error::facilitator did not become healthy'; exit 1; }
-          echo 'paywall staging facilitator is healthy'
+          caddy=$(sudo -n docker ps --filter name=vaultwarden-caddy --format '{{.Names}}' | head -1)
+          [ -n "$caddy" ] || { echo '::error::Caddy container not found'; exit 1; }
+          sudo -n docker exec "$caddy" caddy reload --config /etc/caddy/Caddyfile
+          echo 'paywall staging MCP and facilitator are healthy'
           REMOTE

@@ -1,0 +1,3 @@
+https://__STAGING_DOMAIN__ {
+    reverse_proxy mnemonik-paywall-staging:3000
+}
