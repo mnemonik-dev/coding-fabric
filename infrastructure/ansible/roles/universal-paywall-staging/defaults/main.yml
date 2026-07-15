@@ -1,0 +1,10 @@
+---
+# Disabled until staging secrets have been deliberately added to SOPS.
+universal_paywall_staging_enabled: false
+universal_paywall_staging_dir: /opt/universal-paywall-staging
+universal_paywall_staging_operator: op
+universal_paywall_staging_chain_id: 84532
+universal_paywall_staging_network: base-sepolia
+universal_paywall_staging_domain: mcp-staging.mnemonic-fabric.ts
+universal_paywall_staging_usdc_address: 0x036CbD53842c5426634e7929541eC2318f3dCF7e
+universal_paywall_staging_receipt_key_uid: '10001'

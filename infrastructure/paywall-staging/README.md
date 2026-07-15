@@ -13,6 +13,33 @@ It must not reuse `/opt/mnemonik-server`, its environment file, or any of its
 volumes. This stack deploys a separately staged Mnemonic MCP, its same-origin
 approval UI assets, and the Paywall facilitator.
 
+## Placement model
+
+The Compose file is a convenient *co-located staging topology*, not an
+assumption in the product protocol. The durable boundaries are HTTP and signed
+receipts:
+
+```mermaid
+flowchart LR
+  UI[Approval UI] -->|same origin| MCP[Mnemonic MCP]
+  MCP -->|HTTPS + API key| UP[Universal Paywall facilitator]
+  MCP -->|RPC| SOL[Solana relay/RPC]
+  MCP -->|upload + recall| IRYS[Irys / Arweave]
+  UP -->|RPC| EVM[Base]
+```
+
+`UNIVERSAL_PAYWALL_URL` is the MCP-to-facilitator location contract. It is
+`http://facilitator:8403` only for this local Docker topology. A split
+deployment sets it to the facilitator's private HTTPS/Tailscale endpoint in
+SOPS. The MCP, facilitator, and UI may therefore move independently without
+changing operation bindings, approvals, receipt verification, or recovery.
+
+The approval UI must remain **same-origin** with the MCP API because it uses
+the one-purpose browser resume capability and does not receive a facilitator
+credential. That is a routing constraint, not a host constraint: it may be
+served by a distinct static host/CDN behind the MCP's approved reverse-proxy
+origin.
+
 ## One-time operator bootstrap
 
 Before the first `apply`, provision the following files through the repository
@@ -21,6 +48,7 @@ SOPS/Ansible secret path, never by committing plaintext:
 ```text
 /opt/universal-paywall-staging/.env                         mode 0600
 /opt/universal-paywall-staging/secrets/receipt-private-key.pem  mode 0600, uid 10001
+/opt/universal-paywall-staging/secrets/mnemonic-id.json         mode 0600, uid 10001
 ```
 
 Use [`.env.example`](.env.example) as a key-only guide. The deploy workflow
@@ -30,6 +58,10 @@ requires `CHAIN_ID=84532`, `NETWORK=base-sepolia`, and
 Also create the GitHub Environment `paywall-staging`, configure required
 reviewers, and scope `TAILSCALE_AUTH_KEY` and `CI_SSH_PRIVATE_KEY` to it.
 This prevents a normal repository workflow from silently reaching the VPS.
+
+First render these files using the Fabric `universal-paywall-staging` Ansible
+role (fed by `infrastructure/secrets/secrets.sops.yml`). The release workflow
+then preserves them and changes only reviewed immutable image references.
 
 ## Release procedure
 

@@ -26,17 +26,16 @@ services:
       DATABASE_PATH: /data/attestations.db
       MNEMONIC_KEYPAIR_PATH: /keypair/id.json
       MNEMONIC_APPROVAL_UI_DIST: /approval-ui
-      UNIVERSAL_PAYWALL_URL: http://facilitator:8403
     depends_on:
-      facilitator:
-        condition: service_healthy
       approval-ui-assets:
         condition: service_completed_successfully
     ports:
       - '127.0.0.1:${MCP_PORT:-3001}:3000'
     volumes:
       - mcp-staging-data:/data
-      - mcp-staging-keypair:/keypair
+      # Rendered from SOPS by the Ansible role. A split deployment can mount
+      # the same protected key material on its own MCP host.
+      - ./secrets/mnemonic-id.json:/keypair/id.json:ro
       - approval-ui-assets:/approval-ui:ro
     networks:
       default:
@@ -66,8 +65,9 @@ services:
       PAYMENT_STORE_PATH: /data/payments.json
       RECEIPT_PRIVATE_KEY_FILE: /run/secrets/receipt-private-key.pem
     ports:
-      # No public listener. The staging MCP reaches this through the VM's
-      # private loopback/Tailscale routing only.
+      # The co-located reference topology exposes only loopback. A remote MCP
+      # uses UNIVERSAL_PAYWALL_URL from its SOPS-rendered environment instead
+      # of this port; no Docker-network location is embedded in its code.
       - '127.0.0.1:${FACILITATOR_PORT:-8403}:8403'
     volumes:
       - facilitator-payment-store:/data
@@ -93,7 +93,6 @@ volumes:
   facilitator-payment-store:
   approval-ui-assets:
   mcp-staging-data:
-  mcp-staging-keypair:
 
 networks:
   caddy:

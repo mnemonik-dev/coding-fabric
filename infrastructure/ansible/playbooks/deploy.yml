@@ -99,6 +99,18 @@
         # both vars carry values.
         vault_kaneo_mcp_url:                "{{ sops.kaneo_mcp_url | default('') }}"
         vault_kaneo_mcp_bearer:             "{{ sops.kaneo_mcp_bearer | default('') }}"
+        vault_universal_paywall_staging_enabled: "{{ sops.universal_paywall_staging_enabled | default(false) | bool }}"
+        vault_universal_paywall_staging_facilitator_key: "{{ sops.universal_paywall_staging_facilitator_key | default('') }}"
+        vault_universal_paywall_staging_service_api_key: "{{ sops.universal_paywall_staging_service_api_key | default('') }}"
+        vault_universal_paywall_staging_receipt_private_key_pem: "{{ sops.universal_paywall_staging_receipt_private_key_pem | default('') }}"
+        vault_universal_paywall_staging_mcp_jwt_secret: "{{ sops.universal_paywall_staging_mcp_jwt_secret | default('') }}"
+        vault_universal_paywall_staging_mcp_refresh_salt: "{{ sops.universal_paywall_staging_mcp_refresh_salt | default('') }}"
+        vault_universal_paywall_staging_mnemonic_keypair_json: "{{ sops.universal_paywall_staging_mnemonic_keypair_json | default('') }}"
+        vault_universal_paywall_staging_arc_rpc_url: "{{ sops.universal_paywall_staging_arc_rpc_url | default('') }}"
+        vault_universal_paywall_staging_pay_to: "{{ sops.universal_paywall_staging_pay_to | default('') }}"
+        vault_universal_paywall_staging_facilitator_url: "{{ sops.universal_paywall_staging_facilitator_url | default('http://facilitator:8403') }}"
+        vault_universal_paywall_staging_solana_rpc_url: "{{ sops.universal_paywall_staging_solana_rpc_url | default('') }}"
+        vault_universal_paywall_staging_irys_url: "{{ sops.universal_paywall_staging_irys_url | default('') }}"
         # Content publisher (work/content-publish-pipeline/). All defaults
         # empty/safe so first deploy with placeholder sops doesn't fail —
         # content-publisher role is gated on a non-empty bot token and
@@ -265,6 +277,22 @@
           - post-merge.sh
           - post-rollback.sh
           - pre-deploy.sh
+
+    - role: universal-paywall-staging
+      tags: [universal-paywall-staging, paywall-staging]
+      vars:
+        universal_paywall_staging_enabled: "{{ vault_universal_paywall_staging_enabled | bool }}"
+        universal_paywall_staging_facilitator_key: "{{ vault_universal_paywall_staging_facilitator_key }}"
+        universal_paywall_staging_service_api_key: "{{ vault_universal_paywall_staging_service_api_key }}"
+        universal_paywall_staging_receipt_private_key_pem: "{{ vault_universal_paywall_staging_receipt_private_key_pem }}"
+        universal_paywall_staging_mcp_jwt_secret: "{{ vault_universal_paywall_staging_mcp_jwt_secret }}"
+        universal_paywall_staging_mcp_refresh_salt: "{{ vault_universal_paywall_staging_mcp_refresh_salt }}"
+        universal_paywall_staging_mnemonic_keypair_json: "{{ vault_universal_paywall_staging_mnemonic_keypair_json }}"
+        universal_paywall_staging_arc_rpc_url: "{{ vault_universal_paywall_staging_arc_rpc_url }}"
+        universal_paywall_staging_pay_to: "{{ vault_universal_paywall_staging_pay_to }}"
+        universal_paywall_staging_facilitator_url: "{{ vault_universal_paywall_staging_facilitator_url }}"
+        universal_paywall_staging_solana_rpc_url: "{{ vault_universal_paywall_staging_solana_rpc_url }}"
+        universal_paywall_staging_irys_url: "{{ vault_universal_paywall_staging_irys_url }}"
 
     # Phase 7: Fabric services deployment
     - role: fabric-services

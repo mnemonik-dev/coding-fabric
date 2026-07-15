@@ -131,12 +131,12 @@ jobs:
           [ "$(sudo -n stat -c '%a' "$STACK_DIR/.env")" = 600 ] || { echo '::error::.env must be mode 0600'; exit 1; }
           [ "$(sudo -n stat -c '%a' "$STACK_DIR/secrets/receipt-private-key.pem")" = 600 ] || { echo '::error::receipt key must be mode 0600'; exit 1; }
           [ "$(sudo -n stat -c '%u' "$STACK_DIR/secrets/receipt-private-key.pem")" = 10001 ] || { echo '::error::receipt key must be owned by container uid 10001'; exit 1; }
-          grep -qx 'CHAIN_ID=84532' "$STACK_DIR/.env" || { echo '::error::only Base Sepolia (84532) is permitted'; exit 1; }
-          grep -qx 'NETWORK=base-sepolia' "$STACK_DIR/.env" || { echo '::error::network must be base-sepolia'; exit 1; }
-          grep -qx 'EXACT_PAYMENTS_ENABLED=1' "$STACK_DIR/.env" || { echo '::error::exact-only rail must be enabled'; exit 1; }
-          grep -q '^FACILITATOR_IMAGE=' "$STACK_DIR/.env" && sudo -n sed -i 's|^FACILITATOR_IMAGE=.*|FACILITATOR_IMAGE='"$FACILITATOR_IMAGE"'|' "$STACK_DIR/.env" || echo "FACILITATOR_IMAGE=$FACILITATOR_IMAGE" | sudo -n tee -a "$STACK_DIR/.env" >/dev/null
-          grep -q '^APPROVAL_UI_IMAGE=' "$STACK_DIR/.env" && sudo -n sed -i 's|^APPROVAL_UI_IMAGE=.*|APPROVAL_UI_IMAGE='"$APPROVAL_UI_IMAGE"'|' "$STACK_DIR/.env" || echo "APPROVAL_UI_IMAGE=$APPROVAL_UI_IMAGE" | sudo -n tee -a "$STACK_DIR/.env" >/dev/null
-          grep -q '^MCP_IMAGE=' "$STACK_DIR/.env" && sudo -n sed -i 's|^MCP_IMAGE=.*|MCP_IMAGE='"$MCP_IMAGE"'|' "$STACK_DIR/.env" || echo "MCP_IMAGE=$MCP_IMAGE" | sudo -n tee -a "$STACK_DIR/.env" >/dev/null
+          sudo -n grep -qx 'CHAIN_ID=84532' "$STACK_DIR/.env" || { echo '::error::only Base Sepolia (84532) is permitted'; exit 1; }
+          sudo -n grep -qx 'NETWORK=base-sepolia' "$STACK_DIR/.env" || { echo '::error::network must be base-sepolia'; exit 1; }
+          sudo -n grep -qx 'EXACT_PAYMENTS_ENABLED=1' "$STACK_DIR/.env" || { echo '::error::exact-only rail must be enabled'; exit 1; }
+          sudo -n grep -q '^FACILITATOR_IMAGE=' "$STACK_DIR/.env" && sudo -n sed -i 's|^FACILITATOR_IMAGE=.*|FACILITATOR_IMAGE='"$FACILITATOR_IMAGE"'|' "$STACK_DIR/.env" || echo "FACILITATOR_IMAGE=$FACILITATOR_IMAGE" | sudo -n tee -a "$STACK_DIR/.env" >/dev/null
+          sudo -n grep -q '^APPROVAL_UI_IMAGE=' "$STACK_DIR/.env" && sudo -n sed -i 's|^APPROVAL_UI_IMAGE=.*|APPROVAL_UI_IMAGE='"$APPROVAL_UI_IMAGE"'|' "$STACK_DIR/.env" || echo "APPROVAL_UI_IMAGE=$APPROVAL_UI_IMAGE" | sudo -n tee -a "$STACK_DIR/.env" >/dev/null
+          sudo -n grep -q '^MCP_IMAGE=' "$STACK_DIR/.env" && sudo -n sed -i 's|^MCP_IMAGE=.*|MCP_IMAGE='"$MCP_IMAGE"'|' "$STACK_DIR/.env" || echo "MCP_IMAGE=$MCP_IMAGE" | sudo -n tee -a "$STACK_DIR/.env" >/dev/null
           domain=$(sudo -n sed -n 's|^MCP_PUBLIC_BASE_URL=https://\([^/]*\)/\?$|\1|p' "$STACK_DIR/.env")
           [[ "$domain" =~ ^[A-Za-z0-9.-]+$ ]] || { echo '::error::MCP_PUBLIC_BASE_URL must be an HTTPS hostname without a path'; exit 1; }
           sudo -n sed "s|__STAGING_DOMAIN__|$domain|g" /tmp/paywall-staging.caddy > /tmp/paywall-staging.rendered.caddy
