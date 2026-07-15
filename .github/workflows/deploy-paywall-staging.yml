@@ -1,0 +1,135 @@
+name: deploy-paywall-staging
+
+# An approval-gated, manual-only deployment to the isolated Base Sepolia
+# staging stack. It deliberately does not deploy the production MCP service or
+# accept Base mainnet parameters.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'diagnose (read-only), apply, or rollback'
+        type: choice
+        required: true
+        default: diagnose
+        options: [diagnose, apply, rollback]
+      facilitator_image:
+        description: 'Immutable GHCR image reference (required for apply/rollback)'
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-paywall-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: ${{ inputs.action }} paywall staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    # Configure this GitHub Environment with required reviewers and scoped
+    # TAILSCALE_AUTH_KEY / CI_SSH_PRIVATE_KEY secrets before first apply.
+    environment: paywall-staging
+    env:
+      SERVER_NAME: mnemonic-fabric
+      STACK_DIR: /opt/universal-paywall-staging
+      COMPOSE_PROJECT: universal-paywall-staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate requested image
+        if: ${{ inputs.action == 'apply' || inputs.action == 'rollback' }}
+        env:
+          FACILITATOR_IMAGE: ${{ inputs.facilitator_image }}
+        run: |
+          set -euo pipefail
+          [[ "$FACILITATOR_IMAGE" =~ ^ghcr\.io/[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9][A-Za-z0-9._-]{6,127}$ ]] || {
+            echo '::error::facilitator_image must be an immutable ghcr.io image reference'; exit 1;
+          }
+          [[ "$FACILITATOR_IMAGE" != *':latest' && "$FACILITATOR_IMAGE" != *':staging' ]] || {
+            echo '::error::mutable image tags are forbidden'; exit 1;
+          }
+
+      - name: Tailscale up (ephemeral)
+        uses: tailscale/github-action@v3
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          args: --accept-dns --hostname=gh-paywall-staging-${{ github.run_id }}
+
+      - name: Resolve VM and configure SSH
+        env:
+          CI_SSH_PRIVATE_KEY: ${{ secrets.CI_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do
+            VM_IP=$(tailscale status --json 2>/dev/null | jq -r --arg name "$SERVER_NAME" '
+              [(.Peer // {} | to_entries[].value)
+                | select(.HostName == $name and .Online == true)
+                | (.TailscaleIPs // [])[] | select(test("^100\\."))
+              ] | first // ""')
+            [ -n "$VM_IP" ] && break
+            sleep 10
+          done
+          [ -n "${VM_IP:-}" ] || { echo '::error::fabric VM is not online'; exit 1; }
+          printf '%s\n' "$CI_SSH_PRIVATE_KEY" > /tmp/ci_deploy_key
+          chmod 600 /tmp/ci_deploy_key
+          ssh-keygen -y -P '' -f /tmp/ci_deploy_key >/dev/null
+          echo "VM_TARGET=op@$VM_IP" >> "$GITHUB_ENV"
+          echo 'SSH_OPTS=-i /tmp/ci_deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/ci_known_hosts -o ConnectTimeout=15' >> "$GITHUB_ENV"
+
+      - name: Diagnose staging stack (read-only)
+        if: ${{ inputs.action == 'diagnose' }}
+        run: |
+          set -euo pipefail
+          ssh $SSH_OPTS "$VM_TARGET" "STACK_DIR='$STACK_DIR' COMPOSE_PROJECT='$COMPOSE_PROJECT' bash -s" <<'REMOTE'
+          set -euo pipefail
+          docker_cmd() { docker info >/dev/null 2>&1 && docker "$@" || sudo -n docker "$@"; }
+          echo '=== paywall staging files (names/modes only) ==='
+          sudo -n find "$STACK_DIR" -maxdepth 2 -printf '%M %u:%g %p\n' 2>/dev/null || true
+          echo '=== configured non-secret keys ==='
+          sudo -n awk -F= '/^[A-Za-z_][A-Za-z0-9_]*=/{print $1}' "$STACK_DIR/.env" 2>/dev/null || true
+          echo '=== compose state ==='
+          docker_cmd compose -p "$COMPOSE_PROJECT" ps 2>/dev/null || true
+          echo '=== staging image ==='
+          docker_cmd ps --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" --format '{{.Names}} {{.Image}} {{.Status}}' || true
+          REMOTE
+
+      - name: Install compose contract and apply image
+        if: ${{ inputs.action == 'apply' || inputs.action == 'rollback' }}
+        env:
+          FACILITATOR_IMAGE: ${{ inputs.facilitator_image }}
+        run: |
+          set -euo pipefail
+          scp $SSH_OPTS infrastructure/paywall-staging/docker-compose.yml "$VM_TARGET:/tmp/paywall-staging-compose.yml"
+          ssh $SSH_OPTS "$VM_TARGET" "STACK_DIR='$STACK_DIR' COMPOSE_PROJECT='$COMPOSE_PROJECT' FACILITATOR_IMAGE='$FACILITATOR_IMAGE' bash -s" <<'REMOTE'
+          set -euo pipefail
+          docker_cmd() { docker info >/dev/null 2>&1 && docker "$@" || sudo -n docker "$@"; }
+          sudo -n install -d -m 0750 -o op -g op "$STACK_DIR/secrets"
+          sudo -n install -m 0640 -o op -g op /tmp/paywall-staging-compose.yml "$STACK_DIR/docker-compose.yml"
+          rm -f /tmp/paywall-staging-compose.yml
+          [ -f "$STACK_DIR/.env" ] || { echo '::error::missing SOPS-rendered staging .env'; exit 1; }
+          [ -f "$STACK_DIR/secrets/receipt-private-key.pem" ] || { echo '::error::missing receipt signing key'; exit 1; }
+          [ "$(sudo -n stat -c '%a' "$STACK_DIR/.env")" = 600 ] || { echo '::error::.env must be mode 0600'; exit 1; }
+          [ "$(sudo -n stat -c '%a' "$STACK_DIR/secrets/receipt-private-key.pem")" = 600 ] || { echo '::error::receipt key must be mode 0600'; exit 1; }
+          [ "$(sudo -n stat -c '%u' "$STACK_DIR/secrets/receipt-private-key.pem")" = 10001 ] || { echo '::error::receipt key must be owned by container uid 10001'; exit 1; }
+          grep -qx 'CHAIN_ID=84532' "$STACK_DIR/.env" || { echo '::error::only Base Sepolia (84532) is permitted'; exit 1; }
+          grep -qx 'NETWORK=base-sepolia' "$STACK_DIR/.env" || { echo '::error::network must be base-sepolia'; exit 1; }
+          grep -qx 'EXACT_PAYMENTS_ENABLED=1' "$STACK_DIR/.env" || { echo '::error::exact-only rail must be enabled'; exit 1; }
+          grep -q '^FACILITATOR_IMAGE=' "$STACK_DIR/.env" && sudo -n sed -i 's|^FACILITATOR_IMAGE=.*|FACILITATOR_IMAGE='"$FACILITATOR_IMAGE"'|' "$STACK_DIR/.env" || echo "FACILITATOR_IMAGE=$FACILITATOR_IMAGE" | sudo -n tee -a "$STACK_DIR/.env" >/dev/null
+          cd "$STACK_DIR"
+          sudo -n docker compose --env-file .env -p "$COMPOSE_PROJECT" pull facilitator
+          sudo -n docker compose --env-file .env -p "$COMPOSE_PROJECT" up -d facilitator
+          cid=$(sudo -n docker compose --env-file .env -p "$COMPOSE_PROJECT" ps -q facilitator)
+          [ -n "$cid" ] || { echo '::error::facilitator container was not created'; exit 1; }
+          for i in $(seq 1 45); do
+            health=$(sudo -n docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}starting{{end}}' "$cid")
+            state=$(sudo -n docker inspect --format '{{.State.Status}}' "$cid")
+            [ "$state" = running ] && [ "$health" = healthy ] && break
+            [ "$state" = exited ] && { sudo -n docker logs --tail 80 "$cid"; exit 1; }
+            sleep 2
+          done
+          [ "$state" = running ] && [ "$health" = healthy ] || { sudo -n docker logs --tail 80 "$cid"; echo '::error::facilitator did not become healthy'; exit 1; }
+          echo 'paywall staging facilitator is healthy'
+          REMOTE

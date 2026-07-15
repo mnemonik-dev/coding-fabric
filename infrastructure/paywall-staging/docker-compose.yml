@@ -1,0 +1,47 @@
+# Isolated staging stack for Mnemonic's paid on-chain anchoring.
+#
+# This is intentionally separate from /opt/mnemonik-server and never shares
+# its state volumes or production environment. The VM operator installs this
+# file at /opt/universal-paywall-staging/docker-compose.yml and a mode-0600
+# .env file beside it via the controlled Ansible/secrets path.
+#
+# Run only through .github/workflows/deploy-paywall-staging.yml:
+#   docker compose --env-file .env -p universal-paywall-staging up -d
+
+services:
+  facilitator:
+    image: ${FACILITATOR_IMAGE:?set FACILITATOR_IMAGE to an immutable GHCR image reference}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PORT: 8403
+      # Phase 1 safety invariant. The image also refuses to boot without it.
+      EXACT_PAYMENTS_ENABLED: '1'
+      PAYMENT_STORE_PATH: /data/payments.json
+      RECEIPT_PRIVATE_KEY_FILE: /run/secrets/receipt-private-key.pem
+    ports:
+      # No public listener. The staging MCP reaches this through the VM's
+      # private loopback/Tailscale routing only.
+      - '127.0.0.1:${FACILITATOR_PORT:-8403}:8403'
+    volumes:
+      - facilitator-payment-store:/data
+      # Provision this file as uid 10001 (the non-root `paywall` user in the
+      # image), mode 0600. A root-owned 0600 bind mount would make the secret
+      # unreadable to the service and correctly prevent it from starting.
+      - ./secrets/receipt-private-key.pem:/run/secrets/receipt-private-key.pem:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ['CMD-SHELL', 'node -e "fetch(\u0027http://127.0.0.1:8403/health\u0027).then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options: { max-size: '10m', max-file: '5' }
+
+volumes:
+  facilitator-payment-store:
