@@ -13,6 +13,7 @@
       - universal_paywall_staging_mcp_jwt_secret | length >= 32
       - universal_paywall_staging_mcp_refresh_salt | length >= 32
       - universal_paywall_staging_mnemonic_keypair_json | length >= 32
+      - universal_paywall_staging_domain is match('^[A-Za-z0-9.-]+$')
       - universal_paywall_staging_arc_rpc_url is match('^https://[^/]+')
       - universal_paywall_staging_pay_to is match('^0x[0-9A-Fa-f]{40}$')
       - universal_paywall_staging_solana_rpc_url is match('^https://[^/]+')

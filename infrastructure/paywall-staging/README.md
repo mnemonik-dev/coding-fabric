@@ -5,7 +5,7 @@ facilitator used by Mnemonic anchoring. It is deliberately an isolated stack:
 
 - directory: `/opt/universal-paywall-staging`
 - Compose project: `universal-paywall-staging`
-- network: Base Sepolia (`CHAIN_ID=84532`) only
+- network: Arc Testnet (`CHAIN_ID=5042002`) only
 - listener: `127.0.0.1:8403` only
 - durable state: the stack's own `facilitator-payment-store` volume
 
@@ -25,7 +25,7 @@ flowchart LR
   MCP -->|HTTPS + API key| UP[Universal Paywall facilitator]
   MCP -->|RPC| SOL[Solana relay/RPC]
   MCP -->|upload + recall| IRYS[Irys / Arweave]
-  UP -->|RPC| EVM[Base]
+  UP -->|RPC| EVM[Arc Testnet]
 ```
 
 `UNIVERSAL_PAYWALL_URL` is the MCP-to-facilitator location contract. It is
@@ -52,8 +52,9 @@ SOPS/Ansible secret path, never by committing plaintext:
 ```
 
 Use [`.env.example`](.env.example) as a key-only guide. The deploy workflow
-requires `CHAIN_ID=84532`, `NETWORK=base-sepolia`, and
-`EXACT_PAYMENTS_ENABLED=1`; it rejects Base mainnet and mutable image tags.
+requires `CHAIN_ID=5042002`, `NETWORK=arc-testnet`, and
+`EXACT_PAYMENTS_ENABLED=1`; it rejects production networks and mutable image
+tags.
 
 Also create the GitHub Environment `paywall-staging`, configure required
 reviewers, and scope `TAILSCALE_AUTH_KEY` and `CI_SSH_PRIVATE_KEY` to it.
@@ -62,6 +63,55 @@ This prevents a normal repository workflow from silently reaching the VPS.
 First render these files using the Fabric `universal-paywall-staging` Ansible
 role (fed by `infrastructure/secrets/secrets.sops.yml`). The release workflow
 then preserves them and changes only reviewed immutable image references.
+
+## Arc Testnet payment preflight
+
+Every deployment runs [`verify-arc-testnet.mjs`](verify-arc-testnet.mjs)
+before it contacts the VPS. It verifies the public RPC chain ID, the deployed
+USDC ERC-20 interface, and the EIP-712 domain/EIP-3009 authorization-state
+surface required by exact payments. It uses bounded retries for public-RPC
+rate limits. A failed preflight is a deployment stop, not a warning.
+
+The Arc native gas balance uses 18-decimal precision, while its USDC ERC-20
+interface uses 6 decimals. The facilitator and MCP payment asset are the
+ERC-20 interface; do not substitute the native-gas representation.
+
+## Operator-supplied inputs
+
+Add these only through SOPS or the protected GitHub Environment, never in a
+commit or chat message:
+
+| Location | Field | Operator action |
+| --- | --- | --- |
+| SOPS staging secret | `universal_paywall_staging_facilitator_key` | Create a dedicated Arc Testnet wallet, fund it with faucet USDC, and enter its private key through `sops`. |
+| SOPS staging secret | `universal_paywall_staging_pay_to` | Enter the dedicated staging payout wallet address. |
+| Reviewed Ansible configuration | `universal_paywall_staging_domain` | Confirm the public MCP hostname that resolves to the VPS. |
+| GitHub Environment `paywall-staging` | `TAILSCALE_AUTH_KEY` | Add an ephemeral/reusable key permitted to join the deployment runner to the tailnet. |
+| GitHub Environment `paywall-staging` | `CI_SSH_PRIVATE_KEY` | Add the deployment-account key only if this environment does not already contain it. |
+
+The service API key, receipt key, MCP JWT secret, refresh salt, and Mnemonic
+identity key are generated as staging-only secrets during the SOPS bootstrap.
+
+## External E2E credentials
+
+The external E2E runner is a separate trust boundary from the VM. Its
+staging-only OAuth bearer token and funded Arc Testnet test-wallet key belong
+in a protected GitHub Environment or equivalent CI secret manager—not in the
+VM `.env`, SOPS receipt key, or MCP database. The runner consumes the
+following `e2e/.env.staging.example` values at dispatch time:
+
+- `E2E_STAGING_MCP_BEARER_TOKEN`: short-lived token for a dedicated E2E MCP
+  subject, with no production access.
+- `E2E_STAGING_PAYER_PRIVATE_KEY`: funded test-USDC wallet, used through a
+  quote-restricted Node-side signer and never injected into the approval page.
+- endpoint, asset, payee, relay-path, and Irys values: non-secret deployment
+  identities needed by the fail-closed preflight.
+
+The workflow runner must have private network access to the facilitator health
+endpoint (for example Tailscale). It must not receive the facilitator key,
+receipt private key, Mnemonic identity keypair, or SOPS age key. Rotate the
+test wallet and revoke the E2E OAuth token after any runner or secret-manager
+incident.
 
 ## Release procedure
 
@@ -73,11 +123,12 @@ then preserves them and changes only reviewed immutable image references.
    secret file modes, container state, and image without changing anything.
 3. After environment approval, run `action=apply` with all three immutable
    image references. The workflow installs only its compose/Caddy contracts,
-   preserves the secret `.env`, checks the Base Sepolia/exact-only invariants,
+   preserves the secret `.env`, verifies Arc's USDC EIP-712/EIP-3009 surface,
+   checks the Arc Testnet/exact-only invariants,
    and waits for both MCP and facilitator health inside their containers.
 4. A rollback is a fresh approved dispatch using the previous immutable image
    reference. It does not delete the payment-store volume; preserving it is
    required for exact-payment receipt and retry safety.
 
 The CI job does not create testnet credentials, fund wallets, or migrate this
-stack to Base mainnet. Those are separate, reviewed operational actions.
+stack to a production network. Those are separate, reviewed operational actions.

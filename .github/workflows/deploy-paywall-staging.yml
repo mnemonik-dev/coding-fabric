@@ -1,8 +1,8 @@
 name: deploy-paywall-staging
 
-# An approval-gated, manual-only deployment to the isolated Base Sepolia
+# An approval-gated, manual-only deployment to the isolated Arc Testnet
 # staging stack. It deliberately does not deploy the production MCP service or
-# accept Base mainnet parameters.
+# accept production-network parameters.
 on:
   workflow_dispatch:
     inputs:
@@ -88,6 +88,9 @@ jobs:
           echo "VM_TARGET=op@$VM_IP" >> "$GITHUB_ENV"
           echo 'SSH_OPTS=-i /tmp/ci_deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/ci_known_hosts -o ConnectTimeout=15' >> "$GITHUB_ENV"
 
+      - name: Verify Arc Testnet exact-payment interface
+        run: node infrastructure/paywall-staging/verify-arc-testnet.mjs
+
       - name: Diagnose staging stack (read-only)
         if: ${{ inputs.action == 'diagnose' }}
         run: |
@@ -132,8 +135,8 @@ jobs:
           [ "$(sudo -n stat -c '%a' "$STACK_DIR/.env")" = 600 ] || { echo '::error::.env must be mode 0600'; exit 1; }
           [ "$(sudo -n stat -c '%a' "$STACK_DIR/secrets/receipt-private-key.pem")" = 600 ] || { echo '::error::receipt key must be mode 0600'; exit 1; }
           [ "$(sudo -n stat -c '%u' "$STACK_DIR/secrets/receipt-private-key.pem")" = 10001 ] || { echo '::error::receipt key must be owned by container uid 10001'; exit 1; }
-          sudo -n grep -qx 'CHAIN_ID=84532' "$STACK_DIR/.env" || { echo '::error::only Base Sepolia (84532) is permitted'; exit 1; }
-          sudo -n grep -qx 'NETWORK=base-sepolia' "$STACK_DIR/.env" || { echo '::error::network must be base-sepolia'; exit 1; }
+          sudo -n grep -qx 'CHAIN_ID=5042002' "$STACK_DIR/.env" || { echo '::error::only Arc Testnet (5042002) is permitted'; exit 1; }
+          sudo -n grep -qx 'NETWORK=arc-testnet' "$STACK_DIR/.env" || { echo '::error::network must be arc-testnet'; exit 1; }
           sudo -n grep -qx 'EXACT_PAYMENTS_ENABLED=1' "$STACK_DIR/.env" || { echo '::error::exact-only rail must be enabled'; exit 1; }
           sudo -n grep -q '^FACILITATOR_IMAGE=' "$STACK_DIR/.env" && sudo -n sed -i 's|^FACILITATOR_IMAGE=.*|FACILITATOR_IMAGE='"$FACILITATOR_IMAGE"'|' "$STACK_DIR/.env" || echo "FACILITATOR_IMAGE=$FACILITATOR_IMAGE" | sudo -n tee -a "$STACK_DIR/.env" >/dev/null
           sudo -n grep -q '^APPROVAL_UI_IMAGE=' "$STACK_DIR/.env" && sudo -n sed -i 's|^APPROVAL_UI_IMAGE=.*|APPROVAL_UI_IMAGE='"$APPROVAL_UI_IMAGE"'|' "$STACK_DIR/.env" || echo "APPROVAL_UI_IMAGE=$APPROVAL_UI_IMAGE" | sudo -n tee -a "$STACK_DIR/.env" >/dev/null
