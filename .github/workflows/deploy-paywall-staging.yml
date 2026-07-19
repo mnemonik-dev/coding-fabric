@@ -169,6 +169,13 @@ jobs:
           else
             echo 'Caddy container not found'
           fi
+          echo '=== staging delivery identity (public key only) ==='
+          mcp=$(docker_cmd ps --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" --filter "label=com.docker.compose.service=mcp" --format '{{.Names}}' | head -1)
+          if [ -n "$mcp" ]; then
+            docker_cmd exec "$mcp" mnemonic-mcp identity || true
+          else
+            echo 'MCP container not found'
+          fi
           echo '=== container health diagnostics ==='
           while IFS= read -r cid; do
             [ -n "$cid" ] || continue
