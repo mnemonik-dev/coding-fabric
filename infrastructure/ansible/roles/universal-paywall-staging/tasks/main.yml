@@ -33,7 +33,10 @@
     group: '{{ item.group }}'
     mode: '{{ item.mode }}'
   loop:
-    - { path: '{{ universal_paywall_staging_dir }}', owner: root, group: root, mode: '0750' }
+    # The deployment account needs traverse-only access for `docker compose`
+    # to resolve the protected env file. The env and private keys themselves
+    # remain mode 0600 and are never readable by this group.
+    - { path: '{{ universal_paywall_staging_dir }}', owner: root, group: '{{ universal_paywall_staging_operator }}', mode: '0750' }
     - { path: '{{ universal_paywall_staging_dir }}/secrets', owner: root, group: root, mode: '0711' }
   no_log: true
 
