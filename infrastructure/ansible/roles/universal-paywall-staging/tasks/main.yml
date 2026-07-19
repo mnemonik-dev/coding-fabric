@@ -60,7 +60,10 @@
 
 - name: Render Mnemonic staging keypair from SOPS
   ansible.builtin.copy:
-    content: '{{ universal_paywall_staging_mnemonic_keypair_json }}\n'
+    # The encrypted value is complete JSON. Do not append a literal `\\n`:
+    # a JSON parser treats that as trailing non-whitespace and rejects the
+    # protected key file at startup.
+    content: '{{ universal_paywall_staging_mnemonic_keypair_json }}'
     dest: '{{ universal_paywall_staging_dir }}/secrets/mnemonic-id.json'
     owner: '{{ universal_paywall_staging_receipt_key_uid }}'
     group: '{{ universal_paywall_staging_receipt_key_uid }}'
