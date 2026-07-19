@@ -232,6 +232,14 @@ jobs:
           done
           caddy=$(sudo -n docker ps --filter name=vaultwarden-caddy --format '{{.Names}}' | head -1)
           [ -n "$caddy" ] || { echo '::error::Caddy container not found'; exit 1; }
-          sudo -n docker exec "$caddy" caddy reload --config /etc/caddy/Caddyfile
+          reloaded=false
+          for _ in $(seq 1 5); do
+            if sudo -n docker exec "$caddy" caddy reload --config /etc/caddy/Caddyfile; then
+              reloaded=true
+              break
+            fi
+            sleep 2
+          done
+          [ "$reloaded" = true ] || { echo '::error::Caddy did not accept a reload'; exit 1; }
           echo 'paywall staging MCP and facilitator are healthy'
           REMOTE
