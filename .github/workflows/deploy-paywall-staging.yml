@@ -240,8 +240,9 @@ jobs:
             [ "$(sudo -n docker inspect --format '{{.State.Status}}' "$caddy")" = running ] && break
             sleep 1
           done
-          [ "$(sudo -n docker inspect --format '{{.State.Status}}' "$caddy")" = running || {
-            echo '::error::Caddy did not return to running state'; exit 1;
-          }
+          if [ "$(sudo -n docker inspect --format '{{.State.Status}}' "$caddy")" != running ]; then
+            echo '::error::Caddy did not return to running state'
+            exit 1
+          fi
           echo 'paywall staging MCP and facilitator are healthy'
           REMOTE
