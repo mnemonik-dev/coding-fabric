@@ -172,7 +172,9 @@ jobs:
           echo '=== staging delivery identity (public key only) ==='
           mcp=$(docker_cmd ps --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" --filter "label=com.docker.compose.service=mcp" --format '{{.Names}}' | head -1)
           if [ -n "$mcp" ]; then
-            docker_cmd exec "$mcp" mnemonic-mcp identity || true
+            # The running server already resolved the protected explicit
+            # keypair. Its startup log contains only the public key.
+            docker_cmd logs --tail 200 "$mcp" 2>&1 | sed -n 's/^.*Identity: //p' | tail -1 || true
           else
             echo 'MCP container not found'
           fi
