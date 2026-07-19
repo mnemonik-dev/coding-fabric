@@ -56,7 +56,6 @@
       set_fact:
         sops: "{{ lookup('ansible.builtin.pipe', 'sops -d --output-type json ' ~ (playbook_dir ~ '/../../secrets/secrets.sops.yml')) | from_json }}"
       no_log: true
-      tags: [always]
 
     - name: Expose sops keys as flat vault_* facts for role consumption
       # The roles use the vault_* naming convention. Map sops.<key> → vault_<key>
@@ -65,7 +64,6 @@
       # field is intentionally blank (e.g. anthropic_api_key fallback).
       delegate_to: localhost
       become: false
-      tags: [always]
       set_fact:
         vault_tailscale_auth_key:           "{{ sops.tailscale_auth_key }}"
         vault_vaultwarden_admin_password:   "{{ sops.vaultwarden_initial_admin_password }}"

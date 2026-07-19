@@ -1,0 +1,32 @@
+---
+# Deliberately isolated from deploy.yml: rendering the paywall contract must
+# not invoke base hardening, OpenTofu, Telegram, or any production role.
+- name: Bootstrap Universal Paywall staging contract
+  hosts: all
+  become: true
+  gather_facts: false
+
+  pre_tasks:
+    - name: Load SOPS secrets as JSON on the controller
+      delegate_to: localhost
+      become: false
+      ansible.builtin.set_fact:
+        sops: "{{ lookup('ansible.builtin.pipe', 'sops -d --output-type json ' ~ (playbook_dir ~ '/../../secrets/secrets.sops.yml')) | from_json }}"
+      no_log: true
+
+  roles:
+    - role: universal-paywall-staging
+      vars:
+        universal_paywall_staging_enabled: "{{ sops.universal_paywall_staging_enabled | default(false) | bool }}"
+        universal_paywall_staging_facilitator_key: "{{ sops.universal_paywall_staging_facilitator_key | default('') }}"
+        universal_paywall_staging_service_api_key: "{{ sops.universal_paywall_staging_service_api_key | default('') }}"
+        universal_paywall_staging_receipt_private_key_pem: "{{ sops.universal_paywall_staging_receipt_private_key_pem | default('') }}"
+        universal_paywall_staging_mcp_jwt_secret: "{{ sops.universal_paywall_staging_mcp_jwt_secret | default('') }}"
+        universal_paywall_staging_mcp_refresh_salt: "{{ sops.universal_paywall_staging_mcp_refresh_salt | default('') }}"
+        universal_paywall_staging_mnemonic_keypair_json: "{{ sops.universal_paywall_staging_mnemonic_keypair_json | default('') }}"
+        universal_paywall_staging_domain: "{{ sops.universal_paywall_staging_domain | default('') }}"
+        universal_paywall_staging_arc_rpc_url: "{{ sops.universal_paywall_staging_arc_rpc_url | default('') }}"
+        universal_paywall_staging_pay_to: "{{ sops.universal_paywall_staging_pay_to | default('') }}"
+        universal_paywall_staging_facilitator_url: "{{ sops.universal_paywall_staging_facilitator_url | default('http://facilitator:8403') }}"
+        universal_paywall_staging_solana_rpc_url: "{{ sops.universal_paywall_staging_solana_rpc_url | default('') }}"
+        universal_paywall_staging_irys_url: "{{ sops.universal_paywall_staging_irys_url | default('') }}"

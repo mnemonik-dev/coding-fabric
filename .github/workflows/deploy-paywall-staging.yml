@@ -140,7 +140,7 @@ jobs:
           ANSIBLE_ROLES_PATH="$GITHUB_WORKSPACE/infrastructure/ansible/roles" \
           SOPS_AGE_KEY_FILE="$HOME/.config/sops/age/keys.txt" \
           ansible-playbook -i infrastructure/ansible/inventory/paywall-staging.yml \
-            infrastructure/ansible/playbooks/deploy.yml --tags universal-paywall-staging
+            infrastructure/ansible/playbooks/bootstrap-paywall-staging.yml
           read -r -a ssh_opts <<< "$SSH_OPTS"
           ssh "${ssh_opts[@]}" "$VM_TARGET" "sudo -n test -f '$STACK_DIR/.env' && sudo -n test -f '$STACK_DIR/secrets/receipt-private-key.pem' && sudo -n test -f '$STACK_DIR/secrets/mnemonic-id.json'"
 
