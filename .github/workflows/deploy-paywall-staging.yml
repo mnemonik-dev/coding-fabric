@@ -165,7 +165,12 @@ jobs:
           while IFS= read -r cid; do
             [ -n "$cid" ] || continue
             docker_cmd inspect --format '{{.Name}} state={{.State.Status}} exit={{.State.ExitCode}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$cid" || true
-            docker_cmd inspect --format '{{range .State.Health.Log}}{{printf "%s exit=%d %s\\n" .End .ExitCode .Output}}{{end}}' "$cid" || true
+            docker_cmd inspect --format '{{if .State.Health}}{{range .State.Health.Log}}{{printf "%s exit=%d %s\\n" .End .ExitCode .Output}}{{end}}{{end}}' "$cid" || true
+            state=$(docker_cmd inspect --format '{{.State.Status}}' "$cid" 2>/dev/null || true)
+            if [ "$state" != running ]; then
+              echo "--- $(docker_cmd inspect --format '{{.Name}}' "$cid") recent logs ---"
+              docker_cmd logs --tail 80 "$cid" || true
+            fi
           done < <(docker_cmd ps -aq --filter "label=com.docker.compose.project=$COMPOSE_PROJECT")
           REMOTE
 
