@@ -183,8 +183,8 @@ jobs:
           sudo -n install -m 0644 -o root -g root /tmp/paywall-staging.caddy.template /tmp/paywall-staging.caddy
           rm -f /tmp/paywall-staging-compose.yml
           rm -f /tmp/paywall-staging.caddy.template
-          [ -f "$STACK_DIR/.env" ] || { echo '::error::missing SOPS-rendered staging .env'; exit 1; }
-          [ -f "$STACK_DIR/secrets/receipt-private-key.pem" ] || { echo '::error::missing receipt signing key'; exit 1; }
+          sudo -n test -f "$STACK_DIR/.env" || { echo '::error::missing SOPS-rendered staging .env'; exit 1; }
+          sudo -n test -f "$STACK_DIR/secrets/receipt-private-key.pem" || { echo '::error::missing receipt signing key'; exit 1; }
           [ "$(sudo -n stat -c '%a' "$STACK_DIR/.env")" = 600 ] || { echo '::error::.env must be mode 0600'; exit 1; }
           [ "$(sudo -n stat -c '%a' "$STACK_DIR/secrets/receipt-private-key.pem")" = 600 ] || { echo '::error::receipt key must be mode 0600'; exit 1; }
           [ "$(sudo -n stat -c '%u' "$STACK_DIR/secrets/receipt-private-key.pem")" = 10001 ] || { echo '::error::receipt key must be owned by container uid 10001'; exit 1; }
