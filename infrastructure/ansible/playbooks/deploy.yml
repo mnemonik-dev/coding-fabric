@@ -47,16 +47,14 @@
           Ansible version: {{ ansible_version.full }}
           Playbook: deploy.yml
 
-    - name: Load sops-encrypted secrets (controller-side, namespaced as `sops`)
-      # Decrypts on the runner via community.sops + SOPS_AGE_KEY_FILE env. All
-      # entries become accessible as sops.<key>. Run 26182238252 failed at
-      # tailscale role assert because secrets were never loaded — the playbook
-      # referenced vault_* vars that were undefined → empty → assertion failed.
+    - name: Load SOPS secrets as JSON (controller-side, namespaced as `sops`)
+      # JSON preserves `0x...` EVM values as strings. YAML's implicit scalar
+      # rules can otherwise reinterpret those values as integers after SOPS
+      # decryption, corrupting keys/addresses before role validation.
       delegate_to: localhost
       become: false
-      community.sops.load_vars:
-        file: "{{ playbook_dir }}/../../secrets/secrets.sops.yml"
-        name: sops
+      set_fact:
+        sops: "{{ lookup('ansible.builtin.pipe', 'sops -d --output-type json ' ~ (playbook_dir ~ '/../../secrets/secrets.sops.yml')) | from_json }}"
       no_log: true
       tags: [always]
 
