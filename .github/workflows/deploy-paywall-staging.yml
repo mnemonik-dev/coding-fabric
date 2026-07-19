@@ -161,6 +161,14 @@ jobs:
           docker_cmd compose -p "$COMPOSE_PROJECT" ps 2>/dev/null || true
           echo '=== staging image ==='
           docker_cmd ps --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" --format '{{.Names}} {{.Image}} {{.Status}}' || true
+          echo '=== Caddy status and recent logs ==='
+          caddy=$(docker_cmd ps --filter name=vaultwarden-caddy --format '{{.Names}}' | head -1)
+          if [ -n "$caddy" ]; then
+            docker_cmd inspect --format '{{.Name}} state={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$caddy" || true
+            docker_cmd logs --tail 80 "$caddy" || true
+          else
+            echo 'Caddy container not found'
+          fi
           echo '=== container health diagnostics ==='
           while IFS= read -r cid; do
             [ -n "$cid" ] || continue
