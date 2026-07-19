@@ -199,7 +199,7 @@ jobs:
           [[ "$domain" =~ ^[A-Za-z0-9.-]+$ ]] || { echo '::error::MCP_PUBLIC_BASE_URL must be an HTTPS hostname without a path'; exit 1; }
           sudo -n sed "s|__STAGING_DOMAIN__|$domain|g" /tmp/paywall-staging.caddy > /tmp/paywall-staging.rendered.caddy
           sudo -n install -m 0644 -o root -g root /tmp/paywall-staging.rendered.caddy /opt/vaultwarden/caddy_conf_d/paywall-staging.conf
-          rm -f /tmp/paywall-staging.caddy /tmp/paywall-staging.rendered.caddy
+          sudo -n rm -f /tmp/paywall-staging.caddy /tmp/paywall-staging.rendered.caddy
           cd "$STACK_DIR"
           sudo -n docker compose --env-file .env -p "$COMPOSE_PROJECT" pull
           sudo -n docker compose --env-file .env -p "$COMPOSE_PROJECT" up -d
