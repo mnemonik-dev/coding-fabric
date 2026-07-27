@@ -41,6 +41,39 @@ telegram_ai_agent_default_cwd: "/home/op/work"
 # them as a static baseline.
 telegram_ai_agent_topics: {}
 
+# Model pinning for bot-spawned engine sessions. Rendered into
+# /etc/telegram-ai-agent/config.yml per topic; a topic can override with
+# its own `model` key in telegram_ai_agent_topics. Aliases ("sonnet",
+# "opus") are accepted by the claude CLI and track the latest release —
+# prefer them over dated IDs so a quota-driven switch (e.g. opus quota
+# burned → drop to sonnet) is a one-var redeploy, not a template edit.
+telegram_ai_agent_claude_model: "claude-opus-4-1"
+telegram_ai_agent_codex_model: "codex-latest"
+
+# Skill dirs from the pre-2026-07 bundle that shipped underscore duplicates
+# of every dash-named skill (identical frontmatter `name:` → duplicate-skill
+# conflicts in Claude Code). Purged from every target HOME on deploy because
+# the skills sync is additive. Remove this list (and its purge task) once
+# all long-lived VMs have redeployed past 2026-07.
+telegram_ai_agent_legacy_underscore_skills:
+  - code_reviewing
+  - code_writing
+  - deploy_pipeline
+  - documentation_writing
+  - feature_execution
+  - infrastructure_setup
+  - post_deploy_qa
+  - pre_deploy_qa
+  - project_planning
+  - prompt_master
+  - security_auditor
+  - skill_master
+  - skill_tester
+  - task_decomposition
+  - tech_spec_planning
+  - test_master
+  - user_spec_planning
+
 # Systemd service parameters
 telegram_ai_agent_restart_policy: "on-failure"
 telegram_ai_agent_restart_sec: 5

@@ -523,6 +523,25 @@
         - /var/lib/telegram-ai-agent/.claude
         - /home/op/.claude
 
+    - name: Purge underscore-duplicate skill dirs (stale from pre-2026-07 bundle)
+      # The bundle used to ship every skill twice — dash dir (code-reviewing)
+      # AND underscore dir (code_reviewing) — with IDENTICAL frontmatter
+      # `name:`. Claude Code resolves skills by that name, so every session
+      # saw 17 duplicate-name conflicts and skill/command resolution became
+      # unreliable ("agent does not recognize the command at once", operator
+      # report 2026-07-27). Dash dirs are canonical (skills are invoked by
+      # the agent via the Skill tool, never typed as Telegram commands, so
+      # no underscore alias is needed at the skill layer). The sync above is
+      # additive (delete: no), so previously deployed underscore dirs must
+      # be removed explicitly.
+      ansible.builtin.file:
+        path: "{{ item.0 }}/skills/{{ item.1 }}"
+        state: absent
+      loop: "{{ ['/var/lib/telegram-ai-agent/.claude', '/home/op/.claude']
+                | product(telegram_ai_agent_legacy_underscore_skills) | list }}"
+      loop_control:
+        label: "{{ item.0 }}/skills/{{ item.1 }}"
+
     - name: Sync commands/ into each target HOME
       ansible.posix.synchronize:
         src: "{{ role_path }}/../../files/claude-skills/commands/"
@@ -569,6 +588,22 @@
         owner: "{{ telegram_ai_agent_owner }}"
         group: "{{ telegram_ai_agent_group }}"
         mode: "0755"
+
+- name: Install bot-claude-reset operator helper
+  # Quota-day / relogin runbook in one command: stop bot, kill stray claude
+  # engine processes, optionally wipe session-resume state and rotate the
+  # CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY in .env, restart. The bot's
+  # claude subprocesses authenticate from .env vars (service HOME is
+  # isolated from `claude /login` credentials), so credential rotation +
+  # service restart IS the relogin. See role README "Claude auth reset".
+  tags: [telegram-ai-agent, claude-reset]
+  become: true
+  ansible.builtin.copy:
+    src: bot-claude-reset.sh
+    dest: /usr/local/bin/bot-claude-reset
+    owner: root
+    group: root
+    mode: "0755"
 
 - name: Install and enable systemd unit
   tags: [telegram-ai-agent, systemd]

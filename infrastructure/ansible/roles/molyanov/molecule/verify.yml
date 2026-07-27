@@ -3,17 +3,29 @@
   hosts: all
   become: true
   tasks:
-    - name: Check molyanov skills bundle installed
+    - name: Check molyanov bundle clone installed
       ansible.builtin.stat:
-        path: "{{ molyanov_operator_home }}/.claude/skills/molyanov-ai-dev"
+        path: "{{ molyanov_install_dir | default('/opt/molyanov-ai-dev') }}/skills"
       register: molyanov_skills_stat
 
-    - name: Assert molyanov skills directory exists
+    - name: Assert molyanov bundle skills tree exists in install dir
       ansible.builtin.assert:
         that:
           - molyanov_skills_stat.stat.exists
           - molyanov_skills_stat.stat.isdir
-        fail_msg: "molyanov-ai-dev skills bundle not installed"
+        fail_msg: "molyanov-ai-dev bundle not cloned to install dir"
+
+    - name: Check legacy nested skills symlink is gone
+      ansible.builtin.stat:
+        path: "{{ molyanov_operator_home }}/.claude/skills/molyanov-ai-dev"
+        follow: false
+      register: molyanov_legacy_link_stat
+
+    - name: Assert legacy nested skills symlink removed
+      ansible.builtin.assert:
+        that:
+          - not molyanov_legacy_link_stat.stat.exists
+        fail_msg: "legacy ~/.claude/skills/molyanov-ai-dev symlink still present (duplicate-skill source)"
 
     - name: Check pk-guard hook installed
       ansible.builtin.stat:

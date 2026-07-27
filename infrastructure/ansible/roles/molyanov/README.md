@@ -4,7 +4,7 @@ Install molyanov-ai-dev slash commands and Project Knowledge guard hook for codi
 
 ## Responsibilities
 
-1. **molyanov-ai-dev skills bundle**: Clone `pavel-molyanov/molyanov-ai-dev` (MIT) at pinned tag (v0.3.0) to `/opt/molyanov-ai-dev`, then symlink `skills/` to `~/.claude/skills/molyanov-ai-dev` so Claude Code discovers the bundle.
+1. **molyanov-ai-dev skills bundle**: Clone `pavel-molyanov/molyanov-ai-dev` (MIT) at pinned tag (v0.3.0) to `/opt/molyanov-ai-dev` for operator reference and upstream diffing. The clone is NOT symlinked into `~/.claude/skills/` anymore: the nested `~/.claude/skills/molyanov-ai-dev/<skill>/` layout was either undiscovered by Claude Code (skills resolve at `~/.claude/skills/<skill>/SKILL.md`) or duplicated the curated flat bundle that the `telegram-ai-agent` role syncs (`infrastructure/ansible/files/claude-skills/`), producing duplicate-skill-name conflicts. The curated flat bundle is the single source of truth for deployed skills/commands; the role removes the legacy symlink on deploy.
 2. **Global configuration**: Render `~/.fabric/molyanov/global.yml` with defaults and references
 3. **PK guard pre-write hook**: Install `~/.fabric/molyanov/hooks/pk-guard.sh` (mode 0755)
 4. **Ops-notify wrapper**: Install `~/.fabric/molyanov/hooks/ops-notify.sh` (mode 0755)
