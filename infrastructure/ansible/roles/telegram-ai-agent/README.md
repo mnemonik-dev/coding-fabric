@@ -326,6 +326,46 @@ ansible-playbook playbooks/deploy.yml -i inventory/hosts.yml --tags telegram-ai-
 
 ## Troubleshooting
 
+### Claude auth reset / quota exhausted ("relogin")
+
+The bot's claude subprocesses authenticate from `/etc/telegram-ai-agent/.env`
+(`CLAUDE_CODE_OAUTH_TOKEN` primary, `ANTHROPIC_API_KEY` fallback) — **not**
+from `claude /login` browser credentials (the service HOME is isolated).
+There is no in-chat relogin; credential rotation + service restart is the
+relogin. The role installs a one-command runbook:
+
+```bash
+# Plain reset: kill stray engine processes, restart with same credentials
+sudo bot-claude-reset
+
+# Also drop session-resume state (next message starts a fresh Claude session)
+sudo bot-claude-reset --wipe-sessions
+
+# Subscription quota burned / token expired: rotate the OAuth token
+# (generate on laptop: `claude setup-token`)
+sudo bot-claude-reset --oauth-token sk-ant-oat01-...
+
+# Or switch to pay-per-token while the subscription quota recovers
+sudo bot-claude-reset --api-key sk-ant-api03-...
+```
+
+Tokens rotated live are overwritten by the next Ansible deploy — persist
+them in `infrastructure/secrets/secrets.sops.yml`
+(`claude_code_oauth_token` / `anthropic_api_key`).
+
+To reduce quota burn without redeploying the template, override the model
+globally (`telegram_ai_agent_claude_model: "sonnet"` — CLI aliases track the
+latest release) or per topic (`model:` key in `telegram_ai_agent_topics`).
+
+### Slash commands from Telegram (naming convention)
+
+Telegram bot commands only allow `[a-z0-9_]` — dash commands cannot be typed
+in a Telegram chat. The deployed bundle therefore ships every multi-word
+command twice: `/do-task` (canonical, CLI) and `/do_task` (Telegram alias).
+Skills ship dash-only names; underscore skill duplicates were removed
+2026-07 because identical frontmatter `name:` values made skill resolution
+unreliable. See `infrastructure/ansible/files/claude-skills/README.md`.
+
 ### Service fails to start
 ```bash
 journalctl -u telegram-ai-agent -n 50 -e

@@ -46,17 +46,21 @@
   become_user: "{{ molyanov_operator_user }}"
   register: molyanov_skills_clone
 
-- name: Symlink molyanov skills tree into operator's Claude Code skills dir
-  # Upstream layout (v0.3.0+): top-level skills/ directory contains the bundle.
-  # Symlinking (rather than copying) preserves a single source of truth and
-  # lets `git pull` reflect immediately under ~/.claude/skills/.
+- name: Remove legacy nested skills symlink (~/.claude/skills/molyanov-ai-dev)
+  # Until 2026-07 the role symlinked the whole upstream bundle as ONE nested
+  # dir: ~/.claude/skills/molyanov-ai-dev/<skill>/SKILL.md. Claude Code
+  # resolves personal skills at ~/.claude/skills/<skill>/SKILL.md, so the
+  # nested layout was either invisible (skills never discovered under the
+  # names the operator expected — "alias is different") or, where nested
+  # discovery kicked in, a full duplicate of the curated flat bundle that
+  # the telegram-ai-agent role syncs into the same tree — duplicate skill
+  # names either way. The flat curated bundle
+  # (infrastructure/ansible/files/claude-skills/) is the single source of
+  # truth now; the clone at {{ molyanov_install_dir }} remains for operator
+  # reference and upstream diffing only.
   ansible.builtin.file:
-    src: "{{ molyanov_install_dir }}/skills"
-    dest: "{{ molyanov_operator_home }}/.claude/skills/molyanov-ai-dev"
-    state: link
-    force: true
-    owner: "{{ molyanov_operator_user }}"
-    group: "{{ molyanov_operator_user }}"
+    path: "{{ molyanov_operator_home }}/.claude/skills/molyanov-ai-dev"
+    state: absent
   become: true
   become_user: "{{ molyanov_operator_user }}"
 
@@ -87,19 +91,17 @@
     mode: '0755'
   notify: Molyanov hook installed
 
-- name: Verify molyanov skills symlink exists and points into install dir
+- name: Verify molyanov bundle clone exists
   ansible.builtin.stat:
-    path: "{{ molyanov_operator_home }}/.claude/skills/molyanov-ai-dev"
-    follow: false
+    path: "{{ molyanov_install_dir }}/skills"
   register: molyanov_skills_stat
 
-- name: Assert molyanov skills installed (symlink → install dir)
+- name: Assert molyanov bundle cloned (skills tree present in install dir)
   ansible.builtin.assert:
     that:
       - molyanov_skills_stat.stat.exists
-      - molyanov_skills_stat.stat.islnk
-      - molyanov_skills_stat.stat.lnk_source == molyanov_install_dir + "/skills"
-    fail_msg: "molyanov-ai-dev skills bundle installation failed (expected symlink → {{ molyanov_install_dir }}/skills)"
+      - molyanov_skills_stat.stat.isdir
+    fail_msg: "molyanov-ai-dev bundle clone failed (expected {{ molyanov_install_dir }}/skills)"
 
 - name: Verify pk-guard hook installed
   ansible.builtin.stat:
