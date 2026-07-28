@@ -183,6 +183,14 @@
       changed_when: false
       when: repo_stat.stat.exists
 
+    - name: Capture pre-checkout HEAD (restart detection)
+      ansible.builtin.command:
+        cmd: git rev-parse HEAD
+        chdir: "{{ telegram_ai_agent_home }}"
+      register: pre_checkout_sha
+      changed_when: false
+      when: repo_stat.stat.exists
+
     - name: Checkout pinned commit
       ansible.builtin.command:
         cmd: git checkout "{{ telegram_ai_agent_pin }}"
@@ -213,6 +221,22 @@
       ansible.builtin.debug:
         msg: "Current commit: {{ current_sha.stdout | trim }}"
       when: repo_stat.stat.exists
+
+    - name: Flag service restart when pinned commit changed
+      # A pin bump updates the tree on disk, but the running python
+      # process keeps executing the OLD code — nothing else in this role
+      # notifies a restart when only the source changes (live incident
+      # 2026-07-28: deploy went green with pin 2e3af15 while the service
+      # still ran 873751b, so none of the new bot commands existed).
+      # The `git checkout <sha>` task's changed_when can't be trusted for
+      # this: checkout prints to stderr and reports nothing on stdout, so
+      # it registers as unchanged. Compare rev-parse before/after instead.
+      ansible.builtin.command: /bin/true
+      changed_when: true
+      notify: Reload telegram-ai-agent
+      when: >-
+        repo_stat.stat.exists
+        and (pre_checkout_sha.stdout | trim) != (current_sha.stdout | trim)
 
     # The git module runs under `become: true` so the clone lands as
     # root:root, which prevents the bot (uid op) from writing session
@@ -318,6 +342,8 @@
       changed_when: "'Synced' in uv_sync.stdout or 'updated' in uv_sync.stdout | lower"
       retries: 3
       delay: 5
+      # New/changed dependencies are only picked up by a fresh process.
+      notify: Reload telegram-ai-agent
 
     - name: Verify uv virtual environment
       ansible.builtin.stat:
