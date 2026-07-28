@@ -3,11 +3,16 @@
 # Source of truth: mnemonik-dev/telegram-ai-agent. Pavel-molyanov upstream is a
 # read-only sync source for periodic bug-fix rebase.
 telegram_ai_agent_repo: "https://github.com/mnemonik-dev/telegram-ai-agent.git"
-# Pinned commit on main: f29d20f adds GitHub MCP injection on top of
-# Kaneo MCP (819e5c6) — bot's claude session can call mcp__github__*
-# for repo/PR/issue ops AND mcp__kaneo__* for ticketing in one turn.
-# Predecessor 1ceaccb / v0.1.0+mnemonik.1 had cwd:DYNAMIC HTTP resolver.
-telegram_ai_agent_pin: "873751b"
+# Pinned commit: 2e3af15 (feat/tg-slash-command-gateway, ff-merges into
+# main) — General-chat /engine /mode /stream /model support (reserved
+# topic_config key 0), CommandRegistry with underscore↔dash alias
+# bridging + /sync_commands, /status + /relogin (quota-day recovery
+# without SSH), auth/quota errors surfaced to chat instead of silent
+# "Thinking...", /resume DI crash fix.
+# Predecessor 873751b re-enabled Molyanov-in-Telegram underscore names;
+# f29d20f added GitHub MCP injection; 1ceaccb / v0.1.0+mnemonik.1 had
+# the cwd:DYNAMIC HTTP resolver.
+telegram_ai_agent_pin: "2e3af15"
 
 # Installation paths
 telegram_ai_agent_home: "/opt/telegram-ai-agent"
