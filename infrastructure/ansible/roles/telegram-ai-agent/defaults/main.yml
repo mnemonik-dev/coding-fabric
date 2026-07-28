@@ -12,7 +12,10 @@ telegram_ai_agent_repo: "https://github.com/mnemonik-dev/telegram-ai-agent.git"
 # Predecessor 873751b re-enabled Molyanov-in-Telegram underscore names;
 # f29d20f added GitHub MCP injection; 1ceaccb / v0.1.0+mnemonik.1 had
 # the cwd:DYNAMIC HTTP resolver.
-telegram_ai_agent_pin: "2e3af15"
+# a6e0fce adds the /model command on top of 2e3af15 — per-chat model
+# override incl. General chat, to escape the VM's 1M-context engine
+# default ("Usage credits required for 1M context", incident 2026-07-28).
+telegram_ai_agent_pin: "a6e0fce"
 
 # Installation paths
 telegram_ai_agent_home: "/opt/telegram-ai-agent"
