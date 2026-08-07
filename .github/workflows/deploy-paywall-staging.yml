@@ -227,6 +227,8 @@ jobs:
           sudo -n grep -qx 'NETWORK=arc-testnet' "$STACK_DIR/.env" || { echo '::error::network must be arc-testnet'; exit 1; }
           sudo -n grep -qx 'ANCHORING_NETWORK=devnet' "$STACK_DIR/.env" || { echo '::error::MCP anchoring must be Irys/Solana Devnet'; exit 1; }
           sudo -n grep -qx 'EXACT_PAYMENTS_ENABLED=1' "$STACK_DIR/.env" || { echo '::error::exact-only rail must be enabled'; exit 1; }
+          sudo -n grep -qx 'STORAGE_MODE=full' "$STACK_DIR/.env" || { echo '::error::paid anchoring requires STORAGE_MODE=full (re-run bootstrap)'; exit 1; }
+          sudo -n grep -qx 'PAYMENT_MODE=x402' "$STACK_DIR/.env" || { echo '::error::paid anchoring requires PAYMENT_MODE=x402 (re-run bootstrap)'; exit 1; }
           sudo -n grep -q '^FACILITATOR_IMAGE=' "$STACK_DIR/.env" && sudo -n sed -i 's|^FACILITATOR_IMAGE=.*|FACILITATOR_IMAGE='"$FACILITATOR_IMAGE"'|' "$STACK_DIR/.env" || echo "FACILITATOR_IMAGE=$FACILITATOR_IMAGE" | sudo -n tee -a "$STACK_DIR/.env" >/dev/null
           sudo -n grep -q '^APPROVAL_UI_IMAGE=' "$STACK_DIR/.env" && sudo -n sed -i 's|^APPROVAL_UI_IMAGE=.*|APPROVAL_UI_IMAGE='"$APPROVAL_UI_IMAGE"'|' "$STACK_DIR/.env" || echo "APPROVAL_UI_IMAGE=$APPROVAL_UI_IMAGE" | sudo -n tee -a "$STACK_DIR/.env" >/dev/null
           sudo -n grep -q '^MCP_IMAGE=' "$STACK_DIR/.env" && sudo -n sed -i 's|^MCP_IMAGE=.*|MCP_IMAGE='"$MCP_IMAGE"'|' "$STACK_DIR/.env" || echo "MCP_IMAGE=$MCP_IMAGE" | sudo -n tee -a "$STACK_DIR/.env" >/dev/null
