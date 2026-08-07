@@ -239,7 +239,7 @@ jobs:
           [ "$(sudo -n stat -c '%a' "$STACK_DIR/secrets/receipt-private-key.pem")" = 600 ] || { echo '::error::receipt key must be mode 0600'; exit 1; }
           [ "$(sudo -n stat -c '%u' "$STACK_DIR/secrets/receipt-private-key.pem")" = 10001 ] || { echo '::error::receipt key must be owned by container uid 10001'; exit 1; }
           sudo -n grep -qx 'CHAIN_ID=5042002' "$STACK_DIR/.env" || { echo '::error::only Arc Testnet (5042002) is permitted'; exit 1; }
-          sudo -n grep -qx 'NETWORK=arc-testnet' "$STACK_DIR/.env" || { echo '::error::network must be arc-testnet'; exit 1; }
+          sudo -n grep -qx 'NETWORK=eip155:5042002' "$STACK_DIR/.env" || { echo '::error::network must be Arc Testnet in CAIP-2 form (eip155:5042002)'; exit 1; }
           sudo -n grep -qx 'ANCHORING_NETWORK=devnet' "$STACK_DIR/.env" || { echo '::error::MCP anchoring must be Irys/Solana Devnet'; exit 1; }
           sudo -n grep -qx 'EXACT_PAYMENTS_ENABLED=1' "$STACK_DIR/.env" || { echo '::error::exact-only rail must be enabled'; exit 1; }
           sudo -n grep -qx 'STORAGE_MODE=full' "$STACK_DIR/.env" || { echo '::error::paid anchoring requires STORAGE_MODE=full (re-run bootstrap)'; exit 1; }
