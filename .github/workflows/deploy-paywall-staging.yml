@@ -157,6 +157,21 @@ jobs:
           sudo -n find "$STACK_DIR" -maxdepth 2 -printf '%M %u:%g %p\n' 2>/dev/null || true
           echo '=== configured non-secret keys ==='
           sudo -n awk -F= '/^[A-Za-z_][A-Za-z0-9_]*=/{print $1}' "$STACK_DIR/.env" 2>/dev/null || true
+          echo '=== non-secret value checks ==='
+          # PAY_TO is public (it appears in every quote); modes are template
+          # constants. Everything else prints only a format verdict.
+          for k in SERVICE_PAY_TO UNIVERSAL_PAYWALL_PAY_TO STORAGE_MODE PAYMENT_MODE; do
+            v=$(sudo -n sed -n "s|^$k=||p" "$STACK_DIR/.env" 2>/dev/null | head -1)
+            echo "$k=$v"
+          done
+          for k in USDC_ADDRESS UNIVERSAL_PAYWALL_ASSET; do
+            v=$(sudo -n sed -n "s|^$k=||p" "$STACK_DIR/.env" 2>/dev/null | head -1)
+            if [[ "$v" =~ ^0x[0-9a-fA-F]{40}$ ]]; then echo "$k: valid-evm-address"; else echo "$k: INVALID-FORMAT"; fi
+          done
+          for k in ARC_RPC_URL SOLANA_RPC_URL IRYS_GATEWAY_URL UNIVERSAL_PAYWALL_URL; do
+            v=$(sudo -n sed -n "s|^$k=||p" "$STACK_DIR/.env" 2>/dev/null | head -1)
+            if [[ "$v" =~ ^https?:// ]]; then echo "$k: url-format-ok"; else echo "$k: INVALID-FORMAT"; fi
+          done
           echo '=== compose state ==='
           docker_cmd compose -p "$COMPOSE_PROJECT" ps 2>/dev/null || true
           echo '=== staging image ==='
