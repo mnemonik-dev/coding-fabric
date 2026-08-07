@@ -6,5 +6,8 @@ universal_paywall_staging_operator: op
 universal_paywall_staging_chain_id: 5042002
 universal_paywall_staging_network: arc-testnet
 universal_paywall_staging_domain: mcp-staging.mnemonic-fabric.ts
-universal_paywall_staging_usdc_address: 0x3600000000000000000000000000000000000000
+# Quoted deliberately: unquoted YAML parses 0x… as a hex integer and Jinja
+# then renders it as a decimal number, producing an invalid EVM address in
+# the .env (facilitator rejects quotes with invalid_binding_address).
+universal_paywall_staging_usdc_address: '0x3600000000000000000000000000000000000000'
 universal_paywall_staging_receipt_key_uid: '10001'
