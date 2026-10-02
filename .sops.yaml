@@ -10,7 +10,7 @@
 # works in production.
 
 creation_rules:
-  - path_regex: infrastructure/secrets/secrets\.sops\.yml
+  - path_regex: infrastructure/secrets/(secrets|o2)\.sops\.yml
     key_groups:
       - age:
           - age1wwf8jfxffrqzdd9ntxsry4c3n2rddta036fj5nlu0qhacxmeu52sj3u3yg

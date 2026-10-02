@@ -1,0 +1,16 @@
+#!/bin/sh
+# Installed root-owned. No caller-supplied paths, images or Docker arguments.
+set -eu
+if [ "$#" -ne 1 ]; then exit 64; fi
+case "$1" in
+  install) set -- pull ;;
+  start) set -- up -d --wait --wait-timeout 300 ;;
+  stop) set -- stop ;;
+  restart) set -- restart ;;
+  status) set -- ps ;;
+  *) exit 64 ;;
+esac
+exec /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root \
+  /usr/bin/docker --config /root/.docker compose \
+  --project-directory /opt/mnemonik-o2 -p mnemonik-o2 \
+  -f /opt/mnemonik-o2/compose.json "$@"
