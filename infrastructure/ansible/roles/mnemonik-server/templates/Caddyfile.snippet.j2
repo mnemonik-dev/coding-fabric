@@ -22,7 +22,10 @@
   # Use an expression matcher so multiple origins can be ORed; Caddy's
   # `header` matcher only accepts a single value.
   @cors_origin expression `{% for origin in _cors_origins %}{% if not loop.first %} || {% endif %}{http.request.header.Origin} == "{{ origin }}"{% endfor %}`
-  @cors_preflight method OPTIONS
+  @cors_preflight {
+    method OPTIONS
+    expression `{% for origin in _cors_origins %}{% if not loop.first %} || {% endif %}{http.request.header.Origin} == "{{ origin }}"{% endfor %}`
+  }
 
   handle @cors_preflight {
     header Access-Control-Allow-Origin "{http.request.header.Origin}"

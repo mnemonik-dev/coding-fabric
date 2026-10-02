@@ -50,6 +50,19 @@ mnemonik_mcp_turbo_bits: 4
 mnemonik_mcp_payment_mode: "none"
 mnemonik_mcp_rust_log: "info"
 
+# Universal Paywall paid anchoring. These values are inert while
+# mnemonik_mcp_payment_mode != "universal". Enabling universal mode is
+# fail-closed: tasks/main.yml asserts the API key and complete settlement
+# binding before the container is recreated.
+mnemonik_universal_paywall_url: ""
+mnemonik_universal_paywall_payment_url: "https://mnemonik-dev.github.io/universal-paywall-site/"
+mnemonik_universal_paywall_network: ""
+mnemonik_universal_paywall_asset: ""
+mnemonik_universal_paywall_pay_to: ""
+mnemonik_universal_paywall_session_cap_micro_usdc: "5000000"
+mnemonik_universal_paywall_session_max_per_anchor_micro_usdc: "50000"
+mnemonik_universal_paywall_session_valid_for_secs: 604800
+
 # fastembed cache dir inside the container (bind-mounted from persistent
 # volume via docker-compose.yml). Set explicitly so model downloads survive
 # VM rebuilds and land in a writable, pre-created directory.
@@ -68,8 +81,9 @@ mnemonik_chain_stats_gateway_url: "https://gateway.irys.xyz"
 mnemonik_mcp_public_base_url: "https://mcp.mnemonik.xyz"
 
 # CORS origins for the webapp frontend. Set to the exact origin(s) the browser
-# sends (e.g. "https://mnemonik.xyz" or ["https://www.mnemonik.xyz",
-# "https://mnemonik-webapp.pages.dev"]). Empty string or empty list disables
+# sends (e.g. ["https://mnemonik.xyz",
+# "https://mnemonik-dev.github.io"]). When universal payments are enabled,
+# include the exact hosted-paywall origin. Empty string or empty list disables
 # CORS headers at the Caddy layer. Do NOT use "*" with credentials.
 mnemonik_mcp_cors_origin: ""
 

@@ -27,6 +27,23 @@
           Rotating MCP_REFRESH_SALT invalidates every live refresh token.
       no_log: true
 
+    - name: Assert Universal Paywall configuration is complete when enabled
+      ansible.builtin.assert:
+        that:
+          - mnemonik_universal_paywall_api_key is defined
+          - mnemonik_universal_paywall_api_key | string | length > 0
+          - mnemonik_universal_paywall_url | string | length > 0
+          - mnemonik_universal_paywall_payment_url | string | length > 0
+          - mnemonik_universal_paywall_network | string | length > 0
+          - mnemonik_universal_paywall_asset | string | length > 0
+          - mnemonik_universal_paywall_pay_to | string | length > 0
+        fail_msg: >-
+          PAYMENT_MODE=universal requires the Universal Paywall API key, API
+          URL, hosted payment URL, network, asset, and fixed payee. Keep
+          PAYMENT_MODE=none until the external contract passes staging.
+      when: mnemonik_mcp_payment_mode == 'universal'
+      no_log: true
+
     # --- Swap: ollama + fastembed headroom ---------------------------------
     - name: Configure swap file
       when: mnemonik_server_swap_enabled | default(true) | bool

@@ -135,6 +135,28 @@ def test_chain_stats_env_defaults():
     assert defaults["mnemonik_chain_stats_gateway_url"] == "https://gateway.irys.xyz"
 
 
+def test_universal_paywall_env_is_wired_and_fail_closed():
+    env = _text("templates/mcp.env.j2")
+    for key in (
+        "UNIVERSAL_PAYWALL_URL",
+        "UNIVERSAL_PAYWALL_API_KEY",
+        "UNIVERSAL_PAYWALL_PAYMENT_URL",
+        "UNIVERSAL_PAYWALL_NETWORK",
+        "UNIVERSAL_PAYWALL_ASSET",
+        "UNIVERSAL_PAYWALL_PAY_TO",
+        "UNIVERSAL_PAYWALL_SESSION_CAP_MICRO_USDC",
+        "UNIVERSAL_PAYWALL_SESSION_MAX_PER_ANCHOR_MICRO_USDC",
+        "UNIVERSAL_PAYWALL_SESSION_VALID_FOR_SECS",
+    ):
+        assert f"{key}=" in env
+    defaults = _load("defaults/main.yml")
+    assert defaults["mnemonik_mcp_payment_mode"] == "none"
+    assert defaults["mnemonik_universal_paywall_url"] == ""
+    tasks = _text("tasks/main.yml")
+    assert "Assert Universal Paywall configuration is complete when enabled" in tasks
+    assert "mnemonik_mcp_payment_mode == 'universal'" in tasks
+
+
 def test_cors_disabled_by_default():
     # By default no CORS origin is configured; the snippet must NOT emit
     # Access-Control-Allow-Origin, so we don't accidentally open the API.
@@ -168,6 +190,8 @@ def test_cors_enabled_when_origin_set():
     assert "Access-Control-Allow-Methods" in rendered
     assert "Access-Control-Allow-Headers" in rendered
     assert "@cors_preflight" in rendered
+    assert 'method OPTIONS' in rendered
+    assert '{http.request.header.Origin} == "https://mnemonik.xyz"' in rendered
     assert "respond 204" in rendered
     assert "header_down -Access-Control-Allow-Origin" in rendered
 
@@ -191,6 +215,17 @@ def test_cors_enabled_with_multiple_origins():
     assert " || " in rendered
     assert 'Access-Control-Allow-Origin "{http.request.header.Origin}"' in rendered
     assert "@cors_preflight" in rendered
+
+
+def test_cors_preflight_rejects_unlisted_origin_by_structure():
+    # The preflight matcher must combine OPTIONS with the same origin
+    # expression. A method-only matcher would return ACAO for any origin.
+    raw = _text("templates/Caddyfile.snippet.j2")
+    start = raw.index("@cors_preflight {")
+    end = raw.index("handle @cors_preflight", start)
+    matcher = raw[start:end]
+    assert "method OPTIONS" in matcher
+    assert "http.request.header.Origin" in matcher
 
 
 def test_distinct_from_client_binary_role():

@@ -132,6 +132,7 @@
         # empty/safe default so a deploy with the role disabled never fails.
         vault_mnemonik_mcp_jwt_secret:       "{{ sops.mnemonik_mcp_jwt_secret | default('') }}"
         vault_mnemonik_mcp_refresh_salt:     "{{ sops.mnemonik_mcp_refresh_salt | default('') }}"
+        vault_mnemonik_universal_paywall_api_key: "{{ sops.mnemonik_universal_paywall_api_key | default('') }}"
       no_log: true
 
     - name: Wait for system to stabilize post-boot
@@ -209,6 +210,7 @@
       vars:
         mnemonik_mcp_jwt_secret: "{{ vault_mnemonik_mcp_jwt_secret | default('') }}"
         mnemonik_mcp_refresh_salt: "{{ vault_mnemonik_mcp_refresh_salt | default('') }}"
+        mnemonik_universal_paywall_api_key: "{{ vault_mnemonik_universal_paywall_api_key | default('') }}"
         # GHCR pull auth — reuse the sops github PAT for private packages.
         # Leave the token empty if the GHCR package is public.
         mnemonik_ghcr_token: "{{ vault_github_deploy_pat | default('') }}"

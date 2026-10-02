@@ -64,6 +64,14 @@ plus a local Ollama for `/chat`. TLS + public ingress are handled by the
 `mnemonik_mcp_jwt_secret` / `mnemonik_mcp_refresh_salt` have no default — the
 role fails loudly if enabled without them.
 
+Paid anchoring remains disabled by default. To stage it, set
+`mnemonik_mcp_payment_mode: universal`, configure the
+`mnemonik_universal_paywall_*` settlement variables, store
+`mnemonik_universal_paywall_api_key` in sops, and include both
+`https://mnemonik.xyz` and `https://mnemonik-dev.github.io` in
+`mnemonik_mcp_cors_origin`. The role refuses to start universal mode with an
+incomplete provider binding.
+
 ## Cross-role contract
 
 Depends on the **vaultwarden** role for the shared Caddy container
