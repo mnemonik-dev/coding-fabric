@@ -54,9 +54,9 @@
       ansible.builtin.assert:
         that:
           - ansible_distribution == 'Ubuntu'
-          - ansible_distribution_version == '24.04'
+          - ansible_distribution_version in ['22.04', '24.04']
           - ansible_architecture == 'x86_64'
-        fail_msg: This initial bootstrap targets a dedicated Ubuntu 24.04 AMD64 VM.
+        fail_msg: This initial bootstrap targets a dedicated Ubuntu 22.04 or 24.04 AMD64 VM.
 
     - name: Prepare O2 without starting containers
       when: o2_action | default('prepare') == 'prepare'
