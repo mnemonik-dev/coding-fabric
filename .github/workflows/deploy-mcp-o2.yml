@@ -81,6 +81,28 @@ jobs:
           python -m unittest discover -s infrastructure/staging/tests -v
           ansible-playbook -i localhost, infrastructure/ansible/playbooks/deploy-mcp-o2.yml --syntax-check
 
+      - name: Check administrator SSH access
+        # Ansible hides connection errors (no_log); show SSH's own reason with
+        # the host masked. Prints only public fingerprints, never key material.
+        run: |
+          set -euo pipefail
+          host=$(sops --decrypt --extract '["host"]' infrastructure/secrets/o2.sops.yml)
+          user=$(sops --decrypt --extract '["admin_user"]' infrastructure/secrets/o2.sops.yml)
+          echo "::add-mask::$host"
+          echo "Client key: $(ssh-keygen -lf "$RUNNER_TEMP/o2-ssh/key" 2>&1 | sed -E 's/ [^ ]+@[^ ]+ / /')"
+          echo "Pinned host keys:"; ssh-keygen -lf "$RUNNER_TEMP/o2-ssh/known_hosts" 2>&1 || true
+          echo "Server offers:"; ssh-keyscan -T 10 -t ed25519 "$host" 2>/dev/null | ssh-keygen -lf - 2>&1 || true
+          if ssh -i "$RUNNER_TEMP/o2-ssh/key" -o IdentitiesOnly=yes -o BatchMode=yes \
+              -o StrictHostKeyChecking=yes -o HostKeyAlias=mnemonik-o2 \
+              -o UserKnownHostsFile="$RUNNER_TEMP/o2-ssh/known_hosts" -o ConnectTimeout=15 \
+              "$user@$host" 'sudo -n true' 2> "$RUNNER_TEMP/o2-ssh/err"; then
+            echo "SSH and noninteractive sudo OK"
+          else
+            echo "::error::SSH check failed:"
+            grep -vE '^(debug|Warning: Permanently)' "$RUNNER_TEMP/o2-ssh/err" | sed "s/$host/<host>/g"
+            exit 1
+          fi
+
       - name: Recover the verified encrypted backup for start
         if: inputs.action == 'start'
         run: |
