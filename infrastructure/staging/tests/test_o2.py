@@ -52,6 +52,18 @@ class O2Tests(unittest.TestCase):
         check = next(task for task in tasks if task['name'] == 'Require the supported dedicated Ubuntu AMD64 host')
         self.assertIn("ansible_distribution_version in ['22.04', '24.04']", check['ansible.builtin.assert']['that'])
 
+    def test_mnemonik_admin_keeps_its_privileges(self):
+        import yaml
+        playbook = Path(__file__).resolve().parents[2] / 'ansible' / 'playbooks' / 'deploy-mcp-o2.yml'
+        plays = yaml.safe_load(playbook.read_text())
+        validation = next(task for task in plays[0]['tasks'] if task['name'] == 'Validate required settings')
+        self.assertNotIn("o2.admin_user != 'mnemonik'", validation['ansible.builtin.assert']['that'])
+        prepare = next(task for task in plays[1]['tasks'] if task['name'] == 'Prepare O2 without starting containers')
+        for name in ['Create restricted MCP deployment account without privileged groups',
+                     'Replace the earlier unrestricted sudo rule with explicit MCP commands']:
+            task = next(task for task in prepare['block'] if task['name'] == name)
+            self.assertEqual(task['when'], 'not o2_mnemonik_is_admin | bool')
+
     def test_origin_cannot_inject_caddy_or_environment_directives(self):
         for value in ['127.0.0.1', 'mcp-staging.example.com\nBAD=1',
                       'mcp-staging.example.com {', 'https://mcp-staging.example.com',
