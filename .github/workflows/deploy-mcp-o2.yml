@@ -1,0 +1,125 @@
+name: Deploy MCP O2
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Prepare VM and encrypted key backup, or start the prepared O2
+        type: choice
+        options: [prepare, start]
+        default: prepare
+      backup_run_id:
+        description: For start, successful prepare run whose backup you verified
+        type: string
+        default: ''
+      backup_verified:
+        description: I decrypted the prepare-run backup and retained an off-GitHub copy
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: deploy-mcp-o2
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment: staging-o2
+    # Set O2_RUNNER to a runner label with authorized SSH reachability if the
+    # server firewall excludes GitHub-hosted runners. No Tailscale enrollment.
+    runs-on: ${{ vars.O2_RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 25
+    env:
+      ANSIBLE_HOST_KEY_CHECKING: 'True'
+      SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+      GH_TOKEN: ${{ github.token }}
+      O2_ACTION: ${{ inputs.action }}
+      BACKUP_RUN_ID: ${{ inputs.backup_run_id }}
+      BACKUP_VERIFIED: ${{ inputs.backup_verified }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pinned Ansible and SOPS
+        env:
+          SOPS_VERSION: v3.10.2
+        run: |
+          set -euo pipefail
+          echo "ANSIBLE_LOCAL_TEMP=$RUNNER_TEMP/ansible" >> "$GITHUB_ENV"
+          python -m pip install 'ansible-core==2.18.6'
+          mkdir -p "$RUNNER_TEMP/o2-tools"
+          cd "$RUNNER_TEMP/o2-tools"
+          gh release download "$SOPS_VERSION" --repo getsops/sops \
+            --pattern "sops-${SOPS_VERSION}.linux.amd64" \
+            --pattern "sops-${SOPS_VERSION}.checksums.txt"
+          grep " sops-${SOPS_VERSION}.linux.amd64$" "sops-${SOPS_VERSION}.checksums.txt" | sha256sum -c -
+          mv "sops-${SOPS_VERSION}.linux.amd64" sops
+          chmod 755 sops
+          echo "$RUNNER_TEMP/o2-tools" >> "$GITHUB_PATH"
+
+      - name: Configure administrator SSH with pinned host key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.O2_ADMIN_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.O2_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$SSH_PRIVATE_KEY"
+          test -n "$SSH_KNOWN_HOSTS"
+          umask 077
+          mkdir -p "$RUNNER_TEMP/o2-ssh" "$RUNNER_TEMP/o2-backup"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/o2-ssh/key"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/o2-ssh/known_hosts"
+
+      - name: Validate local deployment code
+        run: |
+          python -m unittest discover -s infrastructure/staging/tests -v
+          ansible-playbook -i localhost, infrastructure/ansible/playbooks/deploy-mcp-o2.yml --syntax-check
+
+      - name: Recover the verified encrypted backup for start
+        if: inputs.action == 'start'
+        run: |
+          set -euo pipefail
+          test "$BACKUP_VERIFIED" = true
+          [[ "$BACKUP_RUN_ID" =~ ^[0-9]+$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BACKUP_RUN_ID" > "$RUNNER_TEMP/o2-run.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          run = json.loads((Path(os.environ['RUNNER_TEMP']) / 'o2-run.json').read_text())
+          assert run['path'] == '.github/workflows/deploy-mcp-o2.yml'
+          assert run['conclusion'] == 'success'
+          assert run['head_sha'] == os.environ['GITHUB_SHA'], 'Start the same committed configuration as prepare'
+          PY
+          gh run download "$BACKUP_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name mcp-o2-encrypted-key-backup --dir "$RUNNER_TEMP/o2-backup"
+
+      - name: Run only the O2 playbook
+        run: |
+          set -euo pipefail
+          test -f infrastructure/secrets/o2.sops.yml
+          ansible-playbook -i localhost, infrastructure/ansible/playbooks/deploy-mcp-o2.yml \
+            --private-key "$RUNNER_TEMP/o2-ssh/key" \
+            --ssh-common-args "-o BatchMode=yes -o StrictHostKeyChecking=yes -o HostKeyAlias=mnemonik-o2 -o UserKnownHostsFile=$RUNNER_TEMP/o2-ssh/known_hosts -o ConnectTimeout=15" \
+            -e "o2_secrets_file=$GITHUB_WORKSPACE/infrastructure/secrets/o2.sops.yml" \
+            -e "o2_backup_dir=$RUNNER_TEMP/o2-backup" \
+            -e "o2_action=$O2_ACTION" \
+            -e "o2_backup_verified=$BACKUP_VERIFIED"
+
+      - name: Retain only the encrypted key backup
+        if: inputs.action == 'prepare'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-o2-encrypted-key-backup
+          path: ${{ runner.temp }}/o2-backup/mcp-o2-keys.tar.gz.age
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove temporary administrator credentials
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/o2-ssh"
