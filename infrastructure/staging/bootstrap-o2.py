@@ -23,8 +23,8 @@ def hostname(value):
     labels = value.split('.')
     if (len(value) > 253 or len(labels) < 2 or
             not all(re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label) for label in labels) or
-            'staging' not in labels[0].split('-')):
-        raise ValueError('Use a lowercase staging hostname, for example mcp-o2-staging.example.com')
+            not re.fullmatch(r'[a-z]{2,63}', labels[-1])):
+        raise ValueError('Use a lowercase DNS hostname, for example mcp-o2-staging.example.com')
     return value
 
 

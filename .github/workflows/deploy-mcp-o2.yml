@@ -27,7 +27,7 @@ concurrency:
 
 jobs:
   deploy:
-    environment: staging-o2
+    environment: paywall-staging
     # Set O2_RUNNER to a runner label with authorized SSH reachability if the
     # server firewall excludes GitHub-hosted runners. No Tailscale enrollment.
     runs-on: ${{ vars.O2_RUNNER || 'ubuntu-24.04' }}

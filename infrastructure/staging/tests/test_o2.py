@@ -46,12 +46,13 @@ class O2Tests(unittest.TestCase):
             os.umask(old_umask)
 
     def test_origin_cannot_inject_caddy_or_environment_directives(self):
-        for value in ['mcp.example.com', 'mcp-staging.example.com\nBAD=1',
+        for value in ['127.0.0.1', 'mcp-staging.example.com\nBAD=1',
                       'mcp-staging.example.com {', 'https://mcp-staging.example.com',
                       'mcp-staging..com']:
             with self.assertRaises(ValueError):
                 o2.hostname(value)
         self.assertEqual(o2.hostname('mcp-o2-staging.example.com'), 'mcp-o2-staging.example.com')
+        self.assertEqual(o2.hostname('o2.example.com'), 'o2.example.com')
 
     def test_mcp_is_nonroot_and_has_no_docker_socket_or_public_port(self):
         data = o2.compose()
