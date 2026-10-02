@@ -45,6 +45,13 @@ class O2Tests(unittest.TestCase):
         finally:
             os.umask(old_umask)
 
+    def test_playbook_accepts_supported_ubuntu_releases(self):
+        import yaml
+        playbook = Path(__file__).resolve().parents[2] / 'ansible' / 'playbooks' / 'deploy-mcp-o2.yml'
+        tasks = yaml.safe_load(playbook.read_text())[1]['tasks']
+        check = next(task for task in tasks if task['name'] == 'Require the supported dedicated Ubuntu AMD64 host')
+        self.assertIn("ansible_distribution_version in ['22.04', '24.04']", check['ansible.builtin.assert']['that'])
+
     def test_origin_cannot_inject_caddy_or_environment_directives(self):
         for value in ['127.0.0.1', 'mcp-staging.example.com\nBAD=1',
                       'mcp-staging.example.com {', 'https://mcp-staging.example.com',
