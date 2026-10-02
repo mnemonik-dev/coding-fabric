@@ -1,0 +1,159 @@
+---
+# This playbook does not invoke deploy.yml or any production provisioning role.
+- name: Adopt the isolated Mnemonic and Paywall staging application
+  hosts: staging
+  gather_facts: false
+  become: true
+  vars:
+    staging_action: preflight
+    staging_source: "{{ playbook_dir }}/../../staging"
+    staging_root: /opt/universal-paywall-staging
+    staging_project: universal-paywall-staging
+    staging_caddy: /opt/vaultwarden/caddy_conf_d/paywall-staging.conf
+  tasks:
+    - name: Load the reviewed non-secret candidate
+      ansible.builtin.set_fact:
+        candidate: "{{ lookup('file', staging_manifest) | from_json }}"
+
+    - name: Bind the candidate to the explicit inventory host
+      ansible.builtin.assert:
+        that:
+          - staging_action in ['preflight', 'apply']
+          - groups['staging'] | length == 1
+          - candidate.environment == 'staging'
+          - candidate.target_host == ansible_host
+        fail_msg: Candidate must select exactly this staging host.
+
+    - name: Require recorded restore and binary-rollback acceptance before apply
+      ansible.builtin.assert:
+        that:
+          - staging_backup_evidence | default('') | length > 0
+          - staging_rollback_evidence | default('') | length > 0
+        fail_msg: Supply reviewed backup/restore and current-state rollback evidence references.
+      when: staging_action == 'apply'
+
+    - name: Create a private candidate workspace
+      ansible.builtin.tempfile:
+        state: directory
+        path: /var/tmp
+        prefix: paywall-staging-
+      register: scratch
+
+    - name: Validate and deploy the candidate
+      block:
+        - name: Copy read-only staging validators
+          ansible.builtin.copy:
+            src: "{{ staging_source }}/{{ item }}"
+            dest: "{{ scratch.path }}/{{ item }}"
+            mode: '0600'
+          loop: [manifest.py, preflight.py]
+
+        - name: Copy the non-secret manifest
+          ansible.builtin.copy:
+            content: "{{ candidate | to_nice_json }}"
+            dest: "{{ scratch.path }}/input.json"
+            mode: '0600'
+
+        - name: Render and validate staging configuration
+          ansible.builtin.command:
+            argv: [python3, "{{ scratch.path }}/manifest.py", "{{ scratch.path }}/input.json", --output, "{{ scratch.path }}/rendered"]
+          changed_when: false
+
+        - name: Check live predecessor, persistence and effective configuration
+          ansible.builtin.command:
+            argv: [python3, "{{ scratch.path }}/preflight.py", "{{ scratch.path }}/input.json", "{{ scratch.path }}/rendered/docker-compose.json"]
+          changed_when: false
+
+        - name: Apply reviewed staging candidate
+          when: staging_action == 'apply'
+          block:
+            - name: Pull exact images without starting services
+              ansible.builtin.command:
+                argv: [docker, compose, -p, "{{ staging_project }}", -f, "{{ scratch.path }}/rendered/docker-compose.json", pull]
+              changed_when: true
+              no_log: true
+
+            - name: Recheck drift and image revision labels
+              ansible.builtin.command:
+                argv: [python3, "{{ scratch.path }}/preflight.py", "{{ scratch.path }}/input.json", "{{ scratch.path }}/rendered/docker-compose.json", --check-images]
+              changed_when: false
+
+            - name: Allocate a retained release directory
+              ansible.builtin.tempfile:
+                state: directory
+                path: "{{ staging_root }}"
+                prefix: release-
+              register: release
+
+            - name: Preserve rendered release without exposing secret environments
+              ansible.builtin.copy:
+                src: "{{ scratch.path }}/rendered/"
+                dest: "{{ release.path }}/"
+                remote_src: true
+                mode: '0600'
+
+            - name: Record operator evidence references
+              ansible.builtin.copy:
+                content: "{{ {'backup_restore': staging_backup_evidence, 'binary_rollback': staging_rollback_evidence} | to_nice_json }}"
+                dest: "{{ release.path }}/acceptance-references.json"
+                mode: '0600'
+
+            - name: Start only the staging application and wait for container health
+              ansible.builtin.command:
+                argv: [docker, compose, -p, "{{ staging_project }}", -f, "{{ release.path }}/docker-compose.json", up, -d, --wait, --wait-timeout, '300']
+              changed_when: true
+              no_log: true
+
+            - name: Read the existing staging route for failure recovery
+              ansible.builtin.slurp:
+                src: "{{ staging_caddy }}"
+              register: old_route
+              no_log: true
+
+            - name: Install and validate only the staging route
+              block:
+                - name: Install candidate staging route
+                  ansible.builtin.copy:
+                    src: "{{ release.path }}/paywall-staging.conf"
+                    dest: "{{ staging_caddy }}"
+                    remote_src: true
+                    mode: '0644'
+
+                - name: Validate shared Caddy configuration before reload
+                  ansible.builtin.command:
+                    argv: [docker, exec, vaultwarden-caddy-1, caddy, validate, --config, /etc/caddy/Caddyfile, --adapter, caddyfile]
+                  changed_when: false
+
+                - name: Reload Caddy without restarting production ingress
+                  ansible.builtin.command:
+                    argv: [docker, exec, vaultwarden-caddy-1, caddy, reload, --config, /etc/caddy/Caddyfile, --adapter, caddyfile]
+                  changed_when: true
+              rescue:
+                - name: Restore prior route on validation or reload failure
+                  ansible.builtin.copy:
+                    content: "{{ old_route.content | b64decode }}"
+                    dest: "{{ staging_caddy }}"
+                    mode: '0644'
+                  no_log: true
+                - name: Report route failure without restoring older financial state
+                  ansible.builtin.fail:
+                    msg: Staging route failed. Prior route file restored; inspect runtime before retry. No database rollback was attempted.
+
+            - name: Probe public staging liveness
+              ansible.builtin.uri:
+                url: "{{ candidate.operators[0].public_url }}/health"
+                status_code: 200
+                return_content: false
+              retries: 6
+              delay: 5
+              register: health
+              until: health.status == 200
+
+            - name: Report the retained release
+              ansible.builtin.debug:
+                msg: "Staging release {{ release.path }} is live. Payment, storage and recovery acceptance remain separate. No automatic data rollback is configured."
+      always:
+        - name: Remove temporary validator workspace
+          ansible.builtin.file:
+            path: "{{ scratch.path }}"
+            state: absent
