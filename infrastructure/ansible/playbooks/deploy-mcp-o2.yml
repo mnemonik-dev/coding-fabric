@@ -1,0 +1,211 @@
+---
+# Run this separately from deploy.yml. No production inventory or Tailscale role.
+- name: Load the O2 target from encrypted configuration
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Decrypt O2 connection settings in memory
+      ansible.builtin.command:
+        argv: [sops, --decrypt, --output-type, json, "{{ o2_secrets_file }}"]
+      register: encrypted_config
+      changed_when: false
+      no_log: true
+
+    - name: Parse O2 settings
+      ansible.builtin.set_fact:
+        o2: "{{ encrypted_config.stdout | from_json }}"
+      no_log: true
+
+    - name: Validate required settings
+      ansible.builtin.assert:
+        that:
+          - o2_action | default('prepare') in ['prepare', 'start']
+          - o2.host is match('^[a-zA-Z0-9][a-zA-Z0-9.:-]+$')
+          - o2.admin_user is match('^[a-z_][a-z0-9_-]*$')
+          - o2.admin_user != 'mnemonik'
+          - o2.authorized_key is match('^ssh-ed25519 [A-Za-z0-9+/=]+( [^\r\n]*)?$')
+          - o2.backup_recipient is match('^age1[a-z0-9]+$')
+          - o2_backup_dir is defined
+      no_log: true
+
+    - name: Create an in-memory target with a non-identifying inventory alias
+      ansible.builtin.add_host:
+        name: mcp_o2_target
+        groups: mcp_o2
+        ansible_host: "{{ o2.host }}"
+        ansible_user: "{{ o2.admin_user }}"
+        o2_settings: "{{ o2 }}"
+      no_log: true
+
+- name: Prepare or start the independent O2 server
+  hosts: mcp_o2
+  become: true
+  gather_facts: false
+  vars:
+    o2_source: "{{ playbook_dir }}/../../staging"
+  tasks:
+    - name: Inspect operating system privately
+      ansible.builtin.setup:
+        gather_subset: [min]
+      no_log: true
+
+    - name: Require the supported dedicated Ubuntu AMD64 host
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == 'Ubuntu'
+          - ansible_distribution_version == '24.04'
+          - ansible_architecture == 'x86_64'
+        fail_msg: This initial bootstrap targets a dedicated Ubuntu 24.04 AMD64 VM.
+
+    - name: Prepare O2 without starting containers
+      when: o2_action | default('prepare') == 'prepare'
+      block:
+        - name: Install container and encrypted-backup prerequisites
+          ansible.builtin.apt:
+            name: [docker.io, docker-compose-v2, python3-cryptography, age]
+            state: present
+            update_cache: true
+
+        - name: Start the container engine
+          ansible.builtin.service:
+            name: docker
+            state: started
+            enabled: true
+
+        - name: Create restricted MCP deployment account without privileged groups
+          ansible.builtin.user:
+            name: mnemonik
+            shell: /bin/bash
+            create_home: true
+            password_lock: true
+            groups: ''
+            append: false
+
+        - name: Create private SSH directory
+          ansible.builtin.file:
+            path: /home/mnemonik/.ssh
+            state: directory
+            owner: mnemonik
+            group: mnemonik
+            mode: '0700'
+
+        - name: Install the authorized public key
+          ansible.builtin.lineinfile:
+            path: /home/mnemonik/.ssh/authorized_keys
+            line: "{{ o2_settings.authorized_key }}"
+            create: true
+            owner: mnemonik
+            group: mnemonik
+            mode: '0600'
+          no_log: true
+
+        - name: Create root-owned deployment tools directory
+          ansible.builtin.file:
+            path: /usr/local/lib/mnemonik-o2
+            state: directory
+            owner: root
+            group: root
+            mode: '0700'
+
+        - name: Install configuration and backup tools
+          ansible.builtin.copy:
+            src: "{{ o2_source }}/{{ item }}"
+            dest: "/usr/local/lib/mnemonik-o2/{{ item }}"
+            owner: root
+            group: root
+            mode: '0600'
+          loop: [bootstrap-o2.py, backup-o2.py]
+
+        - name: Generate a new O2 identity and stable secrets only on first install
+          ansible.builtin.command:
+            argv: [python3, /usr/local/lib/mnemonik-o2/bootstrap-o2.py, --hostname, "{{ o2_settings.domain }}"]
+            creates: /opt/mnemonik-o2/compose.json
+          no_log: true
+
+        - name: Install fixed-scope MCP control command
+          ansible.builtin.copy:
+            src: "{{ o2_source }}/o2-control"
+            dest: /usr/local/sbin/mnemonik-o2
+            owner: root
+            group: root
+            mode: '0755'
+
+        - name: Replace the earlier unrestricted sudo rule with explicit MCP commands
+          ansible.builtin.copy:
+            dest: /etc/sudoers.d/mnemonik
+            owner: root
+            group: root
+            mode: '0440'
+            validate: /usr/sbin/visudo -cf %s
+            content: |
+              mnemonik ALL=(root) NOPASSWD: /usr/local/sbin/mnemonik-o2 install, /usr/local/sbin/mnemonik-o2 start, /usr/local/sbin/mnemonik-o2 stop, /usr/local/sbin/mnemonik-o2 restart, /usr/local/sbin/mnemonik-o2 status
+
+        - name: Encrypt the stable keys and configuration to the owner's backup recipient
+          ansible.builtin.command:
+            argv: [python3, /usr/local/lib/mnemonik-o2/backup-o2.py, --recipient, "{{ o2_settings.backup_recipient }}"]
+          changed_when: true
+          no_log: true
+
+        - name: Copy encrypted backup off the VM before starting MCP
+          ansible.builtin.fetch:
+            src: /opt/mnemonik-o2/keys-backup.tar.gz.age
+            dest: "{{ o2_backup_dir }}/mcp-o2-keys.tar.gz.age"
+            flat: true
+          no_log: true
+
+        - name: Report preparation and mandatory backup verification
+          ansible.builtin.debug:
+            msg: O2 prepared. Verify the off-host encrypted archive decrypts and contains secrets/id.json and secrets/mcp.env before running o2_action=start. No MCP container was started.
+
+    - name: Start O2 after off-host backup verification
+      when: o2_action | default('prepare') == 'start'
+      block:
+        - name: Require the operator's backup verification
+          ansible.builtin.assert:
+            that: o2_backup_verified | default(false) | bool
+            fail_msg: First decrypt and inspect the off-host backup, then set o2_backup_verified=true.
+
+        - name: Check the encrypted backup exists on the controller
+          ansible.builtin.stat:
+            path: "{{ o2_backup_dir }}/mcp-o2-keys.tar.gz.age"
+            checksum_algorithm: sha256
+          delegate_to: localhost
+          become: false
+          register: local_backup
+          no_log: true
+
+        - name: Check the prepared backup on O2
+          ansible.builtin.stat:
+            path: /opt/mnemonik-o2/keys-backup.tar.gz.age
+            checksum_algorithm: sha256
+          register: remote_backup
+          no_log: true
+
+        - name: Refuse to start without an off-host backup
+          ansible.builtin.assert:
+            that:
+              - local_backup.stat.exists
+              - local_backup.stat.size > 0
+              - remote_backup.stat.exists
+              - local_backup.stat.checksum == remote_backup.stat.checksum
+
+        - name: Pull the configured images
+          ansible.builtin.command:
+            argv: [/usr/local/sbin/mnemonik-o2, install]
+          changed_when: true
+
+        - name: Start O2 and HTTPS ingress
+          ansible.builtin.command:
+            argv: [/usr/local/sbin/mnemonik-o2, start]
+          changed_when: true
+
+        - name: Check public HTTPS liveness
+          ansible.builtin.uri:
+            url: "https://{{ o2_settings.domain }}/health"
+            status_code: 200
+          register: o2_health
+          until: o2_health.status | default(0) == 200
+          retries: 12
+          delay: 5
+          no_log: true
