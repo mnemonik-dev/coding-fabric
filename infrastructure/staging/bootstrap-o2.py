@@ -107,8 +107,12 @@ def main():
         'DATABASE_PATH': '/data/attestations.db',
         'RAG_CHUNK_DIR': '/data/rag_chunks', 'FASTEMBED_CACHE_DIR': '/data/model-cache',
         'STORAGE_MODE': 'full', 'EMBED_PROVIDER': 'fastembed', 'PAYMENT_MODE': 'none',
-        'ANCHORING_NETWORK': 'devnet', 'SOLANA_RPC_URL': 'https://api.devnet.solana.com',
-        'IRYS_GATEWAY_URL': 'https://devnet.irys.xyz', 'RUST_LOG': 'info',
+        # Same Solana mainnet and Irys/Arweave mainnet as the production
+        # mnemonik-server role. Uploads spend real SOL from the O2 identity.
+        'ANCHORING_NETWORK': 'mainnet', 'SOLANA_RPC_URL': 'https://api.mainnet-beta.solana.com',
+        'IRYS_GATEWAY_URL': 'https://gateway.irys.xyz',
+        'CHAIN_STATS_GRAPHQL_URL': 'https://arweave.net/graphql',
+        'CHAIN_STATS_GATEWAY_URL': 'https://gateway.irys.xyz', 'RUST_LOG': 'info',
     }
     write(ROOT / 'secrets/mcp.env', ''.join(f'{key}={value}\n' for key, value in env.items()))
     write(ROOT / 'compose.json', json.dumps(compose(), indent=2) + '\n')
