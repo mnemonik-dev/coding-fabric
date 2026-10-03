@@ -64,6 +64,21 @@ class O2Tests(unittest.TestCase):
             task = next(task for task in prepare['block'] if task['name'] == name)
             self.assertEqual(task['when'], 'not o2_mnemonik_is_admin | bool')
 
+    def test_controller_tasks_run_locally(self):
+        import yaml
+        playbook = Path(__file__).resolve().parents[2] / 'ansible' / 'playbooks' / 'deploy-mcp-o2.yml'
+
+        def tasks(items):
+            for task in items:
+                yield task
+                yield from tasks(task.get('block', []))
+
+        delegated = [task for play in yaml.safe_load(playbook.read_text())
+                     for task in tasks(play.get('tasks', [])) if task.get('delegate_to') == 'localhost']
+        self.assertTrue(delegated)
+        for task in delegated:
+            self.assertEqual(task.get('connection'), 'local', task['name'])
+
     def test_origin_cannot_inject_caddy_or_environment_directives(self):
         for value in ['127.0.0.1', 'mcp-staging.example.com\nBAD=1',
                       'mcp-staging.example.com {', 'https://mcp-staging.example.com',
