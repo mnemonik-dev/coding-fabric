@@ -175,6 +175,9 @@
             path: "{{ o2_backup_dir }}/mcp-o2-keys.tar.gz.age"
             checksum_algorithm: sha256
           delegate_to: localhost
+          # The workflow lists localhost in its inventory, so without this
+          # Ansible would SSH to the runner itself.
+          connection: local
           become: false
           register: local_backup
           no_log: true
