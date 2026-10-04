@@ -270,8 +270,32 @@
       loop:
         - channel_sessions.json
         - session_mapping.json
-        - topic_config.json
       changed_when: false   # touch always reports changed; we don't care
+
+    # TopicConfig uses json.load for both reading and /engine updates. A zero
+    # byte file made by touch disables every settings write. Seed only missing
+    # or empty files; never replace existing topic selections on redeploy.
+    - name: Inspect mutable topic configuration
+      ansible.builtin.stat:
+        path: "{{ telegram_ai_agent_home }}/topic_config.json"
+      register: topic_config_state
+
+    - name: Initialize missing or empty topic configuration with valid JSON
+      ansible.builtin.copy:
+        content: |
+          {"topics": {}, "routing": {}}
+        dest: "{{ telegram_ai_agent_home }}/topic_config.json"
+        owner: "{{ telegram_ai_agent_owner }}"
+        group: "{{ telegram_ai_agent_group }}"
+        mode: '0600'
+      when: not topic_config_state.stat.exists or topic_config_state.stat.size == 0
+
+    - name: Preserve topic configuration and ensure service-user write access
+      ansible.builtin.file:
+        path: "{{ telegram_ai_agent_home }}/topic_config.json"
+        owner: "{{ telegram_ai_agent_owner }}"
+        group: "{{ telegram_ai_agent_group }}"
+        mode: '0600'
 
     - name: Ensure tmux_sessions dir + state.json are op-owned
       ansible.builtin.file:
