@@ -193,7 +193,7 @@ sequenceDiagram
     Eng->>GH: implement TDD, open PR "feat(...): closes TASK-ID"
     Eng->>K: comment + transition ticket to review
     Sym->>Eng: review stage — codex, read-only tools (cross-engine)
-    Eng->>K: findings; approve -> qa | changes-requested -> stays review
+    Eng->>K: findings approve -> qa | changes-requested -> stays review
     Sym->>Eng: qa stage — claude + Playwright (30-min budget)
     Eng->>K: pass -> ready-to-merge | fail -> review + qa-fail
     Sym->>Bot: post veto notice to ops topic
