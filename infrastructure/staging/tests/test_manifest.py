@@ -62,8 +62,10 @@ class ManifestTests(unittest.TestCase):
         identity = service["volumes"][-1]
         self.assertTrue(identity["read_only"])
         self.assertFalse(identity["bind"]["create_host_path"])
-        self.assertEqual(identity["target"], "/keypair/id.json")
+        self.assertEqual(identity["target"], "/keypair/identity.json")
         self.assertEqual(service["environment"]["MNEMONIC_CONFIG_DIR"], "/keypair")
+        self.assertEqual(identity["target"],
+                         service["environment"]["MNEMONIC_CONFIG_DIR"] + "/identity.json")
 
     def test_second_operator_has_distinct_identity_volume_and_alias(self):
         data = candidate()

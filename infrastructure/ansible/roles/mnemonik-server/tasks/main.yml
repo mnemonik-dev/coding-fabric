@@ -299,39 +299,19 @@
       delay: 4
       changed_when: false
       failed_when: false
+      no_log: true
 
-    # Always capture container state + MCP logs + a direct-to-container health
-    # probe — the CI runner can't be SSH'd into afterward, so this inline dump
-    # is the only diagnostic channel. Cheap; invaluable when /health isn't 200.
-    - name: Capture MCP diagnostics
-      become: true
-      become_user: op
-      ansible.builtin.shell: |
-        echo "=== listening sockets ==="
-        ss -ltn 2>&1 || netstat -ltn 2>&1 || true
-        echo "=== docker ps (mnemonik) ==="
-        docker ps -a --filter name=mnemonik
-        echo "=== docker ps (caddy) ==="
-        docker ps -a --filter name=caddy
-        echo "=== mnemonik-mcp-1 direct /health (docker exec localhost:3000) ==="
-        docker exec mnemonik-mcp-1 curl -fsS -m 5 http://localhost:3000/health 2>&1; echo "(exec rc=$?)"
-        echo "=== mnemonik-mcp-1 logs (tail 120) ==="
-        docker logs mnemonik-mcp-1 --tail 120 2>&1 || true
-        echo "=== vaultwarden-caddy-1 logs (tail 120) ==="
-        docker logs vaultwarden-caddy-1 --tail 120 2>&1 || true
-      register: mnemonik_diag
-      changed_when: false
-      failed_when: false
-
-    - name: Show MCP diagnostics
+    # Service logs and HTTP response bodies may contain credentials. Report
+    # only the probe status; inspect raw diagnostics privately on the host.
+    - name: Show MCP health probe status
       ansible.builtin.debug:
-        var: mnemonik_diag.stdout_lines
+        msg: "MCP /health via Caddy returned curl exit code {{ mnemonik_health.rc }}."
 
     - name: Fail if MCP /health not 200 via Caddy
       ansible.builtin.fail:
         msg: >-
-          Mnemonic MCP /health did not return 200 via Caddy (loopback). See
-          "Show MCP diagnostics" above for container state + mnemonik-mcp-1 logs.
+          Mnemonic MCP /health did not return 200 via Caddy (loopback).
+          Inspect mnemonik-mcp-1 and vaultwarden-caddy-1 logs privately on the host.
       when: mnemonik_health.rc != 0
 
     # /health only proves the HTTP surface is up; it does NOT prove the

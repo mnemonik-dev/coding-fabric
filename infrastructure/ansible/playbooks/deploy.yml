@@ -44,12 +44,13 @@
     # Caddy snippet in the shared conf.d. The vaultwarden role starts the
     # shared Caddy before mnemonik-server has a chance to rewrite the snippet,
     # so an invalid snippet blocks the entire deploy. Remove any stale
-    # mnemonik-mcp.conf; mnemonik-server will render a validated one later.
+    # mnemonik-mcp.conf only when the role will render a validated one later.
     - name: Remove stale mnemonik-mcp Caddy snippet if present
       ansible.builtin.file:
         path: /opt/vaultwarden/caddy_conf_d/mnemonik-mcp.conf
         state: absent
       become: true
+      when: mnemonik_server_enabled | default(false) | bool
       failed_when: false
       changed_when: false
 

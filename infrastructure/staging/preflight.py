@@ -38,6 +38,10 @@ def check_container(container, image, service, volume, identity_source, identity
     data = mounts.get("/data", {})
     require(data.get("Type") == "volume" and data.get("Name") == volume,
             f"{service}: existing data volume differs")
+    # Adopt the legacy mount or a predecessor already using the current path.
+    # Prefer the current path so a legacy mount cannot conceal signer drift.
+    if service == "mcp" and "/keypair/identity.json" in mounts:
+        identity_target = "/keypair/identity.json"
     key = mounts.get(identity_target, {})
     require(key.get("Type") == "bind" and key.get("Source") == identity_source,
             f"{service}: existing key mount differs")
@@ -46,7 +50,7 @@ def check_container(container, image, service, volume, identity_source, identity
 def check_effective(service, env, previous=None):
     """Validate resolved Compose environment in memory, without logging values."""
     if service == "facilitator":
-        expected = {"CHAIN_ID": "5042002", "NETWORK": "eip155:5042002",
+        expected = {"CHAIN_ID": "5042002", "NETWORK": "arc-testnet",
                     "EXACT_PAYMENTS_ENABLED": "1", "PAYMENT_STORE_PATH": "/data/payments.json",
                     "USDC_ADDRESS": "0x3600000000000000000000000000000000000000",
                     "USDC_EIP712_NAME": "USDC", "USDC_EIP712_VERSION": "2"}
@@ -55,7 +59,7 @@ def check_effective(service, env, previous=None):
         stable = ["FACILITATOR_KEY", "SERVICE_PAY_TO", "SERVICE_ID", "RECEIPT_KEY_ID"]
     else:
         expected = {"DATABASE_PATH": "/data/attestations.db", "ANCHORING_NETWORK": "devnet",
-                    "MNEMONIC_KEYPAIR_PATH": "/keypair/id.json", "STORAGE_MODE": "full"}
+                    "MNEMONIC_CONFIG_DIR": "/keypair", "STORAGE_MODE": "full"}
         required = ["MCP_JWT_SECRET", "MCP_PUBLIC_BASE_URL", "EMBED_PROVIDER"]
         stable = ["MCP_JWT_SECRET", "MCP_PUBLIC_BASE_URL"]
         require(env.get("PAYMENT_MODE") in {"none", "x402"}, "unsupported MCP payment mode")
