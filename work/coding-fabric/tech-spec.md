@@ -116,7 +116,7 @@ peer model from v0.1.1.
 - Workflows under `.github/workflows/`
 - Bootstrap secrets pulled from GH Actions secrets: `HCLOUD_TOKEN`,
   `TAILSCALE_AUTH_KEY`, `SOPS_AGE_KEY`, `VAULTWARDEN_INITIAL_ADMIN_PASSWORD`,
-  `TELEGRAM_BOT_TOKEN`, `SOLANA_DEVNET_KEYPAIR`, `IRYS_TESTNET_PRIVATE_KEY`,
+  `TELEGRAM_BOT_TOKEN`, `SOLANA_DEVNET_KEYPAIR`,
   `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GITHUB_DEPLOY_PAT`
 
 ### 2.3 Ansible roles (10)

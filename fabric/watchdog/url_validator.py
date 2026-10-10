@@ -7,9 +7,10 @@ Security policy:
 - Only http:// and https:// schemes are permitted (file://, ftp://, etc. blocked).
 - Loopback and link-local addresses are permitted for local service checks
   (Kaneo, MCP, local Solana devnet proxy).
-- The following public hostnames are explicitly allowlisted for devnet/testnet
-  use; mainnet RPC endpoints (mainnet-beta.solana.com, etc.) are rejected to
-  prevent accidental interaction with production infrastructure.
+- The following public hostnames are explicitly allowlisted: the Solana devnet
+  RPC, Telegram, and the read-only ArDrive Turbo payment service (Turbo has no
+  test network). Mainnet RPC endpoints (mainnet-beta.solana.com, etc.) are
+  rejected to prevent accidental interaction with production infrastructure.
 """
 
 from __future__ import annotations
@@ -21,10 +22,10 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
-# Allowlisted public hostnames for devnet/testnet external services.
+# Allowlisted public hostnames for external services.
 _ALLOWED_PUBLIC_HOSTS: frozenset[str] = frozenset([
     "api.devnet.solana.com",
-    "devnet.irys.xyz",
+    "payment.ardrive.io",
     "api.telegram.org",
 ])
 

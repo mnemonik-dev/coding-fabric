@@ -29,4 +29,4 @@
         universal_paywall_staging_pay_to: "{{ sops.universal_paywall_staging_pay_to | default('') }}"
         universal_paywall_staging_facilitator_url: "{{ sops.universal_paywall_staging_facilitator_url | default('http://facilitator:8403') }}"
         universal_paywall_staging_solana_rpc_url: "{{ sops.universal_paywall_staging_solana_rpc_url | default('') }}"
-        universal_paywall_staging_irys_url: "{{ sops.universal_paywall_staging_irys_url | default('') }}"
+        universal_paywall_staging_arweave_gateway_url: "{{ sops.universal_paywall_staging_arweave_gateway_url | default('https://arweave.net') }}"

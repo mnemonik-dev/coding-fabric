@@ -104,7 +104,7 @@
     {"ac": "AC27", "summary": "ruflo-aidefence off in core/mcp", "status": "covered", "evidence": "validate_matrix.py enforces aidefence off in core+mcp."},
     {"ac": "AC28", "summary": "Project Knowledge of molyanov-methodology remains canonical", "status": "covered", "evidence": "molyanov/molecule installs pk-guard hook + tests it rejects writes to .claude/skills/project-knowledge/** when RUFLO_SESSION set; mnemonic-mcp molecule verifies molyanov-mnemonic-hooks.yml integration."},
     {"ac": "AC29", "summary": "fabric-watchdog runs every 5 minutes", "status": "covered", "evidence": "fabric-services Ansible role deploys fabric-watchdog.timer with OnCalendar=*:0/5; watchdog/test_scheduler.py validates tick() + dedup."},
-    {"ac": "AC30", "summary": "All 9 (10 incl. last-known-good) alert classes covered & posted to ops", "status": "covered", "evidence": "watchdog/test_checks.py contains direct tests for: orphaned_worktrees, disk_pressure (75/85/90), solana_rpc, master_drift, failed_attestation, stale_swarms, stale_lkg, irys_balance, stale_prs (pagination), and NOW hung_tmux (TestHungTmux x4 — closes audit gap). 10/10 alert classes have direct unit tests."},
+    {"ac": "AC30", "summary": "All 9 (10 incl. last-known-good) alert classes covered & posted to ops", "status": "covered", "evidence": "watchdog/test_checks.py contains direct tests for: orphaned_worktrees, disk_pressure (75/85/90), solana_rpc, master_drift, failed_attestation, stale_swarms, stale_lkg, turbo_balance, stale_prs (pagination), and NOW hung_tmux (TestHungTmux x4 — closes audit gap). 10/10 alert classes have direct unit tests."},
     {"ac": "AC31", "summary": "/turn-into-task creates Kaneo card bound to right repo", "status": "covered", "evidence": "watchdog/test_turn_into_task.py — test_turn_into_task_creates_kaneo_card + unknown_alert_id + authorization tests."},
     {"ac": "AC32", "summary": "Disk-pressure thresholds 75/85/90% on 50 GB budget", "status": "covered", "evidence": "watchdog/test_checks.py::TestDiskPressure::test_disk_pressure_thresholds_75_85_90 asserts WARNING@76/86% and CRITICAL@91% vs disk_budget_gb."},
     {"ac": "AC33", "summary": "mnemonic-loop PRs merge through the same fabric", "status": "covered", "evidence": "smoke-gate.yml triggers on PR to mnemonic-loop and gates merge via 15-min docker-compose candidate-fabric run; recursive self-merge documented in AVP step 6."},
@@ -198,7 +198,7 @@
     }
   ],
   "deferred_for_operator_bootstrap": [
-    "Operator runs bootstrap-checklist.md (§1-§9, ~30 min) before first deploy-fabric.yml run: Hetzner billing + token, Tailscale tailnet + ephemeral key, Telegram bot + forum supergroup chat-id, Solana devnet keypair + Irys testnet funding, Anthropic + OpenAI API keys, GitHub deploy PAT, Vaultwarden initial admin password, Restic repo + password, sops age key.",
+    "Operator runs bootstrap-checklist.md (§1-§9, ~30 min) before first deploy-fabric.yml run: Hetzner billing + token, Tailscale tailnet + ephemeral key, Telegram bot + forum supergroup chat-id, Solana devnet keypair + ArDrive Turbo credits, Anthropic + OpenAI API keys, GitHub deploy PAT, Vaultwarden initial admin password, Restic repo + password, sops age key.",
     "AC3 ops-topic independence drill — stop workspace-manager + ruflo + fabric-watchdog, send /ping to ops, expect reply <10s (AVP).",
     "AC18 third-party crypto verify proof — operator-supplied per PR (human gate via PR template).",
     "AC22 crypto-crate bump approval — operator-supplied per PR (human gate via PR template).",

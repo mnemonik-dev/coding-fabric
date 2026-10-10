@@ -8,3 +8,5 @@ universal_paywall_staging_network: arc-testnet
 universal_paywall_staging_domain: mcp-staging.mnemonic-fabric.ts
 universal_paywall_staging_usdc_address: 0x3600000000000000000000000000000000000000
 universal_paywall_staging_receipt_key_uid: '10001'
+# Read-only Arweave gateway for the staging MCP; not a secret.
+universal_paywall_staging_arweave_gateway_url: https://arweave.net

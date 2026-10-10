@@ -87,7 +87,7 @@ phase2_user_experience:
     score: 85
     value: |
       One-time setup: provision cloud VM, set up VPN, create Telegram bot/forum, populate
-      Vaultwarden, clone master repos, register Solana devnet wallet, fund Irys testnet,
+      Vaultwarden, clone master repos, register Solana devnet wallet, top up ArDrive Turbo credits,
       pin MEMORY_NAMESPACE per topic. Recurring: approve human-gated PRs (schema/CBOR
       changes, crypto-crate bumps).
     gaps: []
@@ -106,7 +106,7 @@ phase2_user_experience:
     value: |
       Per-task: pre-deploy-qa pass receipt (parent=task receipts) and post-deploy verification
       attestation (parent=pre-deploy) signed via Mnemonic. fabric-watchdog 5-minute cadence
-      validates fabric health (worktrees, tmux, RPC, Irys, swarms, disk, drift, stale PRs,
+      validates fabric health (worktrees, tmux, RPC, Turbo, swarms, disk, drift, stale PRs,
       failed attestations, stale last-known-good tag). Smoke gate confirms mnemonic-loop PRs
       before merging themselves.
     gaps: []

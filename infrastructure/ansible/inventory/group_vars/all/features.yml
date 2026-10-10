@@ -14,8 +14,8 @@ mnemonik_server_enabled: true
 mnemonik_mcp_image_tag: "sha-e8b6e2b"
 
 # Hosted MCP is the public participate-mode operator. Default writes should
-# anchor to Irys/Arweave + Solana; local-only writes remain available via
-# explicit mode=local.
+# upload to Arweave (via ArDrive Turbo) and anchor on Solana; local-only
+# writes remain available via explicit mode=local.
 mnemonik_mcp_storage_mode: "full"
 
 # Wallets that have signed hosted anchored uploads. Include both the documented
@@ -25,8 +25,8 @@ mnemonik_chain_stats_wallets: >-
   DYVu4Bry3BzGVsR3Hj2iGVT5fNdWFoHw2zRxsdTmrG25,
   EdFyDHqqWTSPKs7c89U36Uy8QAnX2nX2A7qkYKD2Td21
 
-mnemonik_arweave_url: "https://gateway.irys.xyz"
-mnemonik_chain_stats_gateway_url: "https://gateway.irys.xyz"
+mnemonik_arweave_gateway_url: "https://arweave.net"
+mnemonik_chain_stats_gateway_url: "https://arweave.net"
 mnemonik_chain_stats_graphql_url: "https://arweave.net/graphql"
 
 # Browser webapp origins. Caddy reflects the request Origin if it matches

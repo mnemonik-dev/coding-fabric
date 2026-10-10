@@ -1803,7 +1803,7 @@ Reliability-engineer lens:
 
 3. **State file mode 0640 (major):** `os.chmod(tmp_path, 0o640)` applied to the temp file before `os.replace()` so the final file inherits the correct permissions atomically. Init write now also acquires the flock (fix 11). Tested with `stat.S_IMODE` assertions.
 
-4. **SSRF/URL allowlist (major):** New `url_validator.py` module with `validate_url()`. Policy: http/https only; loopback/localhost/RFC-1918/CGNAT (100.64.0.0/10, Tailscale) always allowed; public hostnames only via explicit `_ALLOWED_PUBLIC_HOSTS` frozenset (devnet.solana, devnet.irys, api.telegram.org). Wired into solana_rpc, irys_balance, failed_attestation checks.
+4. **SSRF/URL allowlist (major):** New `url_validator.py` module with `validate_url()`. Policy: http/https only; loopback/localhost/RFC-1918/CGNAT (100.64.0.0/10, Tailscale) always allowed; public hostnames only via explicit `_ALLOWED_PUBLIC_HOSTS` frozenset (devnet.solana, payment.ardrive, api.telegram.org). Wired into solana_rpc, turbo_balance, failed_attestation checks.
 
 5. **HTML injection (major):** Dropped `parse_mode: "HTML"` from Telegram payloads (defaults to plain text). Evidence and alert_class are each individually sanitized before concatenation in `_format_alert` / `_format_digest`.
 
@@ -1813,13 +1813,13 @@ Reliability-engineer lens:
 
 8. **is_seen() TOCTOU (minor):** `is_seen()` now acquires the flock (same as `mark_seen()`), making check-and-set atomic.
 
-9. **Deterministic alert_id (minor):** Added `deterministic_alert_id(alert_class, sig)` (SHA-256 hex) in `alert_state.py`. Applied in solana_rpc, irys_balance, failed_attestation, stale_swarms, stale_lkg. Caps repeated notifications to 1/24h for the same ongoing outage.
+9. **Deterministic alert_id (minor):** Added `deterministic_alert_id(alert_class, sig)` (SHA-256 hex) in `alert_state.py`. Applied in solana_rpc, turbo_balance, failed_attestation, stale_swarms, stale_lkg. Caps repeated notifications to 1/24h for the same ongoing outage.
 
 10. **cancel_futures=True (low):** Added to `executor.shutdown(wait=False, cancel_futures=True)`.
 
 11. **Init write without flock (low):** Merged into an `_acquire`/`_release` block in `__init__`.
 
-12. **Missing tests (code review):** Added `TestStaleSwarms` (4), `TestStaleLkg` (4), `TestIrysBalance` (5), `TestSSRFUrlAllowlist` (8), `TestDisabledChecksGuard` (3), `TestTokenScrubbing` (2), `TestStateFileMode` (2), `TestAlertClassBinding` (5), `TestDeterministicAlertId` (4), `TestTurnIntoTaskAuthorization` (3).
+12. **Missing tests (code review):** Added `TestStaleSwarms` (4), `TestStaleLkg` (4), `TestTurboBalance` (5), `TestSSRFUrlAllowlist` (8), `TestDisabledChecksGuard` (3), `TestTokenScrubbing` (2), `TestStateFileMode` (2), `TestAlertClassBinding` (5), `TestDeterministicAlertId` (4), `TestTurnIntoTaskAuthorization` (3).
 
 **New files:**
 - fabric/watchdog/url_validator.py
@@ -1830,7 +1830,7 @@ Reliability-engineer lens:
 - fabric/watchdog/turn_into_task.py
 - fabric/watchdog/scheduler.py
 - fabric/watchdog/checks/solana_rpc.py
-- fabric/watchdog/checks/irys_balance.py
+- fabric/watchdog/checks/turbo_balance.py
 - fabric/watchdog/checks/failed_attestation.py
 - fabric/watchdog/checks/stale_swarms.py
 - fabric/watchdog/checks/stale_lkg.py
@@ -2021,7 +2021,7 @@ Reliability-engineer lens:
 - F-008 (medium) — smoke-gate mock binds 0.0.0.0:8080 inside container: the broader audit recommendation is to replace the mock entirely (F-010), which is a multi-PR rework not appropriate for a remediation commit.
 - F-009 (medium) — uv installer curl|sh without sha256: requires hosting a mirrored installer; deferred.
 - F-014 (medium) — bw session token via `--session` argv → env var: orthogonal to this wave's scope and would touch the workspace-manager vault flow; tracked for follow-up.
-- F-012 / F-013 (low) — DNS-based SSRF in post-deploy-qa, URL-encoding in irys_balance: defensive-depth, not exploitable from external inputs.
+- F-012 / F-013 (low) — DNS-based SSRF in post-deploy-qa, URL-encoding in turbo_balance: defensive-depth, not exploitable from external inputs.
 
 **Commit SHA:** `b9693126b0a48f24dbb5519b3ccff68d6557d11d`
 

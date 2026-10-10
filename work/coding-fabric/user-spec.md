@@ -93,7 +93,7 @@ Mnemonic Protocol, где единственный интерфейс польз
 - orphaned worktrees
 - hung tmux
 - expired Solana RPC
-- exhausted Irys
+- exhausted Turbo credits
 - stale ruflo swarms
 - disk pressure (пороги 75/85/90% на 50 GB-бюджет под worktrees)
 - master clone drift
@@ -205,10 +205,10 @@ Mnemonic Protocol, где единственный интерфейс польз
 - Provision cloud VM (≥ 8 vCPU, ≥ 32 GB RAM, ≥ 200 GB disk).
 - Поднять VPN, добавить оператора.
 - Создать Telegram-бота, форум, 8 топиков.
-- Установить Vaultwarden, ввести учётные записи (Solana devnet, Irys testnet, Telegram bot,
+- Установить Vaultwarden, ввести учётные записи (Solana devnet, ArDrive Turbo, Telegram bot,
   Anthropic API, OpenAI/Codex API, GitHub, прочие).
 - Клонировать master-копии 6 репозиториев в выделенный каталог.
-- Зарегистрировать Solana devnet wallet, профондировать Irys testnet.
+- Зарегистрировать Solana devnet wallet, пополнить кредиты ArDrive Turbo.
 - Поставить ruflo (full CLI install), молянов-инструменты, локальный Mnemonic MCP-сервер.
 - Закрепить `MEMORY_NAMESPACE` per topic.
 - Прогнать Phase 2 end-to-end smoke на тестовой фиче.
@@ -281,7 +281,7 @@ Recurring (по факту работы):
   задачи через `/turn-into-task`; нет ожидания живой реакции от оператора.
 - R4. **ruflo/молянов конфликт.** Митигация: per-topic feature-toggles
   (autopilot/aidefence/rag-memory), Project Knowledge молянова — канонический источник.
-- R5. **Solana RPC / Irys testnet outage блокирует protocol-qa.** Митигация: алерты в `ops`,
+- R5. **Solana RPC / ArDrive Turbo outage блокирует protocol-qa.** Митигация: алерты в `ops`,
   ручное переключение endpoint, не блокирует другие топики.
 - R6. **Disk pressure при 10 параллельных worktrees + sccache.** Митигация: пороги 75/85/90%
   на 50 GB-бюджет, авто-cleanup завершённых задач.

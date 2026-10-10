@@ -128,13 +128,14 @@ def test_chain_stats_env_defaults():
     env = _text("templates/mcp.env.j2")
     assert "CHAIN_STATS_WALLETS={{ mnemonik_chain_stats_wallets" in env
     assert "SOLANA_RPC_URL={{ mnemonik_solana_rpc_url" in env
-    assert "ARWEAVE_URL={{ mnemonik_arweave_url" in env
+    assert "ARWEAVE_GATEWAY_URL={{ mnemonik_arweave_gateway_url" in env
     assert "CHAIN_STATS_GRAPHQL_URL={{ mnemonik_chain_stats_graphql_url" in env
     assert "CHAIN_STATS_GATEWAY_URL={{ mnemonik_chain_stats_gateway_url" in env
     defaults = _load("defaults/main.yml")
     assert defaults["mnemonik_solana_rpc_url"] == "https://api.mainnet-beta.solana.com"
-    assert defaults["mnemonik_arweave_url"] == "https://gateway.irys.xyz"
-    assert defaults["mnemonik_chain_stats_gateway_url"] == "https://gateway.irys.xyz"
+    assert defaults["mnemonik_arweave_gateway_url"] == "https://arweave.net"
+    assert defaults["mnemonik_chain_stats_graphql_url"] == "https://arweave.net/graphql"
+    assert defaults["mnemonik_chain_stats_gateway_url"] == "https://arweave.net"
 
 
 def test_universal_paywall_env_is_wired_and_fail_closed():

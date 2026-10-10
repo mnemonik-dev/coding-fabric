@@ -48,7 +48,7 @@
     "fabric/watchdog/checks/hung_tmux.py",
     "fabric/watchdog/checks/stale_prs.py",
     "fabric/watchdog/checks/stale_lkg.py",
-    "fabric/watchdog/checks/irys_balance.py",
+    "fabric/watchdog/checks/turbo_balance.py",
     "fabric/watchdog/systemd/fabric-watchdog.service",
     "fabric/harnesses/byte-equivalence/tests/test_byte_equivalence.py",
     "fabric/harnesses/mcp-compat/client.py",

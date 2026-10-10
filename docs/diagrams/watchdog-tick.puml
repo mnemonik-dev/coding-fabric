@@ -18,7 +18,7 @@ fork again
 fork again
   :solana_rpc getHealth (CRIT);
 fork again
-  :irys_balance (WARN);
+  :turbo_balance (WARN);
 fork again
   :disk_pressure 75/85/90%
   of 50 GB budget (WARN/CRIT);
