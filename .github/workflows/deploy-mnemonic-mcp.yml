@@ -148,7 +148,24 @@ jobs:
           set -euo pipefail
           REPO_DIR="$(echo "$REPO_DIR" | xargs)"
           case "$REPO_DIR" in /?*) ;; *) echo "::error::repo_dir must be absolute"; exit 1 ;; esac
-          ssh $SSH_OPTS "$VM_TARGET" bash -s <<REMOTE_EOF
+          # Prints only the base58 public key of a keypair file; never the secret.
+          PUBKEY_PY_B64=$(base64 -w0 <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1]))
+          secret = data if isinstance(data, list) else data.get("secret")
+          if not isinstance(secret, list) or len(secret) != 64:
+              sys.exit(3)
+          alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+          raw = bytes(secret[32:])
+          n, out = int.from_bytes(raw, "big"), ""
+          while n:
+              n, r = divmod(n, 58)
+              out = alphabet[r] + out
+          print("1" * (len(raw) - len(raw.lstrip(b"\0"))) + out)
+          PY
+          )
+          echo "ROLLBACK_READY=true" >> "$GITHUB_ENV"
+          ssh $SSH_OPTS "$VM_TARGET" bash -s <<REMOTE_EOF | tee /tmp/apply.log
           set -euo pipefail
           REPO="${REPO_DIR}"
           if docker info >/dev/null 2>&1; then DOCKER="docker"; else DOCKER="sudo -n docker"; fi
@@ -175,6 +192,29 @@ jobs:
           PROJ=\$(\$DOCKER inspect mnemonik-mcp-1 --format '{{index .Config.Labels "com.docker.compose.project"}}' 2>/dev/null || true)
           PROJ="\${PROJ:-mnemonik}"
           echo "compose project: \$PROJ"
+
+          # Identity guard. Images since monorepo e20ccea read
+          # MNEMONIC_KEYPAIR_PATH (image default /keypair/id.json); older ones
+          # read MNEMONIC_CONFIG_DIR/identity.json. Record the public key of the
+          # file in use, pin it, and keep backups for automatic rollback.
+          cp -p docker-compose.yml docker-compose.yml.prev
+          cp -p mcp.env mcp.env.prev
+          KEYDIR=\$(\$DOCKER inspect mnemonik-mcp-1 --format '{{range .Mounts}}{{if eq .Destination "/keypair"}}{{.Source}}{{end}}{{end}}' 2>/dev/null || true)
+          if [ -z "\$KEYDIR" ]; then echo "::error::cannot find the /keypair mount of mnemonik-mcp-1"; exit 1; fi
+          echo "${PUBKEY_PY_B64}" | base64 -d > /tmp/mnemonik-pubkey.py
+          for f in identity.json id.json; do
+            if sudo -n test -f "\$KEYDIR/\$f"; then
+              echo "keyfile \$f public key: \$(sudo -n python3 /tmp/mnemonik-pubkey.py "\$KEYDIR/\$f" || echo 'no secret')"
+            else
+              echo "keyfile \$f: absent"
+            fi
+          done
+          EXPECTED=\$(sudo -n python3 /tmp/mnemonik-pubkey.py "\$KEYDIR/identity.json") || {
+            echo "::error::\$KEYDIR/identity.json has no usable secret; refusing to change the image"; exit 1; }
+          rm -f /tmp/mnemonik-pubkey.py
+          echo "EXPECTED_PUBKEY=\$EXPECTED"
+          sed -i '/^MNEMONIC_KEYPAIR_PATH=/d' mcp.env
+          echo "MNEMONIC_KEYPAIR_PATH=/keypair/identity.json" >> mcp.env
 
           case "${REF}" in
             v*|sha-*) IMAGE_TAG="${REF}" ;;
@@ -218,6 +258,7 @@ jobs:
           \$DOCKER compose -p "\$PROJ" logs --since 120s mcp \
             | grep -iE 'seed|protocol-knowledge|Identity:|listening|chain-stats' || true
           REMOTE_EOF
+          grep -m1 '^EXPECTED_PUBKEY=' /tmp/apply.log >> "$GITHUB_ENV"
 
       - name: Public smoke (health + tools/list)
         if: ${{ inputs.action == 'apply' || inputs.action == 'rollback' }}
@@ -230,3 +271,54 @@ jobs:
             -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
             | jq -e '(.result.tools | length) >= 7' >/dev/null
           echo "public smoke OK"
+
+      - name: Verify the operator identity is unchanged
+        if: ${{ inputs.action == 'apply' }}
+        run: |
+          set -euo pipefail
+          test -n "${EXPECTED_PUBKEY:-}"
+          python3 -c 'import cryptography' 2>/dev/null || python3 -m pip install --quiet cryptography
+          python3 - <<'PY'
+          import json, os, secrets, urllib.request
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+          origin = "https://mcp.mnemonik.xyz"
+          expected = os.environ["EXPECTED_PUBKEY"]
+          nonce = secrets.token_hex(32)
+          body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                  "params": {"name": "mnemonic_operator_proof", "arguments": {"nonce": nonce}}}
+          request = urllib.request.Request(origin + "/mcp", data=json.dumps(body).encode(), method="POST",
+                                           headers={"Content-Type": "application/json", "Accept": "application/json"})
+          envelope = json.loads(urllib.request.urlopen(request, timeout=20).read())
+          proof = json.loads(envelope["result"]["content"][0]["text"])
+          assert proof["public_key"] == expected, f"identity changed: {proof['public_key']} != {expected}"
+          assert proof["origin"] == origin and proof["nonce"] == nonce
+          alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+          n = 0
+          for c in expected:
+              n = n * 58 + alphabet.index(c)
+          key = n.to_bytes(32, "big")
+          message = f"mnemonic.operator-selection.v1\n{origin}\n{nonce}".encode()
+          Ed25519PublicKey.from_public_bytes(key).verify(bytes.fromhex(proof["signature"]), message)
+          print(f"identity unchanged and proven: {expected}")
+          PY
+
+      - name: Roll back to the previous image and environment
+        if: ${{ failure() && inputs.action == 'apply' && env.ROLLBACK_READY == 'true' }}
+        env:
+          REPO_DIR: ${{ inputs.repo_dir }}
+        run: |
+          set -euo pipefail
+          REPO_DIR="$(echo "$REPO_DIR" | xargs)"
+          ssh $SSH_OPTS "$VM_TARGET" bash -s <<REMOTE_EOF
+          set -euo pipefail
+          cd "${REPO_DIR}"
+          if docker info >/dev/null 2>&1; then DOCKER="docker"; else DOCKER="sudo -n docker"; fi
+          if [ ! -f docker-compose.yml.prev ] || [ ! -f mcp.env.prev ]; then
+            echo "::warning::no backups found; nothing was changed"; exit 0
+          fi
+          mv docker-compose.yml.prev docker-compose.yml
+          mv mcp.env.prev mcp.env
+          PROJ=\$(\$DOCKER inspect mnemonik-mcp-1 --format '{{index .Config.Labels "com.docker.compose.project"}}' 2>/dev/null || true)
+          \$DOCKER compose -p "\${PROJ:-mnemonik}" up -d mcp
+          echo "restored the previous image tag and mcp.env"
+          REMOTE_EOF

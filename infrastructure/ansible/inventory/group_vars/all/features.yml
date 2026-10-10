@@ -11,7 +11,7 @@ mnemonik_server_enabled: true
 # Pin to the confirmed-good build rather than :latest for a reproducible
 # deploy. Bump when a newer build is verified. Package is public, so the
 # fail-soft GHCR login is skipped/ignored and the pull is anonymous.
-mnemonik_mcp_image_tag: "sha-61fdb3e"
+mnemonik_mcp_image_tag: "sha-e8b6e2b"
 
 # Hosted MCP is the public participate-mode operator. Default writes should
 # anchor to Irys/Arweave + Solana; local-only writes remain available via
