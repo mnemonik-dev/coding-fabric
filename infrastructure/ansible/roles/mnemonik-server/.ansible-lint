@@ -1,0 +1,8 @@
+---
+# Role-local ansible-lint config. Mirrors the mnemonic-mcp role.
+#
+# role-name: every role in this repo uses kebab-case (mnemonic-mcp, kaneo,
+# telegram-init, ssh-hardening, ...). Matching that convention trips the
+# lint's snake_case rule; renaming is a repo-wide concern, out of scope here.
+skip_list:
+  - role-name

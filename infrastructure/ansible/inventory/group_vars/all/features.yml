@@ -1,0 +1,36 @@
+---
+# Feature enable flags, loaded by ansible from group_vars/all (adjacent to the
+# CI-generated inventory hosts.yml). Higher precedence than role defaults,
+# lower than the play's role vars in deploy.yml.
+
+# mnemonik-server: co-located Mnemonic MCP server (Rust GHCR image + local
+# Ollama), fronted by the shared Caddy. Enabled 2026-07-09 once the GHCR
+# package went public and a build passed.
+mnemonik_server_enabled: true
+
+# Pin to the confirmed-good build rather than :latest for a reproducible
+# deploy. Bump when a newer build is verified. Package is public, so the
+# fail-soft GHCR login is skipped/ignored and the pull is anonymous.
+mnemonik_mcp_image_tag: "sha-61fdb3e"
+
+# Hosted MCP is the public participate-mode operator. Default writes should
+# anchor to Irys/Arweave + Solana; local-only writes remain available via
+# explicit mode=local.
+mnemonik_mcp_storage_mode: "full"
+
+# Wallets that have signed hosted anchored uploads. Include both the documented
+# pre-Hetzner server identity and the accidental post-migration identity so the
+# chain-backed public counters recover all indexed history.
+mnemonik_chain_stats_wallets: >-
+  DYVu4Bry3BzGVsR3Hj2iGVT5fNdWFoHw2zRxsdTmrG25,
+  EdFyDHqqWTSPKs7c89U36Uy8QAnX2nX2A7qkYKD2Td21
+
+mnemonik_arweave_url: "https://gateway.irys.xyz"
+mnemonik_chain_stats_gateway_url: "https://gateway.irys.xyz"
+mnemonik_chain_stats_graphql_url: "https://arweave.net/graphql"
+
+# Browser webapp origins. Caddy reflects the request Origin if it matches
+# one of these exact origins.
+mnemonik_mcp_cors_origin:
+  - "https://www.mnemonik.xyz"
+  - "https://mnemonik-webapp.pages.dev"
