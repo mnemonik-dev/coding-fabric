@@ -15,7 +15,7 @@ card with the `/turn-into-task` bot command.
 | `orphaned_worktrees` | WARNING | Disk dirs under `worktrees_root` not tracked in workspace-manager `state.json` |
 | `hung_tmux` | WARNING | tmux session idle > 12 hours (configurable via `tmux_idle_hours`) |
 | `solana_rpc` | CRITICAL | Devnet RPC does not respond to `getHealth` within 10 s, or returns `result != "ok"` |
-| `irys_balance` | WARNING | Irys testnet wallet balance below `irys_balance_min` (default 1 000 000 units) |
+| `turbo_balance` | WARNING | ArDrive Turbo credit balance of the upload wallet below `turbo_balance_min_winc` (default 10^11 winc = 0.1 Credit); items over 105 KiB fail with HTTP 402 without credits |
 | `disk_pressure` | WARNING / CRITICAL | Worktrees partition used fraction vs 50 GB budget: 75% = WARNING, 85% = WARNING, 90% = CRITICAL |
 | `master_drift` | WARNING | Local `main` HEAD differs from `origin/main` after `git fetch` |
 | `stale_prs` | WARNING | Open GitHub PR not updated in > 7 days (configurable via `stale_pr_days`) |
@@ -98,9 +98,10 @@ keys fall back to the defaults listed below.
 | `tmux_idle_hours` | `12` | Hung tmux threshold |
 | `solana_rpc_url` | `https://api.devnet.solana.com` | Devnet RPC endpoint |
 | `solana_rpc_timeout` | `10` | HTTP timeout (seconds) |
-| `irys_node_url` | `https://devnet.irys.xyz` | Irys node URL |
-| `irys_address` | — | Wallet address to check (required for irys_balance check) |
-| `irys_balance_min` | `1000000` | Minimum acceptable balance |
+| `turbo_payment_url` | `https://payment.ardrive.io` | Turbo payment service (read-only balance query) |
+| `turbo_address` | — | Upload wallet address to check (required for turbo_balance check) |
+| `turbo_token` | `solana` | Wallet type of `turbo_address` |
+| `turbo_balance_min_winc` | `100000000000` | Minimum acceptable balance in winc |
 | `disk_path` | `/home/op/code/mnemonic-workspaces` | Path to check |
 | `disk_budget_gb` | `50` | Budget in GiB |
 | `disk_warn_threshold` | `0.75` | First warning level |

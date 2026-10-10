@@ -123,7 +123,7 @@
         vault_universal_paywall_staging_pay_to: "{{ sops.universal_paywall_staging_pay_to | default('') }}"
         vault_universal_paywall_staging_facilitator_url: "{{ sops.universal_paywall_staging_facilitator_url | default('http://facilitator:8403') }}"
         vault_universal_paywall_staging_solana_rpc_url: "{{ sops.universal_paywall_staging_solana_rpc_url | default('') }}"
-        vault_universal_paywall_staging_irys_url: "{{ sops.universal_paywall_staging_irys_url | default('') }}"
+        vault_universal_paywall_staging_arweave_gateway_url: "{{ sops.universal_paywall_staging_arweave_gateway_url | default('https://arweave.net') }}"
         # Content publisher (work/content-publish-pipeline/). All defaults
         # empty/safe so first deploy with placeholder sops doesn't fail —
         # content-publisher role is gated on a non-empty bot token and
@@ -330,7 +330,7 @@
         universal_paywall_staging_pay_to: "{{ vault_universal_paywall_staging_pay_to }}"
         universal_paywall_staging_facilitator_url: "{{ vault_universal_paywall_staging_facilitator_url }}"
         universal_paywall_staging_solana_rpc_url: "{{ vault_universal_paywall_staging_solana_rpc_url }}"
-        universal_paywall_staging_irys_url: "{{ vault_universal_paywall_staging_irys_url }}"
+        universal_paywall_staging_arweave_gateway_url: "{{ vault_universal_paywall_staging_arweave_gateway_url }}"
 
     # Phase 7: Fabric services deployment
     - role: fabric-services

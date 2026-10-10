@@ -50,7 +50,7 @@ _CHECK_MODULES = [
     "fabric.watchdog.checks.orphaned_worktrees",
     "fabric.watchdog.checks.hung_tmux",
     "fabric.watchdog.checks.solana_rpc",
-    "fabric.watchdog.checks.irys_balance",
+    "fabric.watchdog.checks.turbo_balance",
     "fabric.watchdog.checks.disk_pressure",
     "fabric.watchdog.checks.master_drift",
     "fabric.watchdog.checks.stale_prs",

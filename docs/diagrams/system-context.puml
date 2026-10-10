@@ -25,7 +25,7 @@ node "Hetzner CCX33 VM 'mnemonic-fabric'\n(tailnet-only admin plane)" {
 
 cloud "GitHub\n(6 mnemonic-* repos)" as GH
 cloud "Solana devnet" as Sol
-cloud "Arweave testnet / Irys" as Arw
+cloud "Arweave / ArDrive Turbo" as Arw
 cloud "Anthropic / OpenAI APIs" as LLM
 
 OP <--> Forum
@@ -47,7 +47,7 @@ MCP ..> Arw
 WD --> Forum : alerts (ops topic)
 WD --> Kaneo : /turn-into-task cards
 WD --> Sol : health probe
-WD --> Arw : Irys balance
+WD --> Arw : Turbo balance
 WD --> GH : stale-PR check
 
 legend right

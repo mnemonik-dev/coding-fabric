@@ -47,9 +47,10 @@ fabric updates) is fully automated via CI + recursive self-hosting.
       --outfile mnemonic-devnet.json`). Fund it with at least 5 devnet SOL via
       `solana airdrop 5 --url devnet`. Encode keypair JSON as base64; save as
       GitHub Actions secret `SOLANA_DEVNET_KEYPAIR`.
-- [ ] **Irys testnet**: create an Irys testnet account, fund it (small balance is
-      enough for the receipt traffic). Capture private key → save as GitHub Actions
-      secret `IRYS_TESTNET_PRIVATE_KEY`.
+- [ ] **ArDrive Turbo credits**: uploads are signed by the server's Solana identity
+      and are permanent on Arweave mainnet. Items up to 105 KiB are free; top up
+      Turbo credits for that wallet if larger receipts are expected (HTTP 402
+      otherwise). No separate storage private key is needed.
 - [ ] **Mnemonic signing key**: generate the signing key the local Mnemonic MCP server
       will use (`mnemonic_prove_identity --new`, or equivalent CLI). Save as a sops-
       encrypted entry that ends up in Vaultwarden — but do NOT put the private key in
