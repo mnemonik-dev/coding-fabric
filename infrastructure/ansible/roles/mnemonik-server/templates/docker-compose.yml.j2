@@ -22,7 +22,7 @@ services:
     expose:
       - "{{ mnemonik_mcp_container_port }}"
     volumes:
-      # State on the Hetzner persistent volume — server identity (id.json)
+      # State on the Hetzner persistent volume — server identity (identity.json)
       # and attestation DB survive a VM rebuild.
       - "{{ mnemonik_state_dir }}/data:/data"
       - "{{ mnemonik_state_dir }}/keypair:/keypair"

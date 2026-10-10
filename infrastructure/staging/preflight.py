@@ -59,7 +59,8 @@ def check_effective(service, env, previous=None):
         stable = ["FACILITATOR_KEY", "SERVICE_PAY_TO", "SERVICE_ID", "RECEIPT_KEY_ID"]
     else:
         expected = {"DATABASE_PATH": "/data/attestations.db", "ANCHORING_NETWORK": "devnet",
-                    "MNEMONIC_CONFIG_DIR": "/keypair", "STORAGE_MODE": "full"}
+                    "MNEMONIC_CONFIG_DIR": "/keypair",
+                    "MNEMONIC_KEYPAIR_PATH": "/keypair/identity.json", "STORAGE_MODE": "full"}
         required = ["MCP_JWT_SECRET", "MCP_PUBLIC_BASE_URL", "EMBED_PROVIDER"]
         stable = ["MCP_JWT_SECRET", "MCP_PUBLIC_BASE_URL"]
         require(env.get("PAYMENT_MODE") in {"none", "x402"}, "unsupported MCP payment mode")

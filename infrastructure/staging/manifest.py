@@ -144,7 +144,10 @@ def render(data: Any) -> dict[str, Any]:
             "image": candidate["mcp_image"], "restart": "unless-stopped",
             "env_file": [o["env_file"]],
             "environment": {"DATABASE_PATH": "/data/attestations.db",
-                "MNEMONIC_CONFIG_DIR": "/keypair",
+                # Older images read CONFIG_DIR/identity.json; images since
+                # monorepo e20ccea read KEYPAIR_PATH (default /keypair/id.json).
+                # Override the env file so both name the mounted identity.
+                "MNEMONIC_CONFIG_DIR": "/keypair", "MNEMONIC_KEYPAIR_PATH": "/keypair/identity.json",
                 "MCP_PUBLIC_BASE_URL": o["public_url"], "MNEMONIC_APPROVAL_UI_DIST": "/approval-ui",
                 "UNIVERSAL_PAYWALL_URL": "http://facilitator:8403"},
             "volumes": [volume + ":/data", "approval-assets:/approval-ui:ro",

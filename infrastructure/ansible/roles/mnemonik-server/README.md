@@ -14,7 +14,7 @@ plus a local Ollama for `/chat`. TLS + public ingress are handled by the
 1. **Swap** — idempotent `{{ mnemonik_server_swap_size_mb }}`MB swapfile
    (ollama + fastembed headroom). Toggle with `mnemonik_server_swap_enabled`.
 2. **State on the persistent volume** — creates `<volume>/mnemonik/{data,keypair,ollama}`
-   and bind-mounts them into the containers so server identity (`id.json` in
+   and bind-mounts them into the containers so server identity (`identity.json` in
    `/keypair`), the attestation DB (`/data`), and the pulled model survive a
    VM rebuild.
 3. **GHCR pull** — optional `docker login` (private package), then

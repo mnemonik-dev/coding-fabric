@@ -76,11 +76,13 @@ def test_state_on_persistent_volume():
 
 
 def test_identity_config_dir_is_persisted_keypair_mount():
-    # The current binary ignores MNEMONIC_KEYPAIR_PATH and reads
-    # MNEMONIC_CONFIG_DIR/identity.json through identity::ensure().
+    # Images before monorepo e20ccea read MNEMONIC_CONFIG_DIR/identity.json;
+    # newer images read MNEMONIC_KEYPAIR_PATH (image default /keypair/id.json).
+    # Both must name the same file so an image bump keeps the signer.
     env = _text("templates/mcp.env.j2")
     tasks = _text("tasks/main.yml")
     assert "MNEMONIC_CONFIG_DIR=/keypair" in env
+    assert "MNEMONIC_KEYPAIR_PATH=/keypair/identity.json" in env
     assert "keypair/id.json" in tasks
     assert "keypair/identity.json" in tasks
 

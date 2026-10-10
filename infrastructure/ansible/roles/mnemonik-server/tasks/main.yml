@@ -141,10 +141,10 @@
       register: mnemonik_current_identity
 
     - name: Migrate legacy MCP identity filename to identity.json
-      # The Dockerfile used to advertise MNEMONIC_KEYPAIR_PATH=/keypair/id.json,
-      # but the current binary reads MNEMONIC_CONFIG_DIR/identity.json through
-      # identity::ensure(). Preserve an existing funded signer if it is present
-      # on the persistent volume.
+      # identity.json is the signer file for every image: older binaries read
+      # MNEMONIC_CONFIG_DIR/identity.json, newer ones read the pinned
+      # MNEMONIC_KEYPAIR_PATH. Preserve an existing funded signer if it is
+      # present on the persistent volume.
       become: true
       ansible.builtin.copy:
         src: "{{ mnemonik_state_dir }}/keypair/id.json"

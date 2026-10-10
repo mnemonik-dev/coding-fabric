@@ -63,11 +63,17 @@ class PreflightTests(unittest.TestCase):
     def test_mcp_requires_persisted_config_directory(self):
         env = {
             "DATABASE_PATH": "/data/attestations.db", "ANCHORING_NETWORK": "devnet",
-            "MNEMONIC_CONFIG_DIR": "/keypair", "STORAGE_MODE": "full", "PAYMENT_MODE": "none",
+            "MNEMONIC_CONFIG_DIR": "/keypair", "MNEMONIC_KEYPAIR_PATH": "/keypair/identity.json",
+            "STORAGE_MODE": "full", "PAYMENT_MODE": "none",
             "MCP_JWT_SECRET": "synthetic-jwt", "MCP_PUBLIC_BASE_URL": "https://staging.example.com",
             "EMBED_PROVIDER": "fastembed", "IRYS_GATEWAY_URL": "https://devnet.irys.xyz",
         }
         preflight.check_effective("mcp", env)
+        # Images since monorepo e20ccea read MNEMONIC_KEYPAIR_PATH; the env-file
+        # and image default /keypair/id.json is not mounted in the candidate.
+        legacy = dict(env, MNEMONIC_KEYPAIR_PATH="/keypair/id.json")
+        with self.assertRaisesRegex(manifest.InvalidManifest, "MNEMONIC_KEYPAIR_PATH"):
+            preflight.check_effective("mcp", legacy)
         del env["MNEMONIC_CONFIG_DIR"]
         env["MNEMONIC_KEYPAIR_PATH"] = "/keypair/id.json"
         with self.assertRaisesRegex(manifest.InvalidManifest, "MNEMONIC_CONFIG_DIR"):
