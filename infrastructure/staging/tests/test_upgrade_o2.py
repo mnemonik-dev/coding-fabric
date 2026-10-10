@@ -1,6 +1,8 @@
 """O2 image upgrade edits only the MCP image and keeps a rollback copy."""
 import importlib.util
 import json
+import os
+import unittest.mock
 from pathlib import Path
 import tempfile
 import unittest
@@ -41,6 +43,20 @@ class UpgradeTests(unittest.TestCase):
             self.assertEqual((root / 'compose.json').stat().st_mode & 0o777, 0o600)
             upgrade.rollback(root)
             self.assertEqual((root / 'compose.json').read_text(), original)
+
+    def test_replacements_fsync_the_parent_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            installed(root)
+            with unittest.mock.patch.object(upgrade.os, 'fsync', wraps=os.fsync) as synced, \
+                 unittest.mock.patch.object(upgrade.os, 'open', wraps=os.open) as opened:
+                upgrade.upgrade(root, NEW)
+            directory_opens = [c for c in opened.call_args_list if c.args[1] & os.O_DIRECTORY]
+            # Two replacements (compose.json.prev, compose.json), each followed
+            # by a directory fsync; plus one fsync per file.
+            self.assertEqual(len(directory_opens), 2)
+            self.assertTrue(all(Path(c.args[0]) == root for c in directory_opens))
+            self.assertEqual(synced.call_count, 4)
 
     def test_same_image_writes_nothing(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -25,6 +25,7 @@ def reviewed_image():
 
 
 def write(path, text):
+    """Atomic durable write: tempfile, fsync, os.replace, fsync parent directory."""
     temporary = path.with_name(path.name + '.tmp')
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
     with os.fdopen(descriptor, 'w') as handle:
@@ -32,6 +33,11 @@ def write(path, text):
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temporary, path)
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 def upgrade(root, image):

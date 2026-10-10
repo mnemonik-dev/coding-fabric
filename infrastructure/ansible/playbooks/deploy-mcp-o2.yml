@@ -226,6 +226,16 @@
           register: o2_compose
           failed_when: not o2_compose.stat.exists
 
+        # The container exists only after a successful `start`, which is gated
+        # on the verified off-host backup. A prepared but never-started host
+        # must use `start`, so upgrade cannot bypass that gate.
+        - name: Require that O2 was already started after backup verification
+          ansible.builtin.command:
+            argv: [docker, container, inspect, --format, '{{ "{{" }}.Id{{ "}}" }}', mnemonik-o2-mcp-1]
+          register: o2_started
+          changed_when: false
+          failed_when: o2_started.rc != 0
+
         - name: Read the recorded operator identity
           ansible.builtin.slurp:
             src: /opt/mnemonik-o2/operator.json
