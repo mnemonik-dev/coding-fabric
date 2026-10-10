@@ -527,64 +527,81 @@ class TestStaleLkg:
 
 
 # ---------------------------------------------------------------------------
-# irys_balance
+# turbo_balance
 # ---------------------------------------------------------------------------
 
 
-class TestIrysBalance:
-    """Direct unit tests for irys_balance check."""
+class TestTurboBalance:
+    """Direct unit tests for turbo_balance check."""
 
-    def test_irys_balance_below_threshold_fires(self):
-        """Alert fires when balance is below the minimum threshold."""
-        from fabric.watchdog.checks.irys_balance import check
-        from unittest.mock import patch, MagicMock
+    @staticmethod
+    def _response(body):
+        from unittest.mock import MagicMock
 
         mock_resp = MagicMock()
-        mock_resp.read.return_value = json.dumps({"balance": "500000"}).encode()
+        mock_resp.read.return_value = json.dumps(body).encode()
         mock_resp.__enter__ = lambda s: s
         mock_resp.__exit__ = MagicMock(return_value=False)
+        return mock_resp
 
-        with patch("urllib.request.urlopen", return_value=mock_resp):
+    def test_turbo_balance_below_threshold_fires(self):
+        """Alert fires when balance is below the minimum threshold."""
+        from fabric.watchdog.checks.turbo_balance import check
+        from unittest.mock import patch
+
+        resp = self._response({"winc": "500000", "effectiveBalance": "500000"})
+        with patch("urllib.request.urlopen", return_value=resp) as urlopen:
             config = {
-                "irys_node_url": "https://devnet.irys.xyz",
-                "irys_address": "walletABCDEF",
-                "irys_balance_min": 1_000_000,
-                "irys_rpc_timeout": 5,
+                "turbo_payment_url": "https://payment.ardrive.io",
+                "turbo_address": "walletABCDEF",
+                "turbo_balance_min_winc": 1_000_000,
+                "turbo_rpc_timeout": 5,
             }
             alert = check(config)
 
         assert alert is not None
-        assert alert.alert_class == "irys_balance"
+        assert alert.alert_class == "turbo_balance"
         assert "500000" in alert.evidence
+        assert urlopen.call_args.args[0] == (
+            "https://payment.ardrive.io/v1/account/balance/solana?address=walletABCDEF"
+        )
 
-    def test_irys_balance_sufficient_returns_none(self):
+    def test_turbo_balance_sufficient_returns_none(self):
         """No alert when balance is at or above the minimum."""
-        from fabric.watchdog.checks.irys_balance import check
-        from unittest.mock import patch, MagicMock
+        from fabric.watchdog.checks.turbo_balance import check
+        from unittest.mock import patch
 
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = json.dumps({"balance": "2000000"}).encode()
-        mock_resp.__enter__ = lambda s: s
-        mock_resp.__exit__ = MagicMock(return_value=False)
-
-        with patch("urllib.request.urlopen", return_value=mock_resp):
+        resp = self._response({"winc": "2000000", "effectiveBalance": "2000000"})
+        with patch("urllib.request.urlopen", return_value=resp):
             config = {
-                "irys_node_url": "https://devnet.irys.xyz",
-                "irys_address": "walletABCDEF",
-                "irys_balance_min": 1_000_000,
+                "turbo_address": "walletABCDEF",
+                "turbo_balance_min_winc": 1_000_000,
             }
             alert = check(config)
 
         assert alert is None
 
-    def test_irys_balance_unreachable_fires(self):
-        """Alert fires (WARNING) when Irys node is unreachable."""
-        from fabric.watchdog.checks.irys_balance import check
+    def test_turbo_balance_unknown_wallet_fires(self):
+        """A 404 (wallet never held credits) counts as a zero balance."""
+        from fabric.watchdog.checks.turbo_balance import check
+        import urllib.error
+        from unittest.mock import patch
+
+        not_found = urllib.error.HTTPError("u", 404, "Not Found", None, None)
+        with patch("urllib.request.urlopen", side_effect=not_found):
+            alert = check({"turbo_address": "walletNEW"})
+
+        assert alert is not None
+        assert alert.alert_class == "turbo_balance"
+        assert alert.extra["balance"] == 0
+
+    def test_turbo_balance_unreachable_fires(self):
+        """Alert fires (WARNING) when the payment service is unreachable."""
+        from fabric.watchdog.checks.turbo_balance import check
 
         config = {
-            "irys_node_url": "https://devnet.irys.xyz",
-            "irys_address": "walletXYZ",
-            "irys_rpc_timeout": 0.01,  # near-zero timeout to force failure
+            "turbo_address": "walletXYZ",
+            "turbo_rpc_timeout": 0.01,
         }
         # We can't guarantee a connection error with a real hostname in CI,
         # so mock the network layer.
@@ -594,33 +611,38 @@ class TestIrysBalance:
             alert = check(config)
 
         assert alert is not None
-        assert alert.alert_class == "irys_balance"
+        assert alert.alert_class == "turbo_balance"
         from fabric.watchdog.models import Severity
         assert alert.severity == Severity.WARNING
 
-    def test_irys_balance_no_address_skipped(self):
-        """No alert when irys_address is not configured."""
-        from fabric.watchdog.checks.irys_balance import check
+    def test_turbo_balance_no_address_skipped(self):
+        """No alert when turbo_address is not configured."""
+        from fabric.watchdog.checks.turbo_balance import check
 
-        config = {"irys_node_url": "https://devnet.irys.xyz"}
+        config = {"turbo_payment_url": "https://payment.ardrive.io"}
         alert = check(config)
         assert alert is None
 
-    def test_irys_balance_deterministic_id(self):
-        """Same address+node always produces the same alert_id."""
-        from fabric.watchdog.checks.irys_balance import check
-        from unittest.mock import patch, MagicMock
+    def test_turbo_balance_address_is_url_encoded(self):
+        """The address cannot inject extra query parameters."""
+        from fabric.watchdog.checks.turbo_balance import check
+        from unittest.mock import patch
 
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = json.dumps({"balance": "0"}).encode()
-        mock_resp.__enter__ = lambda s: s
-        mock_resp.__exit__ = MagicMock(return_value=False)
+        resp = self._response({"winc": "0"})
+        with patch("urllib.request.urlopen", return_value=resp) as urlopen:
+            check({"turbo_address": "a&b=c#d"})
 
-        with patch("urllib.request.urlopen", return_value=mock_resp):
+        assert urlopen.call_args.args[0].endswith("?address=a%26b%3Dc%23d")
+
+    def test_turbo_balance_deterministic_id(self):
+        """Same address+service always produces the same alert_id."""
+        from fabric.watchdog.checks.turbo_balance import check
+        from unittest.mock import patch
+
+        with patch("urllib.request.urlopen", side_effect=lambda *a, **k: self._response({"winc": "0"})):
             config = {
-                "irys_node_url": "https://devnet.irys.xyz",
-                "irys_address": "walletSTABLE",
-                "irys_balance_min": 1_000_000,
+                "turbo_address": "walletSTABLE",
+                "turbo_balance_min_winc": 1_000_000,
             }
             a1 = check(config)
             a2 = check(config)
@@ -666,7 +688,7 @@ class TestSSRFUrlAllowlist:
     def test_allowlisted_public_host_passes(self):
         from fabric.watchdog.url_validator import validate_url
         validate_url("https://api.devnet.solana.com", context="test")
-        validate_url("https://devnet.irys.xyz", context="test")
+        validate_url("https://payment.ardrive.io", context="test")
         validate_url("https://api.telegram.org", context="test")
 
     def test_solana_check_rejects_mainnet_url(self, tmp_path):
@@ -681,13 +703,13 @@ class TestSSRFUrlAllowlist:
         alert = check(config)
         assert alert is None
 
-    def test_irys_check_rejects_file_url(self, tmp_path):
-        """irys_balance check returns None for file:// URL."""
-        from fabric.watchdog.checks.irys_balance import check
+    def test_turbo_check_rejects_file_url(self, tmp_path):
+        """turbo_balance check returns None for file:// URL."""
+        from fabric.watchdog.checks.turbo_balance import check
 
         config = {
-            "irys_node_url": "file:///etc/passwd",
-            "irys_address": "walletABC",
+            "turbo_payment_url": "file:///etc/passwd",
+            "turbo_address": "walletABC",
         }
         alert = check(config)
         assert alert is None
@@ -984,7 +1006,7 @@ class TestDeterministicAlertId:
         from fabric.watchdog.alert_state import deterministic_alert_id
 
         a = deterministic_alert_id("solana_rpc", "sig")
-        b = deterministic_alert_id("irys_balance", "sig")
+        b = deterministic_alert_id("turbo_balance", "sig")
         assert a != b
 
     def test_different_sig_different_id(self):

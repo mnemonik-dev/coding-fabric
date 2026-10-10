@@ -63,7 +63,7 @@ flowchart LR
     subgraph External
         GH["GitHub<br/>(6 mnemonic-* repos)"]
         SOL["Solana devnet"]
-        ARW["Arweave testnet / Irys"]
+        ARW["Arweave / ArDrive Turbo"]
         LLM["Anthropic / OpenAI APIs"]
     end
 
@@ -142,7 +142,7 @@ Key deployment facts:
 | Component | LOC (src / tests) | Role | Key interfaces |
 |---|---|---|---|
 | `workspace-manager/` | ~2,600 / ~1,750 | Worktree lifecycle API **and** Symphony orchestrator | HTTP :8080 (`POST/DELETE/GET /worktree*`, `/health`); Kaneo REST; Vaultwarden `bw` CLI; git/gh; Telegram; spawns claude/codex |
-| `watchdog/` | ~2,060 / ~1,600 | 9 operational checks every 5 min; `/turn-into-task` | Telegram ops topic; Kaneo cards; Solana/Irys/GitHub probes; SSRF-guarded (allowlisted public hosts) |
+| `watchdog/` | ~2,060 / ~1,600 | 9 operational checks every 5 min; `/turn-into-task` | Telegram ops topic; Kaneo cards; Solana/ArDrive Turbo/GitHub probes; SSRF-guarded (allowlisted public hosts) |
 | `logs/sanitizer/` | ~360 / ~570 | Mandatory secret-redaction chokepoint (base58 keys, JWK, API tokens, TG file URLs) | Pure library; hard dependency of watchdog, wired into workspace-manager logging |
 | `content-publisher/` | ~2,480 / ~3,330 | Blog pipeline: queue + 13-state job machine + CAS; spawn/score/preview/publish/attest | `queue.jsonl` on persistent volume; spawns claude; `mnemonik_blogger` in-process; `mnemonik-mcp mcp-stdio` for attestation |
 | `safe-mode/` | shell | `last-known-good` tag hook; docker-compose smoke gate; rollback playbook counterpart | git tags, flock locks, workspace-manager API |
@@ -267,7 +267,7 @@ flowchart LR
 flowchart LR
     TIMER["systemd timer, 5 min"] --> WD["watchdog tick:<br/>9 checks in thread pool,<br/>30 s per-check timeout"]
     WD --> C1["worktrees / tmux / disk /<br/>master drift / stale PRs / stale LKG"]
-    WD --> C2["Solana RPC health (CRIT)<br/>Irys balance (WARN)"]
+    WD --> C2["Solana RPC health (CRIT)<br/>Turbo credit balance (WARN)"]
     WD --> C3["failed_attestation (CRIT)<br/>-> 127.0.0.1:4000 (STALE, see F2)"]
     WD -->|dedup 24 h cache,<br/>digest if >3 new| TG["Telegram ops topic<br/>(sanitized, no parse_mode)"]
     TG -->|"/turn-into-task alert_id"| KC["Kaneo card<br/>(idempotent by alert_id)"]

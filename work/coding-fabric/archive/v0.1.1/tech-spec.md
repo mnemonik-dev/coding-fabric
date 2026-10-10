@@ -116,7 +116,7 @@ Four cooperating layers + one new glue component, all on a single cloud VM:
 | Vaultwarden vault | Phase 0 admin | workspace-manager (for .env), watchdog (for endpoints) | 1 | Agents never read directly |
 | Telegram bot token | Phase 0 admin | telegram-ai-agent, fabric-watchdog | 1 | Single bot, 8 topics |
 | Solana devnet wallet | Phase 0 admin | protocol-qa topic only | 1 | No mainnet key on VM |
-| Irys testnet account | Phase 0 admin | protocol-qa topic only | 1 | Funded; balance checked by watchdog |
+| ArDrive Turbo credits | Phase 0 admin | protocol-qa topic only | 1 | Funded; balance checked by watchdog |
 | Mnemonic MCP signing key | Phase 0 admin | mnemonic-mcp local server | 1 | On VM only |
 
 ### 2.3 File layout (VM)
@@ -431,7 +431,7 @@ operator prefers; default is full-scope delivery as spec.md §11 prescribes.
 
 **T6.1 — fabric-watchdog (9 alert classes, 5-min cadence) + /turn-into-task**
 - Description: Implement Python systemd-timer service running every 5 minutes. Checks all 9
-  alert classes (orphaned worktrees, hung tmux, expired Solana RPC, exhausted Irys, stale ruflo
+  alert classes (orphaned worktrees, hung tmux, expired Solana RPC, exhausted Turbo credits, stale ruflo
   swarms, disk pressure 75/85/90%, master clone drift, stale PRs, failed Mnemonic attestation,
   stale last-known-good tag). Posts to `ops` topic. Also implement `/turn-into-task` Telegram bot
   command that POSTs to Kaneo API to create a card, attaching alert context.

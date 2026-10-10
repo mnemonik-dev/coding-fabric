@@ -60,7 +60,7 @@ ruflo-autopilot off for core/mcp/wasm/protocol-qa/loop; on for docs/demo-client.
 
 ## 8. Watchdogs
 
-fabric-watchdog runs every 5 minutes. Checks: orphaned worktrees, hung tmux, expired Solana RPC, exhausted Irys, stale ruflo swarms, disk pressure (75/85/90% thresholds on 50 GB budget), master clone drift, stale PRs, failed Mnemonic attestation, stale last-known-good tag. All alerts post to ops topic; human can /turn-into-task to convert into Kaneo card.
+fabric-watchdog runs every 5 minutes. Checks: orphaned worktrees, hung tmux, expired Solana RPC, exhausted Turbo credits, stale ruflo swarms, disk pressure (75/85/90% thresholds on 50 GB budget), master clone drift, stale PRs, failed Mnemonic attestation, stale last-known-good tag. All alerts post to ops topic; human can /turn-into-task to convert into Kaneo card.
 
 ## 9. Secrets and trust
 

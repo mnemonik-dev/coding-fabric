@@ -82,7 +82,7 @@
       "area": "check_failure_modes",
       "status": "pass",
       "severity": null,
-      "description": "All 10 check modules follow the same two-level pattern: public check() wraps _check() in try/except Exception, logging the error and returning None. None means no alert, scheduler continues. No check can propagate an uncaught exception to the scheduler's thread pool future. Verified across: disk_pressure, orphaned_worktrees, solana_rpc, irys_balance, stale_swarms, hung_tmux, master_drift, stale_prs, failed_attestation, stale_lkg.",
+      "description": "All 10 check modules follow the same two-level pattern: public check() wraps _check() in try/except Exception, logging the error and returning None. None means no alert, scheduler continues. No check can propagate an uncaught exception to the scheduler's thread pool future. Verified across: disk_pressure, orphaned_worktrees, solana_rpc, turbo_balance, stale_swarms, hung_tmux, master_drift, stale_prs, failed_attestation, stale_lkg.",
       "file": "fabric/watchdog/checks/*.py",
       "line": null
     },

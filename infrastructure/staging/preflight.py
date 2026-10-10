@@ -64,7 +64,7 @@ def check_effective(service, env, previous=None):
         required = ["MCP_JWT_SECRET", "MCP_PUBLIC_BASE_URL", "EMBED_PROVIDER"]
         stable = ["MCP_JWT_SECRET", "MCP_PUBLIC_BASE_URL"]
         require(env.get("PAYMENT_MODE") in {"none", "x402"}, "unsupported MCP payment mode")
-        require(bool(env.get("IRYS_GATEWAY_URL") or env.get("ARWEAVE_URL")), "missing storage gateway")
+        require(bool(env.get("ARWEAVE_GATEWAY_URL") or env.get("ARWEAVE_URL")), "missing Arweave gateway")
     for name, value in expected.items():
         require(env.get(name) == value, f"{service}: incorrect or missing {name}")
     for name in required:

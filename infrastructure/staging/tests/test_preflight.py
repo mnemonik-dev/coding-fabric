@@ -66,7 +66,7 @@ class PreflightTests(unittest.TestCase):
             "MNEMONIC_CONFIG_DIR": "/keypair", "MNEMONIC_KEYPAIR_PATH": "/keypair/identity.json",
             "STORAGE_MODE": "full", "PAYMENT_MODE": "none",
             "MCP_JWT_SECRET": "synthetic-jwt", "MCP_PUBLIC_BASE_URL": "https://staging.example.com",
-            "EMBED_PROVIDER": "fastembed", "IRYS_GATEWAY_URL": "https://devnet.irys.xyz",
+            "EMBED_PROVIDER": "fastembed", "ARWEAVE_GATEWAY_URL": "https://arweave.net",
         }
         preflight.check_effective("mcp", env)
         # Images since monorepo e20ccea read MNEMONIC_KEYPAIR_PATH; the env-file
@@ -78,6 +78,19 @@ class PreflightTests(unittest.TestCase):
         env["MNEMONIC_KEYPAIR_PATH"] = "/keypair/id.json"
         with self.assertRaisesRegex(manifest.InvalidManifest, "MNEMONIC_CONFIG_DIR"):
             preflight.check_effective("mcp", env)
+
+    def test_mcp_requires_arweave_gateway(self):
+        env = {
+            "DATABASE_PATH": "/data/attestations.db", "ANCHORING_NETWORK": "devnet",
+            "MNEMONIC_CONFIG_DIR": "/keypair", "MNEMONIC_KEYPAIR_PATH": "/keypair/identity.json",
+            "STORAGE_MODE": "full", "PAYMENT_MODE": "none",
+            "MCP_JWT_SECRET": "synthetic-jwt", "MCP_PUBLIC_BASE_URL": "https://staging.example.com",
+            "EMBED_PROVIDER": "fastembed",
+        }
+        with self.assertRaisesRegex(manifest.InvalidManifest, "Arweave gateway"):
+            preflight.check_effective("mcp", env)
+        # The server still accepts the older variable name.
+        preflight.check_effective("mcp", dict(env, ARWEAVE_URL="https://arweave.net"))
 
     def test_adopts_legacy_and_current_identity_mounts(self):
         for target in ("/keypair/id.json", "/keypair/identity.json"):

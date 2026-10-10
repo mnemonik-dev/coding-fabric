@@ -24,9 +24,15 @@ flowchart LR
   UI[Approval UI] -->|same origin| MCP[Mnemonic MCP]
   MCP -->|HTTPS + API key| UP[Universal Paywall facilitator]
   MCP -->|RPC| SOL[Solana relay/RPC]
-  MCP -->|upload + recall| IRYS[Irys / Arweave]
+  MCP -->|upload| TURBO[ArDrive Turbo]
+  TURBO --> AR[Arweave]
+  MCP -->|recall| AR
   UP -->|RPC| EVM[Arc Testnet]
 ```
+
+Anchoring uses Solana Devnet, but ArDrive Turbo has no test network: every
+staging upload is permanent on Arweave mainnet. Items up to 105 KiB are free;
+larger ones need Turbo credits on the staging identity (HTTP 402 otherwise).
 
 `UNIVERSAL_PAYWALL_URL` is the MCP-to-facilitator location contract. It is
 `http://facilitator:8403` only for this local Docker topology. A split
@@ -104,8 +110,8 @@ following `e2e/.env.staging.example` values at dispatch time:
   subject, with no production access.
 - `E2E_STAGING_PAYER_PRIVATE_KEY`: funded test-USDC wallet, used through a
   quote-restricted Node-side signer and never injected into the approval page.
-- endpoint, asset, payee, relay-path, and Irys values: non-secret deployment
-  identities needed by the fail-closed preflight.
+- endpoint, asset, payee, relay-path, and Arweave gateway values: non-secret
+  deployment identities needed by the fail-closed preflight.
 
 The workflow runner must have private network access to the facilitator health
 endpoint (for example Tailscale). It must not receive the facilitator key,
