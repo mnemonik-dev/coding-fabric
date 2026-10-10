@@ -1,0 +1,55 @@
+@startuml content-publisher-job-states
+title content-publisher - job state machine (13 states, models.py allowed_transitions)
+
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+
+state "queued" as queued
+state "writing" as writing
+state "scoring" as scoring
+state "preview-sent" as preview_sent
+state "publishing" as publishing
+state "published" as published
+state "attest-pending" as attest_pending
+state "done" as done
+state "rejected" as rejected
+state "regenerated" as regenerated
+state "publish-failed" as publish_failed
+state "attest-failed" as attest_failed
+state "failed" as failed
+
+[*] --> queued : bot appends job\nto queue.jsonl
+
+queued --> writing : worker picks job\n(CAS, flock)
+queued --> failed : unrecoverable error
+writing --> scoring : article.md produced
+writing --> failed : claude spawn error
+scoring --> preview_sent : score >= 80
+scoring --> failed : score gate / error
+preview_sent --> publishing : operator Publish,\napproval deadline,\nor auto mode
+preview_sent --> rejected : operator Reject
+preview_sent --> regenerated : operator Regenerate\n(new job appended)
+publishing --> published : posted to @mnemonik
+publishing --> publish_failed : publish error
+published --> done : mnemonic_sign_memory ok\n(first try)
+published --> attest_pending : attestation failed
+attest_pending --> done : retry ok (every 5 min)
+attest_pending --> attest_failed : 24 h escalation\nwindow elapsed
+
+writing -[dashed]-> queued : boot recovery\n(recovery.py)
+scoring -[dashed]-> queued : boot recovery\n(recovery.py)
+
+done --> [*] : cleanup-gc after 24 h\n(archive + rmtree)
+rejected --> [*]
+regenerated --> [*]
+publish_failed --> [*]
+attest_failed --> [*]
+failed --> [*]
+
+note bottom of attest_pending
+  All transitions go through cas_status():
+  flock(.lock) + read-modify-write +
+  os.replace, checked against this graph
+  (StaleStateError on mismatch)
+end note
+@enduml
