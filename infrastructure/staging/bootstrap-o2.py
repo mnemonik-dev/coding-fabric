@@ -108,12 +108,13 @@ def main():
         'DATABASE_PATH': '/data/attestations.db',
         'RAG_CHUNK_DIR': '/data/rag_chunks', 'FASTEMBED_CACHE_DIR': '/data/model-cache',
         'STORAGE_MODE': 'full', 'EMBED_PROVIDER': 'fastembed', 'PAYMENT_MODE': 'none',
-        # Same Solana mainnet and Irys/Arweave mainnet as the production
-        # mnemonik-server role. Uploads spend real SOL from the O2 identity.
+        # Same as the production mnemonik-server role: Solana mainnet memos and
+        # Arweave reads. Uploads always go to ArDrive Turbo (fixed in the
+        # binary) and are permanent on Arweave mainnet.
         'ANCHORING_NETWORK': 'mainnet', 'SOLANA_RPC_URL': 'https://api.mainnet-beta.solana.com',
-        'IRYS_GATEWAY_URL': 'https://gateway.irys.xyz',
+        'ARWEAVE_GATEWAY_URL': 'https://arweave.net',
         'CHAIN_STATS_GRAPHQL_URL': 'https://arweave.net/graphql',
-        'CHAIN_STATS_GATEWAY_URL': 'https://gateway.irys.xyz', 'RUST_LOG': 'info',
+        'CHAIN_STATS_GATEWAY_URL': 'https://arweave.net', 'RUST_LOG': 'info',
     }
     write(ROOT / 'secrets/mcp.env', ''.join(f'{key}={value}\n' for key, value in env.items()))
     write(ROOT / 'compose.json', json.dumps(compose(), indent=2) + '\n')

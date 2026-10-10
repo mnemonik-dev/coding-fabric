@@ -121,7 +121,9 @@ class O2Tests(unittest.TestCase):
                     env = (root / 'secrets/mcp.env').read_text()
                     self.assertIn('PAYMENT_MODE=none\n', env)
                     self.assertIn('ANCHORING_NETWORK=mainnet\n', env)
-                    self.assertIn('IRYS_GATEWAY_URL=https://gateway.irys.xyz\n', env)
+                    self.assertIn('SOLANA_RPC_URL=https://api.mainnet-beta.solana.com\n', env)
+                    self.assertIn('ARWEAVE_GATEWAY_URL=https://arweave.net\n', env)
+                    self.assertIn('CHAIN_STATS_GATEWAY_URL=https://arweave.net\n', env)
                     self.assertEqual(json.loads((root / 'operator.json').read_text())['publicKey'], o2.public_key(key[32:]))
                     with self.assertRaises(SystemExit):
                         o2.main()
