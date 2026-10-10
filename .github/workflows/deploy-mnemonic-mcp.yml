@@ -10,20 +10,24 @@ name: deploy-mnemonic-mcp
 #
 # Actions:
 #   diagnose — read-only: where does the live stack run, is repo_dir usable
-#   apply    — git-sync compose files at <ref>, pull GHCR image, up -d mcp
-#   rollback — same as apply with an earlier tag as <ref>
+#   plan     — read-only: what apply would change (tag, mcp.env keys, Caddy
+#              network, identity public key); run this before apply
+#   apply    — scripts/mcp-deploy/remote.sh: set MCP_IMAGE_TAG and related
+#              keys in mcp.env, pull, recreate mcp with --env-file, verify
+#              health, Caddy network and the operator identity
+#   rollback — restore mcp.env from the last apply's backup
 
 on:
   workflow_dispatch:
     inputs:
       action:
-        description: 'diagnose (read-only VM state), apply (deploy), rollback'
+        description: 'diagnose (read-only VM state), plan (read-only preview), apply, rollback'
         type: choice
         required: true
-        default: diagnose
-        options: [diagnose, apply, rollback]
+        default: plan
+        options: [diagnose, plan, apply, rollback]
       ref:
-        description: 'monorepo git ref for compose files AND image tag: main -> :latest, vX.Y.Z -> :vX.Y.Z'
+        description: 'image tag: sha-<commit>, vX.Y.Z, or main/latest -> :latest'
         type: string
         required: false
         default: main
@@ -31,12 +35,12 @@ on:
         description: 'Set MNEMONIC_FORCE_RESEED=1 for one boot (docs -> chat corpus)'
         type: boolean
         required: false
-        default: true
+        default: false
       repo_dir:
         description: 'monorepo checkout dir on the VM (compose + mcp.env live here)'
         type: string
         required: false
-        default: /mcp
+        default: /opt/mnemonik-server
 
 permissions:
   contents: read
@@ -53,11 +57,25 @@ jobs:
     env:
       SERVER_NAME: mnemonic-fabric
     steps:
+      - uses: actions/checkout@v4
+
       - name: Tailscale up (ephemeral)
         uses: tailscale/github-action@v3
         with:
           authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
           args: --accept-dns --hostname=gh-runner-${{ github.run_id }}
+
+      - name: Assert runner is on the tailnet
+        # The action reports success even when every join attempt fails
+        # (for example "invalid key"), which used to surface only as a
+        # 5-minute peer timeout. Fail here with the real reason.
+        run: |
+          set -euo pipefail
+          state="$(tailscale status --json 2>/dev/null | jq -r '.BackendState // "unknown"')"
+          if [ "$state" != "Running" ]; then
+            echo "::error::Tailscale is not connected (state=$state). TAILSCALE_AUTH_KEY is probably expired, revoked or single-use: generate a reusable key."
+            exit 1
+          fi
 
       - name: Resolve online VM peer + load CI SSH key
         env:
@@ -135,8 +153,8 @@ jobs:
           sudo -n cat /opt/vaultwarden/caddy_conf_d/mnemonik-mcp.conf 2>/dev/null || true
           REMOTE_EOF
 
-      - name: Deploy or rollback on VM
-        if: ${{ inputs.action == 'apply' || inputs.action == 'rollback' }}
+      - name: Plan, apply or roll back on VM
+        if: ${{ inputs.action == 'plan' || inputs.action == 'apply' || inputs.action == 'rollback' }}
         env:
           ACTION: ${{ inputs.action }}
           REF: ${{ inputs.ref }}
@@ -148,117 +166,17 @@ jobs:
           set -euo pipefail
           REPO_DIR="$(echo "$REPO_DIR" | xargs)"
           case "$REPO_DIR" in /?*) ;; *) echo "::error::repo_dir must be absolute"; exit 1 ;; esac
-          # Prints only the base58 public key of a keypair file; never the secret.
-          PUBKEY_PY_B64=$(base64 -w0 <<'PY'
-          import json, sys
-          data = json.load(open(sys.argv[1]))
-          secret = data if isinstance(data, list) else data.get("secret")
-          if not isinstance(secret, list) or len(secret) != 64:
-              sys.exit(3)
-          alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-          raw = bytes(secret[32:])
-          n, out = int.from_bytes(raw, "big"), ""
-          while n:
-              n, r = divmod(n, 58)
-              out = alphabet[r] + out
-          print("1" * (len(raw) - len(raw.lstrip(b"\0"))) + out)
-          PY
-          )
-          echo "ROLLBACK_READY=true" >> "$GITHUB_ENV"
-          ssh $SSH_OPTS "$VM_TARGET" bash -s <<REMOTE_EOF | tee /tmp/apply.log
-          set -euo pipefail
-          REPO="${REPO_DIR}"
-          if docker info >/dev/null 2>&1; then DOCKER="docker"; else DOCKER="sudo -n docker"; fi
-
-          # The fabric layout (diagnose runs 29097832194 + 29098014471):
-          # /opt/mnemonik-server holds an Ansible-rendered compose file (NOT a
-          # git checkout) with the image tag PINNED in the file, plus mcp.env
-          # with the full secret set. Caddy reaches the container via the
-          # shared vaultwarden network alias; there is NO host :3000, so
-          # health is read from the container's own healthcheck.
-          if [ ! -f "\$REPO/docker-compose.yml" ] || [ ! -f "\$REPO/mcp.env" ]; then
-            echo "::error::\$REPO does not look like the mnemonik-server compose dir (need docker-compose.yml + mcp.env). Run action=diagnose."
-            exit 1
-          fi
-          cd "\$REPO"
-
-          # The stack was originally brought up under compose project
-          # 'mnemonik' (explicit -p / COMPOSE_PROJECT_NAME in the Ansible
-          # role), NOT the directory-derived 'mnemonik-server'. Without -p,
-          # compose tries to CREATE duplicate containers and dies on the
-          # fixed container_name conflict (run 29098248218). Detect the
-          # project from the running container's label; fall back to
-          # 'mnemonik' if the container is gone.
-          PROJ=\$(\$DOCKER inspect mnemonik-mcp-1 --format '{{index .Config.Labels "com.docker.compose.project"}}' 2>/dev/null || true)
-          PROJ="\${PROJ:-mnemonik}"
-          echo "compose project: \$PROJ"
-
-          # Identity guard. Images since monorepo e20ccea read
-          # MNEMONIC_KEYPAIR_PATH (image default /keypair/id.json); older ones
-          # read MNEMONIC_CONFIG_DIR/identity.json. Record the public key of the
-          # file in use, pin it, and keep backups for automatic rollback.
-          cp -p docker-compose.yml docker-compose.yml.prev
-          cp -p mcp.env mcp.env.prev
-          KEYDIR=\$(\$DOCKER inspect mnemonik-mcp-1 --format '{{range .Mounts}}{{if eq .Destination "/keypair"}}{{.Source}}{{end}}{{end}}' 2>/dev/null || true)
-          if [ -z "\$KEYDIR" ]; then echo "::error::cannot find the /keypair mount of mnemonik-mcp-1"; exit 1; fi
-          echo "${PUBKEY_PY_B64}" | base64 -d > /tmp/mnemonik-pubkey.py
-          for f in identity.json id.json; do
-            if sudo -n test -f "\$KEYDIR/\$f"; then
-              echo "keyfile \$f public key: \$(sudo -n python3 /tmp/mnemonik-pubkey.py "\$KEYDIR/\$f" || echo 'no secret')"
-            else
-              echo "keyfile \$f: absent"
-            fi
-          done
-          EXPECTED=\$(sudo -n python3 /tmp/mnemonik-pubkey.py "\$KEYDIR/identity.json") || {
-            echo "::error::\$KEYDIR/identity.json has no usable secret; refusing to change the image"; exit 1; }
-          rm -f /tmp/mnemonik-pubkey.py
-          echo "EXPECTED_PUBKEY=\$EXPECTED"
-          sed -i '/^MNEMONIC_KEYPAIR_PATH=/d' mcp.env
-          echo "MNEMONIC_KEYPAIR_PATH=/keypair/identity.json" >> mcp.env
-
-          case "${REF}" in
-            v*|sha-*) IMAGE_TAG="${REF}" ;;
-            *)        IMAGE_TAG="latest" ;;
+          case "$REF" in
+            v*|sha-*) TAG="$REF" ;;
+            main|latest) TAG=latest ;;
+            *) echo "::error::ref must be sha-<commit>, vX.Y.Z, main or latest"; exit 1 ;;
           esac
-          OLD_TAG=\$(grep -oE 'mnemonic-mcp:[A-Za-z0-9._-]+' docker-compose.yml | head -1 | cut -d: -f2)
-          echo "Image tag: \$OLD_TAG -> \$IMAGE_TAG (action=${ACTION}; rollback = re-dispatch with ref=\$OLD_TAG)"
-          # NOTE: in-place edit drifts from the mnemonik-server Ansible
-          # template — keep the template's tag in sync when re-applying it.
-          sed -i -E "s|(ghcr.io/mnemonik-xyz/mnemonic-mcp:)[A-Za-z0-9._-]+|\\1\$IMAGE_TAG|" docker-compose.yml
-
-          if [ "${FORCE_RESEED}" = "true" ]; then
-            sed -i '/^MNEMONIC_FORCE_RESEED=/d' mcp.env; echo "MNEMONIC_FORCE_RESEED=1" >> mcp.env
-          fi
-          # Chain-backed traction stats env (needed from image >= #194).
-          sed -i '/^CHAIN_STATS_WALLETS=/d' mcp.env; echo "CHAIN_STATS_WALLETS=${CHAIN_STATS_WALLETS}" >> mcp.env
-          sed -i '/^SOLANA_RPC_URL=/d' mcp.env; echo "SOLANA_RPC_URL=${SOLANA_RPC_URL}" >> mcp.env
-
-          \$DOCKER compose -p "\$PROJ" pull mcp
-          \$DOCKER compose -p "\$PROJ" up -d mcp
-
-          cid=\$(\$DOCKER compose -p "\$PROJ" ps -q mcp)
-          ok=0
-          for i in \$(seq 1 72); do
-            status=\$(\$DOCKER inspect --format '{{.State.Health.Status}}' "\$cid" 2>/dev/null || echo starting)
-            if [ "\$status" = "healthy" ]; then ok=1; break; fi
-            if [ "\$status" = "unhealthy" ]; then break; fi
-            sleep 5
-          done
-          if [ "\$ok" != "1" ]; then
-            echo "::error::mcp container did not become healthy (status=\$status)"
-            \$DOCKER compose -p "\$PROJ" logs --tail 80 mcp || true
-            exit 1
-          fi
-          echo "mcp healthy (tag \$IMAGE_TAG)"
-
-          if [ "${FORCE_RESEED}" = "true" ]; then
-            sed -i '/^MNEMONIC_FORCE_RESEED=/d' mcp.env
-          fi
-          \$DOCKER image prune -f >/dev/null 2>&1 || true
-          \$DOCKER compose -p "\$PROJ" logs --since 120s mcp \
-            | grep -iE 'seed|protocol-knowledge|Identity:|listening|chain-stats' || true
-          REMOTE_EOF
-          grep -m1 '^EXPECTED_PUBKEY=' /tmp/apply.log >> "$GITHUB_ENV"
+          [ "$ACTION" = apply ] && echo "ROLLBACK_READY=true" >> "$GITHUB_ENV"
+          remote_env="MODE=$(printf %q "$ACTION") REPO=$(printf %q "$REPO_DIR") IMAGE_TAG=$(printf %q "$TAG")"
+          remote_env="$remote_env FORCE_RESEED=$(printf %q "$FORCE_RESEED")"
+          remote_env="$remote_env CHAIN_STATS_WALLETS=$(printf %q "$CHAIN_STATS_WALLETS") SOLANA_RPC_URL=$(printf %q "$SOLANA_RPC_URL")"
+          ssh $SSH_OPTS "$VM_TARGET" "env $remote_env bash -s" < scripts/mcp-deploy/remote.sh | tee /tmp/apply.log
+          grep -m1 '^EXPECTED_PUBKEY=' /tmp/apply.log >> "$GITHUB_ENV" || true
 
       - name: Public smoke (health + tools/list)
         if: ${{ inputs.action == 'apply' || inputs.action == 'rollback' }}
@@ -302,23 +220,11 @@ jobs:
           print(f"identity unchanged and proven: {expected}")
           PY
 
-      - name: Roll back to the previous image and environment
+      - name: Roll back to the previous environment
         if: ${{ failure() && inputs.action == 'apply' && env.ROLLBACK_READY == 'true' }}
         env:
           REPO_DIR: ${{ inputs.repo_dir }}
         run: |
           set -euo pipefail
           REPO_DIR="$(echo "$REPO_DIR" | xargs)"
-          ssh $SSH_OPTS "$VM_TARGET" bash -s <<REMOTE_EOF
-          set -euo pipefail
-          cd "${REPO_DIR}"
-          if docker info >/dev/null 2>&1; then DOCKER="docker"; else DOCKER="sudo -n docker"; fi
-          if [ ! -f docker-compose.yml.prev ] || [ ! -f mcp.env.prev ]; then
-            echo "::warning::no backups found; nothing was changed"; exit 0
-          fi
-          mv docker-compose.yml.prev docker-compose.yml
-          mv mcp.env.prev mcp.env
-          PROJ=\$(\$DOCKER inspect mnemonik-mcp-1 --format '{{index .Config.Labels "com.docker.compose.project"}}' 2>/dev/null || true)
-          \$DOCKER compose -p "\${PROJ:-mnemonik}" up -d mcp
-          echo "restored the previous image tag and mcp.env"
-          REMOTE_EOF
+          ssh $SSH_OPTS "$VM_TARGET" "env MODE=rollback REPO=$(printf %q "$REPO_DIR") bash -s" < scripts/mcp-deploy/remote.sh
