@@ -1,0 +1,63 @@
+@startuml watchdog-tick
+title fabric-watchdog - one tick (systemd timer, every 5 min)
+
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+
+start
+:systemd timer fires
+(Type=oneshot, creds via LoadCredential);
+:import fabric.logs.sanitizer
+(hard requirement - refuse to
+start if missing);
+:load WATCHDOG_CONFIG_FILE;
+fork
+  :orphaned_worktrees (WARN);
+fork again
+  :hung_tmux > 12 h (WARN);
+fork again
+  :solana_rpc getHealth (CRIT);
+fork again
+  :irys_balance (WARN);
+fork again
+  :disk_pressure 75/85/90%
+  of 50 GB budget (WARN/CRIT);
+fork again
+  :master_drift on 4 clones (WARN);
+fork again
+  :stale_prs > 7 d via GitHub API (WARN);
+fork again
+  :failed_attestation via
+  Mnemonic MCP (CRIT)
+  [stale endpoint - finding F2];
+fork again
+  :stale_lkg tag > 7 d (WARN);
+end fork
+note right
+  ThreadPoolExecutor,
+  30 s per-check timeout,
+  SSRF guard: public hosts
+  restricted to allowlist
+end note
+:dedup against 24 h cache
+(state/alerts.json, flock,
+deterministic SHA-256 alert ids);
+if (new alerts?) then (yes)
+  if (more than 3 new?) then (yes)
+    :single digest message;
+  else (no)
+    :one message per alert;
+  endif
+  :post to ops Telegram topic
+  (sanitized, no parse_mode,
+  20 msg/s throttle);
+else (no)
+  stop
+endif
+:operator may reply
+/turn-into-task <alert_id>;
+:idempotent Kaneo card created
+(alert_id embedded in description,
+operator allowlist enforced);
+stop
+@enduml

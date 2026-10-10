@@ -20,7 +20,7 @@
     - name: Validate required settings
       ansible.builtin.assert:
         that:
-          - o2_action | default('prepare') in ['prepare', 'start']
+          - o2_action | default('prepare') in ['prepare', 'start', 'upgrade']
           - o2.host is match('^[a-zA-Z0-9][a-zA-Z0-9.:-]+$')
           - o2.admin_user is match('^[a-z_][a-z0-9_-]*$')
           - o2.authorized_key is match('^ssh-ed25519 [A-Za-z0-9+/=]+( [^\r\n]*)?$')
@@ -216,3 +216,121 @@
           retries: 12
           delay: 5
           no_log: true
+
+    - name: Upgrade the MCP image of an existing O2 installation
+      when: o2_action | default('prepare') == 'upgrade'
+      block:
+        - name: Require an existing O2 installation
+          ansible.builtin.stat:
+            path: /opt/mnemonik-o2/compose.json
+          register: o2_compose
+          failed_when: not o2_compose.stat.exists
+
+        # The container exists only after a successful `start`, which is gated
+        # on the verified off-host backup. A prepared but never-started host
+        # must use `start`, so upgrade cannot bypass that gate.
+        - name: Require that O2 was already started after backup verification
+          ansible.builtin.command:
+            argv: [docker, container, inspect, --format, '{{ "{{" }}.Id{{ "}}" }}', mnemonik-o2-mcp-1]
+          register: o2_started
+          changed_when: false
+          failed_when: o2_started.rc != 0
+
+        - name: Read the recorded operator identity
+          ansible.builtin.slurp:
+            src: /opt/mnemonik-o2/operator.json
+          register: o2_operator_raw
+
+        - name: Parse the recorded operator identity
+          ansible.builtin.set_fact:
+            o2_operator: "{{ o2_operator_raw.content | b64decode | from_json }}"
+
+        - name: Install the reviewed image pin and upgrade tool
+          ansible.builtin.copy:
+            src: "{{ o2_source }}/{{ item }}"
+            dest: "/usr/local/lib/mnemonik-o2/{{ item }}"
+            owner: root
+            group: root
+            mode: '0600'
+          loop: [bootstrap-o2.py, upgrade-o2.py]
+
+        - name: Pin the reviewed MCP image; keep compose.json.prev
+          ansible.builtin.command:
+            argv: [python3, /usr/local/lib/mnemonik-o2/upgrade-o2.py]
+          register: o2_upgrade
+          changed_when: "'unchanged' not in o2_upgrade.stdout"
+
+        - name: Report the image change
+          ansible.builtin.debug:
+            msg: "{{ o2_upgrade.stdout }}"
+
+        - name: Pull and restart with the reviewed image
+          block:
+            - name: Pull the configured images
+              ansible.builtin.command:
+                argv: [/usr/local/sbin/mnemonik-o2, install]
+              changed_when: true
+
+            - name: Restart O2 with the new image
+              ansible.builtin.command:
+                argv: [/usr/local/sbin/mnemonik-o2, start]
+              changed_when: true
+
+            - name: Check public HTTPS liveness
+              ansible.builtin.uri:
+                url: "https://{{ o2_settings.domain }}/health"
+                status_code: 200
+              register: o2_health
+              until: o2_health.status | default(0) == 200
+              retries: 24
+              delay: 5
+
+            - name: Create a fresh proof nonce
+              ansible.builtin.command:
+                argv: [python3, -c, "import secrets; print(secrets.token_hex(32))"]
+              register: o2_nonce
+              changed_when: false
+
+            - name: Request the anonymous operator identity proof
+              ansible.builtin.uri:
+                url: "https://{{ o2_settings.domain }}/mcp"
+                method: POST
+                body_format: json
+                body:
+                  jsonrpc: '2.0'
+                  id: 1
+                  method: tools/call
+                  params:
+                    name: mnemonic_operator_proof
+                    arguments: {nonce: "{{ o2_nonce.stdout }}"}
+                return_content: true
+              register: o2_proof_response
+              until: o2_proof_response.status | default(0) == 200
+              retries: 6
+              delay: 5
+
+            - name: Require the recorded identity and origin
+              vars:
+                o2_proof: "{{ o2_proof_response.json.result.content[0].text | from_json }}"
+              ansible.builtin.assert:
+                that:
+                  - o2_proof.public_key == o2_operator.publicKey
+                  - o2_proof.origin == o2_operator.baseUrl
+                  - o2_proof.nonce == o2_nonce.stdout
+                  - o2_proof.signature is match('^[0-9a-f]{128}$')
+                fail_msg: Upgraded O2 does not prove the recorded operator identity.
+          rescue:
+            - name: Restore the previous MCP image configuration
+              ansible.builtin.command:
+                argv: [python3, /usr/local/lib/mnemonik-o2/upgrade-o2.py, --rollback]
+              when: "'unchanged' not in o2_upgrade.stdout"
+
+            - name: Restart O2 with the previous image
+              ansible.builtin.command:
+                argv: [/usr/local/sbin/mnemonik-o2, start]
+              when: "'unchanged' not in o2_upgrade.stdout"
+              failed_when: false
+
+            - name: Fail after rollback
+              ansible.builtin.fail:
+                msg: O2 upgrade failed health or identity checks; the previous image configuration was restored.

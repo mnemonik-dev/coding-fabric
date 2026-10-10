@@ -1,0 +1,58 @@
+@startuml system-context
+title Coding fabric - system context
+
+skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+
+actor "Operator" as OP
+
+cloud "Telegram Bot API" {
+  rectangle "Fabric forum\n(9 topics: core, mcp, wasm,\ndemo-client, docs, loop,\nprotocol-qa, ops, blogger-prompts)" as Forum
+  rectangle "Public channel\n@mnemonik" as Chan
+}
+
+node "Hetzner CCX33 VM 'mnemonic-fabric'\n(tailnet-only admin plane)" {
+  component "telegram-ai-agent\n(operator bot, fork)" as Bot
+  component "workspace-manager\n+ Symphony orchestrator\n(FastAPI :8080)" as WM
+  component "content-publisher\n(queue worker)" as CP
+  component "fabric-watchdog\n(5-min timer, 9 checks)" as WD
+  component "claude / codex CLI\n(engine subprocesses)" as Eng
+  component "mnemonik-mcp\n(per-spawn stdio,\nno daemon)" as MCP
+  database "Kaneo + Postgres\n(ticket state)" as Kaneo
+  database "Vaultwarden\n(secrets)" as VW
+}
+
+cloud "GitHub\n(6 mnemonic-* repos)" as GH
+cloud "Solana devnet" as Sol
+cloud "Arweave testnet / Irys" as Arw
+cloud "Anthropic / OpenAI APIs" as LLM
+
+OP <--> Forum
+Forum <--> Bot
+Bot --> Eng : spawn per turn
+Bot --> WM : cwd:DYNAMIC resolver
+Eng --> Kaneo : Kaneo MCP tools
+Eng --> LLM
+WM --> Kaneo : poll tickets (30 s)
+WM --> Eng : spawn per ticket (max 3)
+WM --> VW : bw CLI
+WM --> GH : clone / PR / merge
+WM --> Forum : progress messages
+CP --> Eng : spawn claude blog-writer
+CP --> Chan : publish article
+CP ..> MCP : attest via stdio
+MCP ..> Sol
+MCP ..> Arw
+WD --> Forum : alerts (ops topic)
+WD --> Kaneo : /turn-into-task cards
+WD --> Sol : health probe
+WD --> Arw : Irys balance
+WD --> GH : stale-PR check
+
+legend right
+Dashed = attestation path, disabled by default
+(mnemonic_mcp_enabled: false; active only
+for the content-publish pipeline)
+endlegend
+@enduml
