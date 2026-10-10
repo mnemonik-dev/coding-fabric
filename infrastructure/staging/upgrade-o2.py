@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Administrator-only MCP image upgrade for an existing O2 installation.
+"""Administrator-only MCP upgrade for an existing O2 installation.
 
-Changes only the MCP service image in /opt/mnemonik-o2/compose.json to the
-reviewed digest in bootstrap-o2.py. Identity, secrets, data and Caddy stay as
-they are. The previous file is kept as compose.json.prev for rollback.
+Sets the MCP service image in /opt/mnemonik-o2/compose.json to the reviewed
+digest in bootstrap-o2.py, and the storage settings in secrets/mcp.env to
+bootstrap-o2.py's STORAGE_ENV. Superseded gateway variables are removed; every
+other line (identity path, secrets, data paths) stays as it is. Each changed
+file keeps its previous version (*.prev) for rollback. Prints key names only.
 """
 
 import argparse
@@ -17,11 +19,58 @@ ROOT = Path('/opt/mnemonik-o2')
 IMAGE_RE = re.compile(r'^ghcr\.io/mnemonik-xyz/mnemonic-mcp@sha256:[0-9a-f]{64}$')
 
 
-def reviewed_image():
+NO_CHANGES = 'NO_CHANGES'
+
+
+def _bootstrap():
     spec = importlib.util.spec_from_file_location('bootstrap_o2', Path(__file__).with_name('bootstrap-o2.py'))
     bootstrap = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(bootstrap)
-    return bootstrap.IMAGE
+    return bootstrap
+
+
+def reviewed_image():
+    return _bootstrap().IMAGE
+
+
+def reviewed_storage_env():
+    return dict(_bootstrap().STORAGE_ENV)
+
+
+def _superseded(key, desired):
+    """Older gateway variables replaced by ARWEAVE_GATEWAY_URL."""
+    return key not in desired and (key == 'ARWEAVE_URL' or key.endswith('_GATEWAY_URL'))
+
+
+def reconcile_env(root, desired):
+    """Return the sorted key names changed in secrets/mcp.env (empty: no write)."""
+    env_path = root / 'secrets/mcp.env'
+    if env_path.is_symlink() or not env_path.is_file():
+        raise SystemExit('existing O2 secrets/mcp.env is missing; run prepare first')
+    original = env_path.read_text()
+    lines, seen, changed = [], set(), set()
+    for line in original.splitlines():
+        key, sep, value = line.partition('=')
+        key = key.strip()
+        if not sep or key.startswith('#'):
+            lines.append(line)
+        elif _superseded(key, desired):
+            changed.add(key)
+        elif key in desired:
+            seen.add(key)
+            if value != desired[key]:
+                changed.add(key)
+            lines.append(f'{key}={desired[key]}')
+        else:
+            lines.append(line)
+    for key, value in desired.items():
+        if key not in seen:
+            changed.add(key)
+            lines.append(f'{key}={value}')
+    if changed:
+        write(root / 'secrets/mcp.env.prev', original)
+        write(env_path, '\n'.join(lines) + '\n')
+    return sorted(changed)
 
 
 def write(path, text):
@@ -60,25 +109,45 @@ def upgrade(root, image):
     return old, image
 
 
+def clear_previous(root):
+    """Drop rollback copies from an earlier run so rollback restores only this one."""
+    for name in ('compose.json.prev', 'secrets/mcp.env.prev'):
+        path = root / name
+        if path.is_file() and not path.is_symlink():
+            path.unlink()
+
+
 def rollback(root):
-    previous = root / 'compose.json.prev'
-    if previous.is_symlink() or not previous.is_file():
-        raise SystemExit('no compose.json.prev to restore')
-    write(root / 'compose.json', previous.read_text())
+    restored = []
+    for name, target in (('compose.json.prev', 'compose.json'),
+                         ('secrets/mcp.env.prev', 'secrets/mcp.env')):
+        previous = root / name
+        if previous.is_file() and not previous.is_symlink():
+            write(root / target, previous.read_text())
+            restored.append(target)
+    if not restored:
+        raise SystemExit('no previous configuration to restore')
+    return restored
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--rollback', action='store_true', help='restore compose.json.prev')
+    parser.add_argument('--rollback', action='store_true', help='restore the *.prev files')
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error('run using the existing administrator account and sudo')
     if args.rollback:
-        rollback(ROOT)
-        print('Restored the previous MCP image configuration.')
+        print('Restored previous: ' + ', '.join(rollback(ROOT)))
         return
+    clear_previous(ROOT)
     old, new = upgrade(ROOT, reviewed_image())
-    print('MCP image unchanged.' if old == new else f'MCP image: {old} -> {new}')
+    keys = reconcile_env(ROOT, reviewed_storage_env())
+    if old != new:
+        print(f'MCP image: {old} -> {new}')
+    if keys:
+        print('MCP storage settings updated: ' + ', '.join(keys))
+    if old == new and not keys:
+        print(NO_CHANGES)
 
 
 if __name__ == '__main__':

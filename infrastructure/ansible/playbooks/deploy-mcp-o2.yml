@@ -254,11 +254,11 @@
             mode: '0600'
           loop: [bootstrap-o2.py, upgrade-o2.py]
 
-        - name: Pin the reviewed MCP image; keep compose.json.prev
+        - name: Pin the reviewed MCP image and storage settings; keep *.prev
           ansible.builtin.command:
             argv: [python3, /usr/local/lib/mnemonik-o2/upgrade-o2.py]
           register: o2_upgrade
-          changed_when: "'unchanged' not in o2_upgrade.stdout"
+          changed_when: "'NO_CHANGES' not in o2_upgrade.stdout"
 
         - name: Report the image change
           ansible.builtin.debug:
@@ -323,12 +323,12 @@
             - name: Restore the previous MCP image configuration
               ansible.builtin.command:
                 argv: [python3, /usr/local/lib/mnemonik-o2/upgrade-o2.py, --rollback]
-              when: "'unchanged' not in o2_upgrade.stdout"
+              when: "'NO_CHANGES' not in o2_upgrade.stdout"
 
             - name: Restart O2 with the previous image
               ansible.builtin.command:
                 argv: [/usr/local/sbin/mnemonik-o2, start]
-              when: "'unchanged' not in o2_upgrade.stdout"
+              when: "'NO_CHANGES' not in o2_upgrade.stdout"
               failed_when: false
 
             - name: Fail after rollback
