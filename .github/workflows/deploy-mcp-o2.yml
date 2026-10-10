@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: Prepare VM and encrypted key backup, or start the prepared O2
+        description: Prepare VM and encrypted key backup, start the prepared O2, or upgrade its MCP image
         type: choice
-        options: [prepare, start]
+        options: [prepare, start, upgrade]
         default: prepare
       backup_run_id:
         description: For start, successful prepare run whose backup you verified

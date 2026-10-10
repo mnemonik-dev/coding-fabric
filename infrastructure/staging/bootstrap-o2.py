@@ -15,8 +15,9 @@ import secrets
 import subprocess
 
 ROOT = Path('/opt/mnemonik-o2')
+# Monorepo e8b6e2b (sha-e8b6e2b): adds the anonymous mnemonic_operator_proof tool.
 IMAGE = ('ghcr.io/mnemonik-xyz/mnemonic-mcp@sha256:'
-         'effca7a8f0e8a0126f8fb7eb019787c01757d0f34b46787ca24b6cb87de1902c')
+         'cd5898b31005809a5ca595130c2448bacdd37e86b83d31fc3f6558f22e217acb')
 
 
 def hostname(value):
