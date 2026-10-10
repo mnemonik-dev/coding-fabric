@@ -80,5 +80,66 @@ class UpgradeTests(unittest.TestCase):
                 upgrade.rollback(root)
 
 
+LIVE_ENV = (
+    'MCP_PUBLIC_BASE_URL=https://mcp2.example.com\n'
+    'MCP_JWT_SECRET=secret-value\n'
+    'MNEMONIC_KEYPAIR_PATH=/keypair/id.json\n'
+    '# operator note\n'
+    'ANCHORING_NETWORK=devnet\n'
+    'SOLANA_RPC_URL=https://api.devnet.solana.com\n'
+    'LEGACY_STORE_GATEWAY_URL=https://old.example.com\n'
+    'ARWEAVE_URL=https://old-alias.example.com\n'
+    'RUST_LOG=info\n'
+)
+
+
+class ReconcileEnvTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+        (self.root / 'secrets').mkdir()
+        (self.root / 'secrets/mcp.env').write_text(LIVE_ENV)
+        self.desired = upgrade.reviewed_storage_env()
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def env(self):
+        return (self.root / 'secrets/mcp.env').read_text()
+
+    def test_sets_storage_keys_drops_superseded_and_keeps_secrets(self):
+        changed = upgrade.reconcile_env(self.root, self.desired)
+        text = self.env()
+        for key, value in self.desired.items():
+            self.assertIn(f'{key}={value}\n', text)
+            self.assertEqual(text.count(f'{key}='), 1)
+        self.assertNotIn('LEGACY_STORE_GATEWAY_URL', text)
+        self.assertNotIn('ARWEAVE_URL=', text)
+        for kept in ('MCP_JWT_SECRET=secret-value', 'MNEMONIC_KEYPAIR_PATH=/keypair/id.json',
+                     '# operator note', 'RUST_LOG=info'):
+            self.assertIn(kept, text)
+        self.assertIn('LEGACY_STORE_GATEWAY_URL', changed)
+        self.assertNotIn('MCP_JWT_SECRET', changed)
+        self.assertEqual((self.root / 'secrets/mcp.env.prev').read_text(), LIVE_ENV)
+        # Second run: nothing to change, no new write.
+        (self.root / 'secrets/mcp.env.prev').unlink()
+        self.assertEqual(upgrade.reconcile_env(self.root, self.desired), [])
+        self.assertFalse((self.root / 'secrets/mcp.env.prev').exists())
+
+    def test_rollback_restores_only_what_this_run_changed(self):
+        installed(self.root)
+        (self.root / 'compose.json.prev').write_text('stale from an earlier run')
+        upgrade.clear_previous(self.root)
+        self.assertFalse((self.root / 'compose.json.prev').exists())
+        upgrade.reconcile_env(self.root, self.desired)
+        self.assertEqual(upgrade.rollback(self.root), ['secrets/mcp.env'])
+        self.assertEqual(self.env(), LIVE_ENV)
+        self.assertTrue(json.loads((self.root / 'compose.json').read_text()))
+
+    def test_bootstrap_and_upgrade_share_storage_settings(self):
+        self.assertEqual(self.desired['ARWEAVE_GATEWAY_URL'], 'https://arweave.net')
+        self.assertEqual(self.desired['ANCHORING_NETWORK'], 'mainnet')
+
+
 if __name__ == '__main__':
     unittest.main()

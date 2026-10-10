@@ -15,9 +15,23 @@ import secrets
 import subprocess
 
 ROOT = Path('/opt/mnemonik-o2')
-# Monorepo e8b6e2b (sha-e8b6e2b): adds the anonymous mnemonic_operator_proof tool.
+# Monorepo faf7f17 (sha-faf7f17): Arweave uploads through ArDrive Turbo,
+# gateway read failover and the anonymous mnemonic_operator_proof tool.
 IMAGE = ('ghcr.io/mnemonik-xyz/mnemonic-mcp@sha256:'
-         'cd5898b31005809a5ca595130c2448bacdd37e86b83d31fc3f6558f22e217acb')
+         'e59e931c1715d1d9e16969f405523dd7b47c0b9ab41ae50d744b0ac0e29c0307')
+
+
+# Storage and anchoring settings shared by first installation and upgrades.
+# Same as the production mnemonik-server role: Solana mainnet memos and
+# Arweave reads. Uploads always go to ArDrive Turbo (fixed in the binary) and
+# are permanent on Arweave mainnet.
+STORAGE_ENV = {
+    'ANCHORING_NETWORK': 'mainnet',
+    'SOLANA_RPC_URL': 'https://api.mainnet-beta.solana.com',
+    'ARWEAVE_GATEWAY_URL': 'https://arweave.net',
+    'CHAIN_STATS_GRAPHQL_URL': 'https://arweave.net/graphql',
+    'CHAIN_STATS_GATEWAY_URL': 'https://arweave.net',
+}
 
 
 def hostname(value):
@@ -108,8 +122,7 @@ def main():
         'DATABASE_PATH': '/data/attestations.db',
         'RAG_CHUNK_DIR': '/data/rag_chunks', 'FASTEMBED_CACHE_DIR': '/data/model-cache',
         'STORAGE_MODE': 'full', 'EMBED_PROVIDER': 'fastembed', 'PAYMENT_MODE': 'none',
-        'ANCHORING_NETWORK': 'devnet', 'SOLANA_RPC_URL': 'https://api.devnet.solana.com',
-        'IRYS_GATEWAY_URL': 'https://devnet.irys.xyz', 'RUST_LOG': 'info',
+        **STORAGE_ENV, 'RUST_LOG': 'info',
     }
     write(ROOT / 'secrets/mcp.env', ''.join(f'{key}={value}\n' for key, value in env.items()))
     write(ROOT / 'compose.json', json.dumps(compose(), indent=2) + '\n')
