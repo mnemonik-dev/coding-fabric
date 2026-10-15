@@ -1,0 +1,877 @@
+name: warrant-canary
+
+# Runs one action of the warrant-canary role on the VM mnemonic-fabric
+# (infrastructure/ansible/playbooks/warrant-canary.yml). Manual dispatch only,
+# one run at a time. Off refs/heads/develop only the static job runs: the run
+# job (sops, Tailscale, SSH, PR token) is develop-only. Contracts are broadcast
+# only when deploy_contracts and execute are both true, for deploy-solver or
+# deploy-task.
+#
+# No `environment:` and no required reviewer (Decision 18): it uses the
+# repository-level SOPS_AGE_KEY, CI_SSH_PRIVATE_KEY and TAILSCALE_AUTH_KEY.
+# The ref checks below guard against operator mistakes; they are not an access
+# boundary (a writer can dispatch an edited workflow from a branch).
+# Inputs reach scripts only through step env, never through ${{ }} in run:.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Role action (one per run)'
+        type: choice
+        required: true
+        options:
+          - preflight
+          - configure
+          - rehearse
+          - stage-keys
+          - unstage-keys
+          - deploy-solver
+          - deploy-task
+          - deploy-seller
+      deploy_contracts:
+        description: 'Switch 1 of 2 for a contract broadcast (deploy-solver, deploy-task)'
+        type: boolean
+        default: false
+      execute:
+        description: 'Switch 2 of 2 for a contract broadcast (develop only)'
+        type: boolean
+        default: false
+      render_only:
+        description: 'configure / deploy-seller: render and validate, start nothing'
+        type: boolean
+        default: false
+      roles:
+        description: 'stage-keys: comma list from deployer,buyer,seller,relayer'
+        type: string
+        default: 'buyer,seller,relayer'
+      run_dir:
+        description: 'deploy-solver retry only: mainnet/<YYYYMMDDTHHMMSSZ>'
+        type: string
+        required: false
+      settle_window:
+        description: 'deploy-solver: settle window in seconds (digits only)'
+        type: string
+        required: false
+      force_unstage:
+        description: 'unstage-keys: override the chain-state gate'
+        type: boolean
+        default: false
+      force_unstage_reason:
+        description: 'Required with force_unstage'
+        type: string
+        required: false
+      expected_image_id_override:
+        description: 'Negative dispatch only (configure): 0x + 64 hex; refused with execute'
+        type: string
+        required: false
+      rpc_override:
+        description: 'Negative dispatch only (deploy-solver): https URL; refused with execute'
+        type: string
+        required: false
+
+
+permissions:
+  contents: read
+
+concurrency:
+  group: warrant-canary
+  cancel-in-progress: false
+
+jobs:
+  static:
+    name: Static checks and input validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Validate inputs
+        env: &wc_inputs
+          WC_ACTION: ${{ inputs.action }}
+          WC_DEPLOY_CONTRACTS: ${{ inputs.deploy_contracts }}
+          WC_EXECUTE: ${{ inputs.execute }}
+          WC_RENDER_ONLY: ${{ inputs.render_only }}
+          WC_ROLES: ${{ inputs.roles }}
+          WC_RUN_DIR: ${{ inputs.run_dir }}
+          WC_SETTLE_WINDOW: ${{ inputs.settle_window }}
+          WC_FORCE_UNSTAGE: ${{ inputs.force_unstage }}
+          WC_FORCE_UNSTAGE_REASON: ${{ inputs.force_unstage_reason }}
+          WC_EXPECTED_IMAGE_ID_OVERRIDE: ${{ inputs.expected_image_id_override }}
+          WC_RPC_OVERRIDE: ${{ inputs.rpc_override }}
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          errors=()
+          refuse() { errors+=("$1"); }
+          is_bool() { [ "$1" = true ] || [ "$1" = false ]; }
+
+          case "$WC_ACTION" in
+            preflight|configure|rehearse|stage-keys|unstage-keys|deploy-solver|deploy-task|deploy-seller) ;;
+            *) refuse "action must be one of the eight role actions" ;;
+          esac
+          for pair in "deploy_contracts:$WC_DEPLOY_CONTRACTS" "execute:$WC_EXECUTE" \
+                      "render_only:$WC_RENDER_ONLY" "force_unstage:$WC_FORCE_UNSTAGE"; do
+            is_bool "${pair#*:}" || refuse "${pair%%:*} must be true or false"
+          done
+
+          digits='^[0-9]+$'
+          if [ "$WC_ACTION" = deploy-solver ] && ! [[ "$WC_SETTLE_WINDOW" =~ $digits ]]; then
+            refuse "settle_window is required for deploy-solver and must be whole seconds (digits only)"
+          elif [ -n "$WC_SETTLE_WINDOW" ] && ! [[ "$WC_SETTLE_WINDOW" =~ $digits ]]; then
+            refuse "settle_window must be digits only"
+          fi
+
+          image_re='^0x[0-9a-f]{64}$'
+          if [ -n "$WC_EXPECTED_IMAGE_ID_OVERRIDE" ]; then
+            [ "$WC_EXECUTE" = true ] && refuse "expected_image_id_override is refused together with execute=true"
+            [ "$WC_ACTION" = configure ] || refuse "expected_image_id_override is accepted only with action configure"
+            [[ "$WC_EXPECTED_IMAGE_ID_OVERRIDE" =~ $image_re ]] || refuse "expected_image_id_override must be 0x followed by 64 lowercase hex digits"
+          fi
+
+          rpc_re='^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?$'
+          if [ -n "$WC_RPC_OVERRIDE" ]; then
+            [ "$WC_EXECUTE" = true ] && refuse "rpc_override is refused together with execute=true"
+            [ "$WC_ACTION" = deploy-solver ] || refuse "rpc_override is accepted only with action deploy-solver"
+            if [[ "$WC_RPC_OVERRIDE" =~ $rpc_re ]]; then
+              rpc_host=${WC_RPC_OVERRIDE#https://}
+              rpc_host=${rpc_host%%[:/]*}
+              rpc_host=$(tr '[:upper:]' '[:lower:]' <<< "$rpc_host")
+              # A DNS name whose last label starts with a letter: refuses IP literals in
+              # any form (dotted, decimal, 0x hex, octal) and localhost.
+              dns_re='^([a-z0-9-]+\.)*[a-z][a-z0-9-]*$'
+              if ! [[ "$rpc_host" =~ $dns_re ]] || [ "$rpc_host" = localhost ] || [[ "$rpc_host" == *.localhost ]]; then
+                refuse "rpc_override must name a DNS host, not localhost or an IP literal"
+              fi
+            else
+              refuse "rpc_override must be an https:// URL (host, optional port and plain path only)"
+            fi
+          fi
+
+          roles_re='^(deployer|buyer|seller|relayer)(,(deployer|buyer|seller|relayer))*$'
+          if ! [[ "$WC_ROLES" =~ $roles_re ]]; then
+            refuse "roles must be a comma list (no spaces, no empty items) of deployer, buyer, seller, relayer"
+          elif [ -n "$(tr ',' '\n' <<< "$WC_ROLES" | sort | uniq -d)" ]; then
+            refuse "roles must not repeat a name"
+          fi
+
+          run_dir_re='^mainnet/[0-9]{8}T[0-9]{6}Z$'
+          if [ -n "$WC_RUN_DIR" ] && ! [[ "$WC_RUN_DIR" =~ $run_dir_re ]]; then
+            refuse "run_dir must be empty or mainnet/<YYYYMMDDTHHMMSSZ> (no .., no leading /, no -simulate)"
+          fi
+
+          # Plain text only (a subset of the role's charset): Ansible templates
+          # extra-vars, so no braces, percent, backslash, quotes or newline.
+          reason_re='^[A-Za-z0-9 .,:_()-]{1,200}$'
+          if [ -n "$WC_FORCE_UNSTAGE_REASON" ] && ! [[ "$WC_FORCE_UNSTAGE_REASON" =~ $reason_re ]]; then
+            refuse "force_unstage_reason must be 1-200 plain characters (letters, digits, space and .,:_()-)"
+          fi
+          if [ "$WC_FORCE_UNSTAGE" = true ]; then
+            [ -n "${WC_FORCE_UNSTAGE_REASON//[[:space:]]/}" ] || refuse "force_unstage needs a non-empty force_unstage_reason"
+            [ "$WC_ACTION" = unstage-keys ] || refuse "force_unstage is accepted only with action unstage-keys"
+          fi
+
+          if [ "$WC_DEPLOY_CONTRACTS" = true ] || [ "$WC_EXECUTE" = true ]; then
+            case "$WC_ACTION" in
+              deploy-solver|deploy-task) ;;
+              *) refuse "deploy_contracts and execute are accepted only with deploy-solver or deploy-task" ;;
+            esac
+          fi
+          if [ "$WC_EXECUTE" = true ] && [ "$GITHUB_REF" != refs/heads/develop ]; then
+            refuse "execute=true is accepted only on refs/heads/develop"
+          elif [ "$GITHUB_REF" != refs/heads/develop ]; then
+            refuse "actions run only from refs/heads/develop (sops, Tailscale, SSH and the PR token are develop-only)"
+          fi
+
+          if [ "${#errors[@]}" -gt 0 ]; then
+            {
+              echo '### warrant-canary: input refused'
+              for e in "${errors[@]}"; do printf -- '- %s\n' "$e"; done
+            } >> "$GITHUB_STEP_SUMMARY"
+            for e in "${errors[@]}"; do printf '::error::%s\n' "$e"; done
+            exit 1
+          fi
+          echo "inputs ok"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pinned Ansible
+        env:
+          ANSIBLE_GALAXY_HTTP_TIMEOUT: '120'
+        run: |
+          set -euo pipefail
+          python -m pip install 'ansible-core==2.18.6'
+          ansible-galaxy collection install --timeout 120 -r infrastructure/ansible/requirements.yml
+
+      - name: actionlint (pinned, checksum-verified, with shellcheck)
+        env:
+          ACTIONLINT_VERSION: '1.7.12'
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          command -v shellcheck >/dev/null || { echo '::error::shellcheck is not on PATH'; exit 1; }
+          tool_dir="$RUNNER_TEMP/actionlint"
+          mkdir -p "$tool_dir"
+          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL -o "$tool_dir/$tarball" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${tarball}"
+          echo "${ACTIONLINT_SHA256}  $tool_dir/$tarball" | sha256sum -c -
+          tar -xzf "$tool_dir/$tarball" -C "$tool_dir" actionlint
+          "$tool_dir/actionlint" -color .github/workflows/warrant-canary.yml
+
+      - name: Ansible syntax check
+        env:
+          # Not used by --syntax-check; set for parity with every playbook step.
+          SOPS_AGE_KEY_FILE: ${{ runner.temp }}/age/keys.txt
+        run: |
+          set -euo pipefail
+          ANSIBLE_ROLES_PATH="$GITHUB_WORKSPACE/infrastructure/ansible/roles" \
+            ansible-playbook -i localhost, infrastructure/ansible/playbooks/warrant-canary.yml --syntax-check
+
+      - name: Unit tests
+        run: python -m unittest discover -s infrastructure/staging/tests -v
+
+  run:
+    name: ${{ inputs.action }} on mnemonic-fabric
+    needs: static
+    # Second guard: secrets, Tailscale, SSH and the PR token only on develop.
+    if: github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    env:
+      SERVER_NAME: mnemonic-fabric
+      ANSIBLE_HOST_KEY_CHECKING: 'True'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pinned Ansible and SOPS
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOPS_VERSION: v3.10.2
+          SOPS_SHA256: 79b0f844237bd4b0446e4dc884dbc1765fc7dedc3968f743d5949c6f2e701739
+          ANSIBLE_GALAXY_HTTP_TIMEOUT: '120'
+        run: |
+          set -euo pipefail
+          echo "ANSIBLE_LOCAL_TEMP=$RUNNER_TEMP/ansible" >> "$GITHUB_ENV"
+          python -m pip install 'ansible-core==2.18.6'
+          ansible-galaxy collection install --timeout 120 -r infrastructure/ansible/requirements.yml
+          mkdir -p "$RUNNER_TEMP/wc-tools"
+          cd "$RUNNER_TEMP/wc-tools"
+          gh release download "$SOPS_VERSION" --repo getsops/sops --pattern "sops-${SOPS_VERSION}.linux.amd64"
+          echo "${SOPS_SHA256}  sops-${SOPS_VERSION}.linux.amd64" | sha256sum -c -
+          mv "sops-${SOPS_VERSION}.linux.amd64" sops
+          chmod 755 sops
+          echo "$RUNNER_TEMP/wc-tools" >> "$GITHUB_PATH"
+
+      - name: Write the age key
+        env:
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$SOPS_AGE_KEY" || { echo '::error::SOPS_AGE_KEY is empty'; exit 1; }
+          umask 077
+          mkdir -p "$RUNNER_TEMP/age" "$RUNNER_TEMP/wc" "$RUNNER_TEMP/warrant-canary-out"
+          printf '%s\n' "$SOPS_AGE_KEY" > "$RUNNER_TEMP/age/keys.txt"
+          chmod 600 "$RUNNER_TEMP/age/keys.txt"
+
+      - name: Check the PR token
+        env:
+          SOPS_AGE_KEY_FILE: ${{ runner.temp }}/age/keys.txt
+        run: |
+          set -euo pipefail
+          fallback='The deployment PR can be opened from the laptop instead (see the README of the warrant-canary role).'
+          token=$(sops --decrypt --extract '["github_pats"]["dev-mnemonik"]' infrastructure/secrets/secrets.sops.yml 2>/dev/null) || {
+            echo "::error::Cannot decrypt github_pats.dev-mnemonik. $fallback"
+            exit 1
+          }
+          if [ -z "$token" ]; then
+            echo "::error::github_pats.dev-mnemonik decrypts to an empty value. $fallback"
+            exit 1
+          fi
+          echo "::add-mask::$token"
+          push=$(GH_TOKEN="$token" gh api repos/mnemonik-xyz/policy-execution --jq .permissions.push 2>/dev/null || true)
+          unset token
+          if [ "$push" != true ]; then
+            echo "::error::The PR token has no push permission on mnemonik-xyz/policy-execution. $fallback"
+            exit 1
+          fi
+          echo "PR token: push permission on mnemonik-xyz/policy-execution OK"
+
+      - name: Tailscale up (ephemeral)
+        id: tailscale
+        uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3.3.0
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          args: --accept-dns --hostname=gh-warrant-canary-${{ github.run_id }}
+
+      - name: Resolve the VM and check SSH as op
+        id: reach
+        env:
+          CI_SSH_PRIVATE_KEY: ${{ secrets.CI_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          VM_IP=''
+          for _ in $(seq 1 30); do
+            VM_IP=$(tailscale status --json 2>/dev/null | jq -r --arg name "$SERVER_NAME" '
+              [(.Peer // {} | to_entries[].value)
+                | select(.HostName == $name and .Online == true)
+                | (.TailscaleIPs // [])[] | select(test("^100\\."))
+              ] | first // ""')
+            [ -n "$VM_IP" ] && break
+            sleep 10
+          done
+          [[ "$VM_IP" =~ ^100\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo '::error::fabric VM is not online on the tailnet'; exit 1; }
+          echo "::add-mask::$VM_IP"
+          umask 077
+          mkdir -p "$RUNNER_TEMP/wc/ssh"
+          printf '%s\n' "$CI_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/wc/ssh/key"
+          chmod 600 "$RUNNER_TEMP/wc/ssh/key"
+          ssh-keygen -y -P '' -f "$RUNNER_TEMP/wc/ssh/key" >/dev/null
+          # Host key: trust on first use over the tailnet (as deploy-paywall-staging.yml);
+          # no pinned host key exists for this VM yet.
+          ssh_opts="-i $RUNNER_TEMP/wc/ssh/key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$RUNNER_TEMP/wc/ssh/known_hosts -o ConnectTimeout=15"
+          read -r -a opts <<< "$ssh_opts"
+          if ssh "${opts[@]}" "op@$VM_IP" 'sudo -n true' 2> "$RUNNER_TEMP/wc/ssh/err"; then
+            echo "SSH as op and noninteractive sudo OK"
+          else
+            echo "::error::SSH check failed:"
+            grep -vE '^(debug|Warning: Permanently)' "$RUNNER_TEMP/wc/ssh/err" | sed "s/$VM_IP/<host>/g" || true
+            exit 1
+          fi
+          {
+            echo "VM_IP=$VM_IP"
+            echo "VM_TARGET=op@$VM_IP"
+            echo "SSH_OPTS=$ssh_opts"
+          } >> "$GITHUB_ENV"
+
+      - name: Print the laptop fallback
+        if: failure() && (steps.tailscale.outcome == 'failure' || steps.reach.outcome == 'failure')
+        env: *wc_inputs
+        run: |
+          set -euo pipefail
+          # Inputs were validated by the static job (plain charsets only).
+          extra_vars=$(python3 - <<'PY'
+          import json
+          import os
+
+          e = os.environ
+          force = e["WC_FORCE_UNSTAGE"] == "true" and e["WC_ACTION"] == "unstage-keys"
+          print(json.dumps({
+              "warrant_canary_action": e["WC_ACTION"],
+              "warrant_canary_deploy_contracts": False,
+              "warrant_canary_execute": False,
+              "warrant_canary_render_only": e["WC_RENDER_ONLY"] == "true",
+              "warrant_canary_roles": e["WC_ROLES"].split(","),
+              "warrant_canary_run_dir": e["WC_RUN_DIR"],
+              "warrant_canary_settle_window": e["WC_SETTLE_WINDOW"],
+              "warrant_canary_force_unstage": force,
+              "warrant_canary_force_unstage_reason": e["WC_FORCE_UNSTAGE_REASON"] if force else "",
+              "warrant_canary_expected_image_id_override": e["WC_EXPECTED_IMAGE_ID_OVERRIDE"],
+              "warrant_canary_rpc_override": e["WC_RPC_OVERRIDE"],
+              "warrant_canary_output_dir": "/tmp/warrant-canary-out",
+          }, sort_keys=True))
+          PY
+          )
+          cat <<EOF
+          ::error::The VM is not reachable from CI (Tailscale, VM lookup, SSH as op or sudo -n failed). Nothing was staged.
+          Laptop fallback: run the same playbook from the laptop over public SSH as op
+          (SERVER-OPS.md 2.1; your IP must be in the Hetzner firewall rule for port 22).
+          From a coding-fabric checkout at ${GITHUB_SHA}, with your age key in SOPS_AGE_KEY_FILE:
+
+            printf 'all:\n  hosts:\n    mnemonic-fabric:\n      ansible_host: 178.105.207.172\n      ansible_user: op\n' > /tmp/wc-inventory.yml
+            cat > /tmp/wc-extra-vars.json <<'JSON'
+          ${extra_vars}
+          JSON
+            ANSIBLE_ROLES_PATH=infrastructure/ansible/roles \\
+              ansible-playbook -i /tmp/wc-inventory.yml infrastructure/ansible/playbooks/warrant-canary.yml \\
+              -e @/tmp/wc-extra-vars.json
+
+          The two broadcast switches are false above. For a broadcast, set
+          warrant_canary_deploy_contracts and warrant_canary_execute to true by hand.
+          EOF
+
+      - name: Render the inventory
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$VM_IP" =~ ^100\.[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          cat > "$RUNNER_TEMP/wc/inventory.yml" <<EOF
+          all:
+            hosts:
+              ${SERVER_NAME}:
+                ansible_host: ${VM_IP}
+                ansible_user: op
+                ansible_ssh_private_key_file: ${RUNNER_TEMP}/wc/ssh/key
+                ansible_ssh_common_args: "-o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${RUNNER_TEMP}/wc/ssh/known_hosts -o ConnectTimeout=15"
+          EOF
+
+      - name: Build extra-vars (no broadcast)
+        if: ${{ !(inputs.deploy_contracts && inputs.execute && github.ref == 'refs/heads/develop' && (inputs.action == 'deploy-solver' || inputs.action == 'deploy-task')) }}
+        env:
+          WARRANT_CANARY_BROADCAST: 'false'
+          WC_ACTION: ${{ inputs.action }}
+          WC_DEPLOY_CONTRACTS: ${{ inputs.deploy_contracts }}
+          WC_EXECUTE: ${{ inputs.execute }}
+          WC_RENDER_ONLY: ${{ inputs.render_only }}
+          WC_ROLES: ${{ inputs.roles }}
+          WC_RUN_DIR: ${{ inputs.run_dir }}
+          WC_SETTLE_WINDOW: ${{ inputs.settle_window }}
+          WC_FORCE_UNSTAGE: ${{ inputs.force_unstage }}
+          WC_FORCE_UNSTAGE_REASON: ${{ inputs.force_unstage_reason }}
+          WC_EXPECTED_IMAGE_ID_OVERRIDE: ${{ inputs.expected_image_id_override }}
+          WC_RPC_OVERRIDE: ${{ inputs.rpc_override }}
+        run: &build_extra_vars |
+          set -euo pipefail
+          umask 077
+          mkdir -p "$RUNNER_TEMP/wc" "$RUNNER_TEMP/warrant-canary-out"
+          python3 - <<'PY'
+          import json
+          import os
+
+          env = os.environ
+
+          def flag(name):
+              value = env[name]
+              if value not in ("true", "false"):
+                  raise SystemExit(f"{name} must be true or false")
+              return value == "true"
+
+          broadcast = flag("WARRANT_CANARY_BROADCAST")
+          action = env["WC_ACTION"]
+          if broadcast:
+              # Second guard behind the step if: (Decision 1).
+              if action not in ("deploy-solver", "deploy-task"):
+                  raise SystemExit("broadcast is possible only for deploy-solver and deploy-task")
+              if not (flag("WC_DEPLOY_CONTRACTS") and flag("WC_EXECUTE")):
+                  raise SystemExit("broadcast needs deploy_contracts and execute")
+              if env.get("GITHUB_REF") != "refs/heads/develop":
+                  raise SystemExit("broadcast is possible only on refs/heads/develop")
+          force_unstage = flag("WC_FORCE_UNSTAGE")
+          # Free text reaches Ansible only where it is used (template-injection surface).
+          send_reason = force_unstage and action == "unstage-keys"
+          data = {
+              "warrant_canary_action": action,
+              "warrant_canary_deploy_contracts": flag("WC_DEPLOY_CONTRACTS") if broadcast else False,
+              "warrant_canary_execute": flag("WC_EXECUTE") if broadcast else False,
+              "warrant_canary_render_only": flag("WC_RENDER_ONLY"),
+              "warrant_canary_roles": env["WC_ROLES"].split(","),
+              "warrant_canary_run_dir": env.get("WC_RUN_DIR", ""),
+              "warrant_canary_settle_window": env.get("WC_SETTLE_WINDOW", ""),
+              "warrant_canary_force_unstage": force_unstage,
+              "warrant_canary_force_unstage_reason": env.get("WC_FORCE_UNSTAGE_REASON", "") if send_reason else "",
+              "warrant_canary_expected_image_id_override": env.get("WC_EXPECTED_IMAGE_ID_OVERRIDE", ""),
+              "warrant_canary_rpc_override": env.get("WC_RPC_OVERRIDE", ""),
+              "warrant_canary_output_dir": os.path.join(env["RUNNER_TEMP"], "warrant-canary-out"),
+          }
+          path = os.path.join(env["RUNNER_TEMP"], "wc", "extra-vars.json")
+          fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+          os.fchmod(fd, 0o600)
+          with os.fdopen(fd, "w") as fh:
+              json.dump(data, fh, indent=2, sort_keys=True)
+              fh.write("\n")
+          print("extra-vars written; broadcast =", str(broadcast).lower())
+          PY
+
+      - name: Build extra-vars (broadcast)
+        if: ${{ inputs.deploy_contracts && inputs.execute && github.ref == 'refs/heads/develop' && (inputs.action == 'deploy-solver' || inputs.action == 'deploy-task') }}
+        env:
+          WARRANT_CANARY_BROADCAST: 'true'
+          WC_ACTION: ${{ inputs.action }}
+          WC_DEPLOY_CONTRACTS: ${{ inputs.deploy_contracts }}
+          WC_EXECUTE: ${{ inputs.execute }}
+          WC_RENDER_ONLY: ${{ inputs.render_only }}
+          WC_ROLES: ${{ inputs.roles }}
+          WC_RUN_DIR: ${{ inputs.run_dir }}
+          WC_SETTLE_WINDOW: ${{ inputs.settle_window }}
+          WC_FORCE_UNSTAGE: ${{ inputs.force_unstage }}
+          WC_FORCE_UNSTAGE_REASON: ${{ inputs.force_unstage_reason }}
+          WC_EXPECTED_IMAGE_ID_OVERRIDE: ${{ inputs.expected_image_id_override }}
+          WC_RPC_OVERRIDE: ${{ inputs.rpc_override }}
+        run: *build_extra_vars
+
+      - name: Build the secret-pattern file and mask secret values
+        id: patterns
+        env:
+          SOPS_AGE_KEY_FILE: ${{ runner.temp }}/age/keys.txt
+        run: |
+          set +x
+          set -euo pipefail
+          umask 077
+          pat="$RUNNER_TEMP/wc/patterns.txt"
+          PATTERN_FILE="$pat" python3 - <<'PY'
+          # Lead decision D12: only secret values, one per line. Public or
+          # non-secret values (role addresses, expected image id, src commit,
+          # basic-auth user) are deliberately absent: they appear in records.
+          # Every value is also masked before the playbook runs, so a task that
+          # prints one cannot put it into the public log.
+          import json
+          import os
+          import subprocess
+          import sys
+
+          res = subprocess.run(
+              ["sops", "--decrypt", "--output-type", "json", "infrastructure/secrets/secrets.sops.yml"],
+              capture_output=True, text=True)
+          if res.returncode != 0:
+              sys.exit("sops could not decrypt secrets.sops.yml")
+          s = json.loads(res.stdout)
+          values = []
+
+          def add(label, value):
+              value = "" if value is None else str(value).strip()
+              if not value or "\n" in value:
+                  sys.exit(f"secret pattern {label} is empty or multi-line")
+              values.append(value)
+
+          for role in ("buyer", "seller", "relayer", "deployer"):
+              raw = s.get(f"warrant_canary_keystore_{role}")
+              ks = raw if isinstance(raw, dict) else json.loads(raw or "{}")
+              crypto = ks.get("crypto") or ks.get("Crypto") or {}
+              add(f"keystore {role} ciphertext", crypto.get("ciphertext"))
+              add(f"keystore {role} mac", crypto.get("mac"))
+              add(f"warrant_canary_keystore_password_{role}", s.get(f"warrant_canary_keystore_password_{role}"))
+          for key in ("warrant_canary_seller_key_hex", "warrant_canary_registry_key",
+                      "warrant_canary_ionet_api_key", "warrant_canary_mcp_auth_pass"):
+              add(key, s.get(key))
+          add("github_pats.dev-mnemonik", (s.get("github_pats") or {}).get("dev-mnemonik"))
+          fd = os.open(os.environ["PATTERN_FILE"], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+          os.fchmod(fd, 0o600)
+          with os.fdopen(fd, "w") as fh:
+              fh.write("\n".join(values) + "\n")
+          for value in values:
+              print(f"::add-mask::{value}")
+          PY
+          test -s "$pat" || { echo '::error::secret-pattern file is empty'; exit 1; }
+          if grep -qx '' "$pat"; then
+            echo '::error::secret-pattern file has an empty line'
+            exit 1
+          fi
+
+      - name: Run the playbook
+        id: play
+        timeout-minutes: 300
+        env:
+          SOPS_AGE_KEY_FILE: ${{ runner.temp }}/age/keys.txt
+        run: |
+          set -euo pipefail
+          ANSIBLE_ROLES_PATH="$GITHUB_WORKSPACE/infrastructure/ansible/roles" \
+            ansible-playbook -i "$RUNNER_TEMP/wc/inventory.yml" \
+            infrastructure/ansible/playbooks/warrant-canary.yml \
+            -e "@$RUNNER_TEMP/wc/extra-vars.json"
+
+      - name: Check that no key material is staged on the VM
+        if: always() && inputs.action != 'stage-keys' && steps.reach.outcome == 'success'
+        env:
+          WC_ACTION: ${{ inputs.action }}
+        run: |
+          set -euo pipefail
+          read -r -a opts <<< "$SSH_OPTS"
+          if ssh "${opts[@]}" "$VM_TARGET" 'test ! -e /run/warrant-canary'; then
+            echo "/run/warrant-canary is absent on the VM"
+            echo "- VM check: \`/run/warrant-canary\` absent" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::/run/warrant-canary still exists on the VM after ${WC_ACTION}; run unstage-keys"
+            echo "- VM check: \`/run/warrant-canary\` STILL PRESENT; run \`unstage-keys\`" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Read the deployed run directory
+        id: rundir
+        if: ${{ steps.play.outcome == 'success' && inputs.action == 'deploy-solver' && inputs.deploy_contracts && inputs.execute && github.ref == 'refs/heads/develop' }}
+        run: |
+          set -euo pipefail
+          record="$RUNNER_TEMP/warrant-canary-out/run.json"
+          test -f "$record" || { echo '::error::run.json was not fetched'; exit 1; }
+          run_dir=$(jq -r '.run_dir // ""' "$record")
+          [[ "$run_dir" =~ ^mainnet/[0-9]{8}T[0-9]{6}Z$ ]] || { echo '::error::run.json run_dir is not mainnet/<YYYYMMDDTHHMMSSZ>'; exit 1; }
+          echo "name=${run_dir#mainnet/}" >> "$GITHUB_OUTPUT"
+
+      - name: Grep the fetched records for secret values
+        id: grep
+        if: ${{ !cancelled() && steps.patterns.outcome == 'success' && steps.play.outcome != 'skipped' }}
+        run: |
+          set +x
+          set -euo pipefail
+          pat="$RUNNER_TEMP/wc/patterns.txt"
+          out="$RUNNER_TEMP/warrant-canary-out"
+          mkdir -p "$out"
+          test -s "$pat" || { echo '::error::secret-pattern file is empty'; exit 1; }
+          if grep -qx '' "$pat"; then
+            echo '::error::secret-pattern file has an empty line'
+            exit 1
+          fi
+          if [ -n "$(find "$out" -type l -print -quit)" ]; then
+            echo '::error::fetched records contain a symlink; nothing is uploaded'
+            exit 1
+          fi
+          rc=0
+          grep -rFf "$pat" -l -- "$out" > "$RUNNER_TEMP/wc/grep-hits" || rc=$?
+          if [ "$rc" -eq 1 ]; then
+            echo "secret-pattern grep: no secret value in the fetched records"
+          elif [ "$rc" -eq 0 ]; then
+            echo "::error::secret value found in fetched records (files below); nothing is uploaded"
+            sed "s|^$out/||" "$RUNNER_TEMP/wc/grep-hits"
+            exit 1
+          else
+            echo "::error::secret-pattern grep failed (exit $rc)"
+            exit 1
+          fi
+
+      - name: Compare health records
+        id: health
+        if: ${{ !cancelled() && steps.play.outcome != 'skipped' }}
+        env:
+          WC_ACTION: ${{ inputs.action }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/warrant-canary-out"
+          before="$out/health-before.json"
+          after="$out/health-after.json"
+          ok=true
+          {
+            echo '### Health'
+            if [ ! -f "$before" ]; then
+              echo '- health-before.json missing'; ok=false
+            elif [ "$WC_ACTION" = preflight ]; then
+              echo '```'; jq -c '.services | map_values(.status)' "$before"; echo '```'
+            elif [ ! -f "$after" ]; then
+              echo '- health-after.json missing'; ok=false
+            else
+              cmp=$(jq -n --slurpfile b "$before" --slurpfile a "$after" '
+                (($b[0].stopped // []) + ($a[0].stopped // []) | unique) as $s
+                | def codes(r): r.services | map_values(.status)
+                    | with_entries(select(.key as $k | ($s | index($k)) | not));
+                {before: codes($b[0]), after: codes($a[0]), stopped: $s}
+                | . + {equal: (.before == .after)}')
+              echo '```'; echo "$cmp"; echo '```'
+              [ "$(jq -r .equal <<< "$cmp")" = true ] || ok=false
+            fi
+            echo "- health result: $ok"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$ok" != true ]; then
+            if [[ "$WC_ACTION" == deploy-* ]]; then
+              echo '- no deployment PR: the records are in the uploaded artifact; restore health, then open the PR from the laptop' >> "$GITHUB_STEP_SUMMARY"
+            fi
+            echo '::error::health records are missing or differ (see the job summary); no deployment PR is opened'
+            exit 1
+          fi
+
+      - name: Upload records
+        if: ${{ !cancelled() && steps.grep.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: warrant-canary-${{ inputs.action }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/warrant-canary-out
+          if-no-files-found: warn
+          retention-days: ${{ startsWith(inputs.action, 'deploy-') && 30 || 7 }}
+
+      - name: Open the deployment PR in policy-execution
+        if: ${{ success() && steps.grep.outcome == 'success' && steps.health.outcome == 'success' && ((inputs.deploy_contracts && inputs.execute && github.ref == 'refs/heads/develop' && (inputs.action == 'deploy-solver' || inputs.action == 'deploy-task')) || (inputs.action == 'deploy-seller' && !inputs.render_only)) }}
+        env:
+          SOPS_AGE_KEY_FILE: ${{ runner.temp }}/age/keys.txt
+          WC_ACTION: ${{ inputs.action }}
+          RUN_NAME: ${{ steps.rundir.outputs.name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          umask 077
+          out="$RUNNER_TEMP/warrant-canary-out"
+          clone="$RUNNER_TEMP/wc/policy-execution"
+          token=$(sops --decrypt --extract '["github_pats"]["dev-mnemonik"]' infrastructure/secrets/secrets.sops.yml)
+          test -n "$token" || { echo '::error::PR token is empty'; exit 1; }
+          echo "::add-mask::$token"
+          export GH_TOKEN="$token"
+          unset token
+          gh auth setup-git --hostname github.com
+          git clone --depth 1 --branch main https://github.com/mnemonik-xyz/policy-execution.git "$clone"
+
+          WC_OUT="$out" WC_CLONE="$clone" python3 - <<'PY'
+          # Place the records of this action and replace its fixed README
+          # placeholders (lead decision D13) by exact string match.
+          import json
+          import os
+          import re
+          import shutil
+          import sys
+
+          import yaml
+
+          env = os.environ
+          action, out, clone = env["WC_ACTION"], env["WC_OUT"], env["WC_CLONE"]
+          ADDRESS = re.compile(r"0x[0-9a-fA-F]{40}")
+          PUBKEY = re.compile(r"0x0[23][0-9a-f]{64}")
+          SOLVER_README = "solver-bounty/canary/README.md"
+          SHOWCASE_README = "showcases/ionet_arc/README.md"
+          MAINNET = "solver-bounty/canary/mainnet"
+
+          def fail(msg):
+              sys.exit(f"deployment PR: {msg}")
+
+          def load_json(name):
+              path = os.path.join(out, name)
+              if not os.path.isfile(path):
+                  fail(f"{name} was not fetched")
+              with open(path) as fh:
+                  return json.load(fh)
+
+          def place(name, rel):
+              src = os.path.join(out, name)
+              if not os.path.isfile(src):
+                  fail(f"{name} was not fetched")
+              dest = os.path.join(clone, rel)
+              os.makedirs(os.path.dirname(dest), exist_ok=True)
+              shutil.copyfile(src, dest)
+              print(rel)
+
+          def replace(readme, pairs):
+              path = os.path.join(clone, readme)
+              with open(path) as fh:
+                  text = fh.read()
+              for placeholder, value, pattern in pairs:
+                  if not isinstance(value, str) or not pattern.fullmatch(value):
+                      fail(f"value for {placeholder} is empty or malformed")
+                  if placeholder not in text:
+                      fail(f"{placeholder} not found in {readme}")
+                  text = text.replace(placeholder, value)
+              with open(path, "w") as fh:
+                  fh.write(text)
+              print(readme)
+
+          if action == "deploy-solver":
+              run = env.get("RUN_NAME", "")
+              if not re.fullmatch(r"[0-9]{8}T[0-9]{6}Z", run):
+                  fail("run directory name is missing")
+              state = load_json("state.json")
+              for name in ("state.json", "deployment.json", "arc-before.json", "arc-after.json"):
+                  place(name, f"{MAINNET}/{run}/{name}")
+              replace(SOLVER_README, [
+                  ("<SOLVER_ESCROW_ADDRESS>", state.get("escrow"), ADDRESS),
+                  ("<GROTH16_VERIFIER_ADDRESS>", state.get("verifier"), ADDRESS),
+              ])
+          elif action == "deploy-task":
+              checks = load_json("task-escrow.json").get("checks") or {}
+              flags = ("escrow_has_code", "verifier_has_code", "token_ok", "image_id_ok",
+                       "verifier_ok", "total_reserved_zero")
+              if not all(checks.get(f) is True for f in flags):
+                  fail("task-escrow.json checks are not all true")
+              place("task-escrow.json", f"{MAINNET}/task-escrow.json")
+              replace(SHOWCASE_README, [
+                  ("<TASK_ESCROW_ADDRESS>", checks.get("escrow"), ADDRESS),
+                  ("<JOURNAL_VERIFIER_ADDRESS>", checks.get("verifier"), ADDRESS),
+              ])
+          elif action == "deploy-seller":
+              manifest = load_json("seller-public-manifest.json")
+              keys_path = os.path.join(out, "mainnet-public_keys.yaml")
+              if not os.path.isfile(keys_path):
+                  fail("mainnet-public_keys.yaml was not fetched")
+              with open(keys_path) as fh:
+                  keys = yaml.load(fh, Loader=yaml.BaseLoader) or {}
+              if "buyer_acceptance_key" in keys:
+                  fail("mainnet-public_keys.yaml still holds buyer_acceptance_key")
+              if set(keys) != {"registry_key"}:
+                  fail("mainnet-public_keys.yaml must hold only registry_key")
+              place("mainnet-public_keys.yaml", "showcases/ionet_arc/config/mainnet-public_keys.yaml")
+              place("seller-public-manifest.json", f"{MAINNET}/seller-public-manifest.json")
+              replace(SHOWCASE_README, [
+                  ("<SELLER_ADDRESS>", manifest.get("seller_address"), ADDRESS),
+                  ("<REGISTRY_PUBLIC_KEY>", keys.get("registry_key"), PUBKEY),
+              ])
+          else:
+              fail(f"no deployment PR for action {action}")
+          PY
+
+          cd "$clone"
+          branch="canary/${WC_ACTION}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git checkout -b "$branch"
+          git add -A -- solver-bounty/canary showcases/ionet_arc/README.md showcases/ionet_arc/config/mainnet-public_keys.yaml
+          if git diff --cached --quiet; then
+            echo '::error::nothing to commit for the deployment PR'
+            exit 1
+          fi
+          rc=0
+          git diff --cached --text | grep -qFf "$RUNNER_TEMP/wc/patterns.txt" || rc=$?
+          [ "$rc" -eq 1 ] || { echo "::error::secret-pattern grep over the PR diff did not pass (exit $rc)"; exit 1; }
+
+          login=$(gh api user --jq .login)
+          uid=$(gh api user --jq .id)
+          git -c user.name="$login" -c user.email="${uid}+${login}@users.noreply.github.com" \
+            commit -q -m "chore(canary): ${WC_ACTION} mainnet deployment record" \
+            -m "Arc mainnet (chain 5042). Workflow run: ${RUN_URL}"
+          git push -q origin "HEAD:refs/heads/$branch"
+          {
+            echo "Deployment record from the warrant-canary workflow."
+            echo
+            echo "- Action: \`${WC_ACTION}\`"
+            echo "- Chain: Arc mainnet, 5042"
+            echo "- Run directory: ${RUN_NAME:-n/a}"
+            echo "- Workflow run: ${RUN_URL}"
+            echo
+            echo "The secret-pattern grep over this diff passed before the commit."
+          } > "$RUNNER_TEMP/wc/pr-body.md"
+          gh pr create --repo mnemonik-xyz/policy-execution --base main --head "$branch" \
+            --title "chore(canary): ${WC_ACTION} mainnet deployment record" \
+            --body-file "$RUNNER_TEMP/wc/pr-body.md"
+
+      - name: Job summary
+        if: always()
+        env:
+          WC_ACTION: ${{ inputs.action }}
+          WC_FORCE_UNSTAGE: ${{ inputs.force_unstage }}
+          WC_FORCE_UNSTAGE_REASON: ${{ inputs.force_unstage_reason }}
+          WC_MODE: ${{ (inputs.action == 'deploy-solver' || inputs.action == 'deploy-task') && ((inputs.deploy_contracts && inputs.execute && github.ref == 'refs/heads/develop') && 'broadcast' || 'simulate') || 'no contract broadcast' }}
+          RUN_NAME: ${{ steps.rundir.outputs.name }}
+          PLAY_OUTCOME: ${{ steps.play.outcome }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import re
+
+          env = os.environ
+          action = env.get("WC_ACTION", "")
+          lines = ["### warrant-canary", "",
+                   f"- action: `{action}`",
+                   f"- mode: {env.get('WC_MODE', '')}",
+                   f"- playbook: {env.get('PLAY_OUTCOME') or 'not run'}"]
+          run_name = env.get("RUN_NAME", "")
+          if run_name:
+              lines.append(f"- run directory: `solver-bounty/canary/mainnet/{run_name}`")
+          elif action == "deploy-solver" and env.get("WC_MODE") == "simulate":
+              lines.append("- run directory: simulate run, its `-simulate` directory was deleted")
+          if action == "stage-keys" and env.get("PLAY_OUTCOME") == "success":
+              lines.append("- keys staged; run `unstage-keys` after the deal")
+          if env.get("PLAY_OUTCOME") == "failure":
+              lines.append("- refused or failed: the reason is in the playbook step log")
+          if env.get("WC_FORCE_UNSTAGE") == "true":
+              reason = env.get("WC_FORCE_UNSTAGE_REASON", "")
+              longest = max((len(r) for r in re.findall(r"`+", reason)), default=0)
+              fence = "`" * max(3, longest + 1)
+              lines += ["", "force_unstage_reason:", "", fence + "text", reason, fence]
+          with open(env["GITHUB_STEP_SUMMARY"], "a") as fh:
+              fh.write("\n".join(lines) + "\n")
+          PY
+
+      - name: Log out of gh
+        if: always()
+        run: |
+          gh auth logout --hostname github.com >/dev/null 2>&1 || true
+          git config --global --remove-section credential.https://github.com >/dev/null 2>&1 || true
+          git config --global --remove-section credential.https://gist.github.com >/dev/null 2>&1 || true
+
+      - name: Remove runner-side key material
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/wc/ssh/key" "$RUNNER_TEMP/wc/ssh/known_hosts" \
+            "$RUNNER_TEMP/age/keys.txt" "$RUNNER_TEMP/wc/patterns.txt" \
+            "$RUNNER_TEMP/wc/inventory.yml" "$RUNNER_TEMP/wc/extra-vars.json"
+          rm -rf "$RUNNER_TEMP/wc/policy-execution" "$RUNNER_TEMP/wc" "$RUNNER_TEMP/age" \
+            "$RUNNER_TEMP/warrant-canary-out"
