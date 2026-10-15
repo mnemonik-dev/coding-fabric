@@ -118,6 +118,8 @@ warrant_canary_apt_packages:
   - python3.12-venv
   - python3-pip
   - ca-certificates
+  - gpg
+  - python3-debian  # ansible deb822_repository (NodeSource)
 
 # --- Chain ---
 warrant_canary_chain_id: 5042

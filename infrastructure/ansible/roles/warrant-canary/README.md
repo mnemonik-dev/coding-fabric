@@ -8,6 +8,7 @@ Task-level `become` is used only for:
 - the tmpfs mount and unmount,
 - the secrets directory,
 - the Caddy steps,
+- the seller container start, the secret-file check and the MCP handshake, which read the root-owned `seller.env`,
 - the root-only setup: apt, and creating `/opt/warrant-canary`.
 
 This role is the only code that puts mainnet key material on the VM.
@@ -20,7 +21,7 @@ This role is the only code that puts mainnet key material on the VM.
 |---|---|
 | `preflight` | Read-only checks: `sudo -n true`, `df`, `free`, `docker ps`, `caddy validate` of the live config, and `wget` of `127.0.0.1:2020/metrics` inside `vaultwarden-caddy-1`. Writes `health-before.json`. |
 | `configure` | Installs the pinned toolchain and clones or updates `policy-execution` at `warrant_canary_src_commit` (never forced, never deleted). Builds `warrant-host` (release, guest in Docker) and `warrant-solver` (debug). **Asserts the image ID before writing anything else.** Then writes `/opt/warrant-canary/env` and the seller secrets. |
-| `rehearse` | Stages all four keys and starts loopback Anvil. Runs the explicit D7 chain with `ShowcaseToken`, then the D19 refund scenario. Writes `rehearsal.md` and `rehearsal.json`. Stops Anvil and unstages in `always`. |
+| `rehearse` | Refuses when the Anvil port is busy, starts loopback Anvil, then stages all four keys. Runs the explicit D7 chain with `ShowcaseToken`, then the D19 refund scenario. Writes `rehearsal.md` and `rehearsal.json`. Stops Anvil and unstages in `always`. |
 | `stage-keys` | Stops on low disk or memory (stop rule), then stages keystores and passwords for `warrant_canary_roles` into the tmpfs. |
 | `unstage-keys` | Unmounts only when the active mainnet order is Paid or Refunded, or with `force_unstage` and a reason. |
 | `deploy-solver` | Runs the checks in this order: green rehearsal, `settle_window`, existing escrow, then `check-arc-solver.py before`. Only then does it stage keys and run `init`, `check` and `deploy`, plus `after` when broadcasting. |
@@ -94,7 +95,7 @@ Every script call gets `WARRANT_CANARY_RPC`.
 
 ## Refusal rules
 
-- **Overrides.** `expected_image_id_override` is accepted only by `configure` and must be 64 hex digits. `rpc_override` is accepted only by `deploy-solver` and must be an http(s) URL. Both are refused with execute. The other actions would persist them in the env file, `seller.env` or the manifest.
+- **Overrides.** `expected_image_id_override` is accepted only by `configure` and must be 64 hex digits. `rpc_override` is accepted only by `deploy-solver` and must be an https URL. Both are refused with execute. The other actions would persist them in the env file, `seller.env` or the manifest.
 - **Other inputs.** `force_unstage_reason` must be 1 to 200 plain characters with no newline or braces. `output_dir` must be absolute and must not contain `..`.
 - **sops values.** Addresses and the expected image ID must stay `0x` strings. A value that YAML 1.1 turned into an integer is refused, so load sops as JSON.
 - **Pinned checkout.** `warrant_canary_src_commit` must be a full 40-hex sha. `rehearse`, the green-rehearsal gate and `deploy-seller` refuse unless the checkout HEAD equals the pin and `git status --porcelain` is empty. `rehearse.py` records the real HEAD.
@@ -108,7 +109,7 @@ Every script call gets `WARRANT_CANARY_RPC`.
 
 ## Health rule
 
-- **Unreachable before the action.** `health-before.json` fails the action when a service that is not recorded as stopped answers nothing (status 000), so a wrong URL cannot hide a change. Task 9 confirms the five default targets with a manual `curl` from the VM before the first `rehearse`.
+- **Unreachable before the action.** `health-before.json` fails the action when a service that is not recorded as stopped answers nothing (status 000), so a wrong URL cannot hide a change. `unstage-keys` is the exception: it never refuses on reachability, unmounts first, and the health rule then reports `HEALTH RULE FAILED` for the dead service. Task 9 confirms the five default targets with a manual `curl` from the VM before the first `rehearse`.
 - **Records.** Each action writes `health-before.json` and `health-after.json` into `/opt/warrant-canary/runs/<UTC ts>-<action>/`. Schema: `{"services": {"<name>": {"status": <int>}}, "stopped": [...]}`. The services are `mcp`, `kaneo`, `vaultwarden`, `caddy` and `ollama`. An unreachable service has status `0`.
 - **Operator stops.** The operator records stops in `/opt/warrant-canary/stopped-services.json` as `{"stopped": [...], "stopped_at": ..., "restarted_at": null}`. While `restarted_at` is null, the listed services are excluded and reported as stopped, and they appear in both files' `stopped` field. Once `restarted_at` is set, they are compared again.
 - **Failure.** The action fails if any other service's status code differs between the two records.
@@ -171,7 +172,7 @@ helpers sit in `molecule/default/tasks/`.
 
 ## Installers
 
-- **Node.** It comes from the NodeSource apt repository, signed by the key whose fingerprint is `warrant_canary_nodesource_key_fpr`. Configure refuses any other key, and Task 9 confirms the fingerprint on the first run.
+- **Node.** It comes from the NodeSource apt repository, signed by the key whose fingerprint is `warrant_canary_nodesource_key_fpr`. Configure refuses any other key and a key file that holds more than one key, and Task 9 confirms the fingerprint on the first run.
 - **`npm ci`.** It runs with `--ignore-scripts`.
 - **rustup, rzup and foundryup.** They use their upstream `curl | sh` installers as `op`, then install the pinned versions. This is an accepted trade-off, the same as `prover-vm.sh`.
 - **PATH order.** The venv and the build outputs come before the system directories, so the scripts get the venv `python3`. Everything on that path is owned by `op`, who is already root-equivalent through the docker group.

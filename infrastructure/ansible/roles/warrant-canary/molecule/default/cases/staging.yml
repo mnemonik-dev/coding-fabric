@@ -57,6 +57,28 @@
     expect_msg: keys are already staged
     warrant_canary_action: deploy-seller
 
+# --- unstage_keys_ignores_unreachable_service (review round 2) ---
+# The keys come off first; the health rule afterwards still reports kaneo.
+- name: "unstage_keys_ignores_unreachable_service: kaneo unreachable, unstage still runs"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: unstage_keys_ignores_unreachable_service
+    expect: fail
+    expect_msg: HEALTH RULE FAILED
+    warrant_canary_action: unstage-keys
+    warrant_canary_force_unstage: true
+    warrant_canary_force_unstage_reason: "test cleanup with kaneo down"
+    warrant_canary_test_health_targets:
+      mcp: { url: "http://127.0.0.1:18080/mcp", container: "" }
+      kaneo: { url: "http://127.0.0.1:18099/", container: "" }
+      vaultwarden: { url: "http://127.0.0.1:18080/vaultwarden", container: "" }
+      caddy: { url: "http://127.0.0.1:18080/caddy", container: "" }
+      ollama: { url: "http://127.0.0.1:18080/ollama", container: "" }
+
+- name: "unstage_keys_ignores_unreachable_service: tmpfs gone"
+  ansible.builtin.command: test ! -e /run/warrant-canary
+  changed_when: false
+
 - name: Clean up after stage_keys_writes_keystores
   ansible.builtin.include_tasks: "{{ t }}/unstage.yml"
 

@@ -68,18 +68,35 @@
   when: not (_wc_node_ok | bool)
   become: true
   block:
-    - name: NodeSource signing key
+    - name: NodeSource signing key (download to a staging path)
       ansible.builtin.get_url:
         url: https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key
-        dest: /etc/apt/keyrings/nodesource.asc
+        dest: /etc/apt/keyrings/nodesource.asc.new
         mode: "0644"
+        force: true
 
-    - name: Check the NodeSource key fingerprint
+    - name: Check the NodeSource key holds exactly the pinned key
       ansible.builtin.command:
-        argv: [gpg, --show-keys, --with-colons, /etc/apt/keyrings/nodesource.asc]
+        argv: [gpg, --show-keys, --with-colons, /etc/apt/keyrings/nodesource.asc.new]
       register: _wc_nodesource_key
       changed_when: false
-      failed_when: ('fpr:::::::::' ~ warrant_canary_nodesource_key_fpr ~ ':') not in _wc_nodesource_key.stdout
+      failed_when: >-
+        _wc_nodesource_key.rc != 0
+        or _wc_nodesource_key.stdout_lines | select('match', '^pub:') | list | length != 1
+        or (_wc_nodesource_key.stdout_lines | select('match', '^fpr:') | first | default('')).split(':')[9] | default('')
+           != warrant_canary_nodesource_key_fpr
+
+    - name: Install the checked key
+      ansible.builtin.copy:
+        src: /etc/apt/keyrings/nodesource.asc.new
+        dest: /etc/apt/keyrings/nodesource.asc
+        remote_src: true
+        mode: "0644"
+
+    - name: Remove the staging copy
+      ansible.builtin.file:
+        path: /etc/apt/keyrings/nodesource.asc.new
+        state: absent
 
     - name: NodeSource repository (signed-by the checked key)
       ansible.builtin.deb822_repository:

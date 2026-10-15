@@ -34,18 +34,15 @@
 - name: Refuse while keys are staged
   ansible.builtin.include_tasks: not_staged.yml
 
-- name: Rehearse with keys staged and Anvil running
+- name: Refuse when the Anvil port is already in use
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ warrant_canary_anvil_port }}"
+    state: stopped
+    timeout: 2
+
+- name: Rehearse with Anvil running, then keys staged
   block:
-    - name: Stage all four keystores and passwords
-      ansible.builtin.include_tasks: stage.yml
-
-    - name: Refuse when the Anvil port is already in use
-      ansible.builtin.wait_for:
-        host: 127.0.0.1
-        port: "{{ warrant_canary_anvil_port }}"
-        state: stopped
-        timeout: 2
-
     - name: Start loopback Anvil (chain 31337)
       ansible.builtin.shell: >-
         nohup setsid anvil --host 127.0.0.1 --port {{ warrant_canary_anvil_port }}
@@ -60,6 +57,9 @@
         host: 127.0.0.1
         port: "{{ warrant_canary_anvil_port }}"
         timeout: 30
+
+    - name: Stage all four keystores and passwords
+      ansible.builtin.include_tasks: stage.yml
 
     - name: Run the rehearsal chain (rehearse.py)
       ansible.builtin.command:

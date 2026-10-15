@@ -46,6 +46,22 @@
     - name: The checkout is at the pin and clean
       ansible.builtin.include_tasks: checkout_check.yml
 
+    - name: Stat the seller secret files
+      become: true
+      ansible.builtin.stat:
+        path: "{{ warrant_canary_secrets_dir }}/{{ item }}"
+      loop: [seller.env, seller.key]
+      register: _wc_secret_files
+
+    - name: Refuse unless configure rendered both secret files (0600, UID {{ warrant_canary_seller_uid }})
+      ansible.builtin.assert:
+        that:
+          - _wc_secret_files.results | selectattr('stat.exists') | list | length == 2
+          - _wc_secret_files.results | map(attribute='stat.mode') | unique | list == ['0600']
+          - _wc_secret_files.results | map(attribute='stat.uid') | unique | list == [warrant_canary_seller_uid | int]
+        fail_msg: "Run configure first: {{ warrant_canary_secrets_dir }}/seller.env and seller.key must exist, 0600, owned by {{ warrant_canary_seller_uid }}."
+        quiet: true
+
     - name: Keys directory in the checkout (gitignored)
       ansible.builtin.file:
         path: "{{ warrant_canary_src_dir }}/{{ warrant_canary_registry_key_rel | dirname }}"
@@ -128,22 +144,6 @@
         src: docker-compose.yml.j2
         dest: "{{ warrant_canary_deploy_dir }}/seller/docker-compose.yml"
         mode: "0640"
-
-    - name: Stat the seller secret files
-      become: true
-      ansible.builtin.stat:
-        path: "{{ warrant_canary_secrets_dir }}/{{ item }}"
-      loop: [seller.env, seller.key]
-      register: _wc_secret_files
-
-    - name: Refuse unless configure rendered both secret files (0600, UID {{ warrant_canary_seller_uid }})
-      ansible.builtin.assert:
-        that:
-          - _wc_secret_files.results | selectattr('stat.exists') | list | length == 2
-          - _wc_secret_files.results | map(attribute='stat.mode') | unique | list == ['0600']
-          - _wc_secret_files.results | map(attribute='stat.uid') | unique | list == [warrant_canary_seller_uid | int]
-        fail_msg: "Run configure first: {{ warrant_canary_secrets_dir }}/seller.env and seller.key must exist, 0600, owned by {{ warrant_canary_seller_uid }}."
-        quiet: true
 
     - name: Start the seller container (reads the root-owned env_file, so become)
       become: true

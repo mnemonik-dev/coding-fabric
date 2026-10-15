@@ -2,6 +2,8 @@
 # Write health-<phase>.json into the records directory (D15 schema).
 # The probe runs on the VM; services stopped by the operator are copied from
 # stopped-services.json into the `stopped` field (D16).
+# unstage-keys skips --require-reachable: an unrelated dead service must never
+# keep the mainnet keys staged.
 - name: "Health snapshot ({{ _wc_health_phase }})"
   ansible.builtin.script:
     cmd: >-
@@ -9,7 +11,7 @@
       --targets {{ _wc_targets | to_json | quote }}
       --stopped-file {{ warrant_canary_stopped_services_file | quote }}
       --out {{ (_wc_records_dir ~ '/health-' ~ _wc_health_phase ~ '.json') | quote }}
-      {{ '--require-reachable' if _wc_health_phase == 'before' else '' }}
+      {{ '--require-reachable' if _wc_health_phase == 'before' and warrant_canary_action != 'unstage-keys' else '' }}
     executable: python3
   vars:
     _wc_targets: >-

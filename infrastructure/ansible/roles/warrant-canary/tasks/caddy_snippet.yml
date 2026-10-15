@@ -64,20 +64,35 @@
     mode: "0644"
   register: _wc_snippet_install
 
-- name: Does the running config already serve the seller domain?
-  ansible.builtin.shell: >-
-    docker exec {{ _wc_caddy_container | quote }} wget -qO- http://{{ warrant_canary_caddy_admin }}/config/
-    | grep -c {{ warrant_canary_seller_domain | quote }} || true
-  register: _wc_live_has_domain
+# A failed read stops the action: guessing "domain absent" would reload, and a
+# failed reload restarts the shared Caddy (Vaultwarden, MCP, Kaneo).
+- name: Read the running Caddy config through the admin endpoint
+  become: true
+  ansible.builtin.command:
+    argv: [docker, exec, "{{ _wc_caddy_container }}", wget, -qO-, "http://{{ warrant_canary_caddy_admin }}/config/"]
+  register: _wc_live_config
   changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Refuse when the running config cannot be read
+  ansible.builtin.assert:
+    that: _wc_live_config.rc == 0 and _wc_live_config.stdout | length > 0
+    fail_msg: >-
+      Could not read the running Caddy config from {{ warrant_canary_caddy_admin }}
+      (rc {{ _wc_live_config.rc }}); the snippet is installed but Caddy was not reloaded or restarted.
+    quiet: true
 
 - name: Reload Caddy through the admin endpoint (no restart)
   become: true
   ansible.builtin.command:
     argv: [docker, exec, "{{ _wc_caddy_container }}", caddy, reload, --config, /etc/caddy/Caddyfile, --address, "{{ warrant_canary_caddy_admin }}"]
   register: _wc_caddy_reload
+  changed_when: _wc_caddy_reload.rc == 0
   failed_when: false
-  when: _wc_snippet_install is changed or _wc_live_has_domain.stdout | trim == '0'
+  when: >-
+    _wc_snippet_install is changed
+    or ('"' ~ warrant_canary_seller_domain ~ '"') not in _wc_live_config.stdout
 
 - name: Fall back to a Caddy restart (announced)
   when: _wc_caddy_reload is not skipped and _wc_caddy_reload.rc != 0
