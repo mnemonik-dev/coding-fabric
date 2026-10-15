@@ -64,16 +64,23 @@
     mode: "0644"
   register: _wc_snippet_install
 
+- name: Does the running config already serve the seller domain?
+  ansible.builtin.shell: >-
+    docker exec {{ _wc_caddy_container | quote }} wget -qO- http://{{ warrant_canary_caddy_admin }}/config/
+    | grep -c {{ warrant_canary_seller_domain | quote }} || true
+  register: _wc_live_has_domain
+  changed_when: false
+
 - name: Reload Caddy through the admin endpoint (no restart)
   become: true
   ansible.builtin.command:
     argv: [docker, exec, "{{ _wc_caddy_container }}", caddy, reload, --config, /etc/caddy/Caddyfile, --address, "{{ warrant_canary_caddy_admin }}"]
   register: _wc_caddy_reload
   failed_when: false
-  when: _wc_snippet_install is changed
+  when: _wc_snippet_install is changed or _wc_live_has_domain.stdout | trim == '0'
 
 - name: Fall back to a Caddy restart (announced)
-  when: _wc_snippet_install is changed and _wc_caddy_reload.rc != 0
+  when: _wc_caddy_reload is not skipped and _wc_caddy_reload.rc != 0
   block:
     - name: ANNOUNCE - caddy reload failed, restarting {{ _wc_caddy_container }}
       ansible.builtin.debug:

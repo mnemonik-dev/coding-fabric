@@ -117,6 +117,12 @@
         opts: bind
         state: ephemeral
 
+    - name: Ansible temp dir inside the tmpfs (secret writes never touch the disk)
+      ansible.builtin.file:
+        path: "{{ warrant_canary_tmpfs_dir }}/.ansible-tmp"
+        state: directory
+        mode: "0700"
+
     - name: Write keystores
       ansible.builtin.copy:
         content: "{{ _raw if _raw is string else (_raw | to_json) }}"
@@ -124,6 +130,7 @@
         mode: "0600"
       vars:
         _raw: "{{ lookup('ansible.builtin.vars', 'warrant_canary_keystore_' ~ item) }}"
+        ansible_remote_tmp: "{{ warrant_canary_tmpfs_dir }}/.ansible-tmp"
       loop: "{{ warrant_canary_keystore_roles }}"
       no_log: true
 
@@ -132,6 +139,8 @@
         content: "{{ lookup('ansible.builtin.vars', 'warrant_canary_keystore_password_' ~ item) }}"
         dest: "{{ warrant_canary_tmpfs_dir }}/pw/{{ item }}"
         mode: "0600"
+      vars:
+        ansible_remote_tmp: "{{ warrant_canary_tmpfs_dir }}/.ansible-tmp"
       loop: "{{ warrant_canary_password_roles }}"
       no_log: true
 

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Health records and the health rule (D5, D15, D16).
 
-  health.py snapshot --targets JSON --stopped-file PATH --out PATH
+  health.py snapshot --targets JSON --stopped-file PATH --out PATH [--require-reachable]
       Probe every target and write {"services": {name: {"status": int}}, "stopped": [...]}.
       A target is {"url": U, "container": C}; with C the probe runs curl inside
       that container. An unreachable target is status 0 (curl prints 000).
+      --require-reachable (the before record) exits 1 when a service that is not
+      recorded as stopped answered nothing, so a wrong URL cannot hide a change.
   health.py compare --before PATH --after PATH --stopped-file PATH
       Exit 0 when the rule holds, 1 otherwise; the report goes to stdout.
 
@@ -59,6 +61,11 @@ def snapshot(args):
         json.dump(record, fh, indent=2, sort_keys=True)
         fh.write("\n")
     print(json.dumps(record, sort_keys=True))
+    dead = [n for n in SERVICES if record["services"][n]["status"] == 0 and n not in record["stopped"]]
+    if args.require_reachable and dead:
+        print(f"HEALTH: {', '.join(dead)} unreachable before the action (status 000) and not recorded "
+              "as stopped in stopped-services.json; fix the target or record the stop.", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -76,6 +83,9 @@ def compare(args):
         b, a = before.get(name), after.get(name)
         if name in skip:
             lines.append(f"{name}: stopped by the operator (before {b}, after {a}), excluded")
+        elif a == 0:
+            lines.append(f"{name}: {b} -> {a} UNREACHABLE after the action")
+            failures.append(name)
         elif a == b:
             lines.append(f"{name}: {b} -> {a} ok")
         else:
@@ -96,6 +106,7 @@ def main():
     s.add_argument("--targets", required=True)
     s.add_argument("--stopped-file", required=True)
     s.add_argument("--out", required=True)
+    s.add_argument("--require-reachable", action="store_true")
     c = sub.add_parser("compare")
     c.add_argument("--before", required=True)
     c.add_argument("--after", required=True)

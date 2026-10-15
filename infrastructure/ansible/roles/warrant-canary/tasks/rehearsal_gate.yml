@@ -10,6 +10,9 @@
     fail_msg: "REFUSED (green rehearsal): warrant_canary_src_commit and the expected image ID must be set (sops)."
     quiet: true
 
+- name: The checkout is at the pin and clean
+  ansible.builtin.include_tasks: checkout_check.yml
+
 - name: Hash the instance (warrant-solver instance-hash)
   ansible.builtin.command:
     argv: [warrant-solver, instance-hash, "{{ warrant_canary_instance_rel }}"]

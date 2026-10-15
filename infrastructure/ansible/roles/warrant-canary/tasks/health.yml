@@ -9,6 +9,7 @@
       --targets {{ _wc_targets | to_json | quote }}
       --stopped-file {{ warrant_canary_stopped_services_file | quote }}
       --out {{ (_wc_records_dir ~ '/health-' ~ _wc_health_phase ~ '.json') | quote }}
+      {{ '--require-reachable' if _wc_health_phase == 'before' else '' }}
     executable: python3
   vars:
     _wc_targets: >-

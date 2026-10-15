@@ -8,6 +8,9 @@
 {% else %}
 {{ warrant_canary_seller_domain }} {
   encode gzip
+  request_body {
+    max_size 1MB
+  }
   reverse_proxy http://warrant-seller:{{ warrant_canary_seller_port }} {
     header_up X-Real-IP {remote_host}
   }

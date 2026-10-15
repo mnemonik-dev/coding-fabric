@@ -7,4 +7,4 @@ from fakelib import ctl, log  # noqa: E402
 
 log("warrant-host", sys.argv[1:])
 if sys.argv[1:2] == ["solver-image-id"]:
-    print(ctl("image-id", "0x" + "ab" * 32))
+    print(ctl("image-id", "0x00" + "ab" * 31))

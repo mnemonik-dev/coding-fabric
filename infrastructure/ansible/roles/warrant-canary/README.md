@@ -32,8 +32,8 @@ for that step to `warrant_canary_output_dir`:
 
 - **preflight:** `health-before.json`.
 - **configure, stage-keys, unstage-keys:** the health files, plus `force-unstage.txt` when present.
-- **rehearse:** `rehearsal.md`, `rehearsal.json`, `prove.time`, `wrap-stats.log`, both probe reports and the health files.
-- **deploy-solver:** `state.json`, `deployment.json`, `arc-before.json`, `arc-after.json` and the health files.
+- **rehearse:** `rehearsal.md`, `rehearsal.json`, `prove.time`, `wrap-stats.log`, both probe reports, `anvil.log`, `run.json` (`{"run_dir": "local/<ts>"}`) and the health files.
+- **deploy-solver:** `state.json`, `deployment.json`, `arc-before.json`, `arc-after.json`, `run.json` (`{"run_dir": "mainnet/<ts>"}`, written right after `init`, so it is fetched on a later failure too; a simulate run names its `-simulate` directory) and the health files.
 - **deploy-task:** `task-escrow.json` and the health files.
 - **deploy-seller:** `mainnet-public_keys.yaml`, `seller-public-manifest.json` and the health files.
 
@@ -94,6 +94,10 @@ Every script call gets `WARRANT_CANARY_RPC`.
 
 ## Refusal rules
 
+- **Overrides.** `expected_image_id_override` is accepted only by `configure` and must be 64 hex digits. `rpc_override` is accepted only by `deploy-solver` and must be an http(s) URL. Both are refused with execute. The other actions would persist them in the env file, `seller.env` or the manifest.
+- **Other inputs.** `force_unstage_reason` must be 1 to 200 plain characters with no newline or braces. `output_dir` must be absolute and must not contain `..`.
+- **sops values.** Addresses and the expected image ID must stay `0x` strings. A value that YAML 1.1 turned into an integer is refused, so load sops as JSON.
+- **Pinned checkout.** `warrant_canary_src_commit` must be a full 40-hex sha. `rehearse`, the green-rehearsal gate and `deploy-seller` refuse unless the checkout HEAD equals the pin and `git status --porcelain` is empty. `rehearse.py` records the real HEAD.
 - An unknown action, `roles` given as a string, or a `run_dir` outside `^mainnet/[0-9]{8}T[0-9]{6}Z$` is refused before anything else.
 - `rehearse` and `deploy-solver` refuse an empty or non-positive `warrant_canary_max_cost`.
 - The green-rehearsal gate reads the newest `canary/local/*/rehearsal.json`. `commit`, `image_id` and `instance_hash` must match, and `real_proof` and `refund_ok` must be true.
@@ -104,6 +108,7 @@ Every script call gets `WARRANT_CANARY_RPC`.
 
 ## Health rule
 
+- **Unreachable before the action.** `health-before.json` fails the action when a service that is not recorded as stopped answers nothing (status 000), so a wrong URL cannot hide a change. Task 9 confirms the five default targets with a manual `curl` from the VM before the first `rehearse`.
 - **Records.** Each action writes `health-before.json` and `health-after.json` into `/opt/warrant-canary/runs/<UTC ts>-<action>/`. Schema: `{"services": {"<name>": {"status": <int>}}, "stopped": [...]}`. The services are `mcp`, `kaneo`, `vaultwarden`, `caddy` and `ollama`. An unreachable service has status `0`.
 - **Operator stops.** The operator records stops in `/opt/warrant-canary/stopped-services.json` as `{"stopped": [...], "stopped_at": ..., "restarted_at": null}`. While `restarted_at` is null, the listed services are excluded and reported as stopped, and they appear in both files' `stopped` field. Once `restarted_at` is set, they are compared again.
 - **Failure.** The action fails if any other service's status code differs between the two records.
@@ -155,4 +160,18 @@ The scenario uses a privileged Ubuntu 24.04 container with its own Docker daemon
 
 `converge.yml` runs `configure` with `skip_toolchain`, and the idempotence step requires
 0 changed. `verify.yml` runs every TDD Anchor case from task 7 through `include_role` with
-`block`/`rescue`, plus the Caddy reload smoke.
+`block`/`rescue`, plus the Caddy reload smoke. The cases are grouped in `molecule/default/cases/`.
+The shared runner `tasks/run.yml` asserts the expected outcome and message, and the other
+helpers sit in `molecule/default/tasks/`.
+
+## Measurements
+
+- **`build_seconds`.** It comes from the configure build stamp (`stamps/build-<commit>` holds the cargo build wall time). Without a stamp it falls back to the warm `warrant-host solver-image-id` call, and `rehearsal.md` names both figures.
+- **Wrap memory.** `wrap-stats.log` holds `docker stats` samples every 2 s, so the peak is a sampled lower bound.
+
+## Installers
+
+- **Node.** It comes from the NodeSource apt repository, signed by the key whose fingerprint is `warrant_canary_nodesource_key_fpr`. Configure refuses any other key, and Task 9 confirms the fingerprint on the first run.
+- **`npm ci`.** It runs with `--ignore-scripts`.
+- **rustup, rzup and foundryup.** They use their upstream `curl | sh` installers as `op`, then install the pinned versions. This is an accepted trade-off, the same as `prover-vm.sh`.
+- **PATH order.** The venv and the build outputs come before the system directories, so the scripts get the venv `python3`. Everything on that path is owned by `op`, who is already root-equivalent through the docker group.

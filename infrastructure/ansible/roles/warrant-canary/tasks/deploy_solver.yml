@@ -76,11 +76,17 @@
               '--chain-id', warrant_canary_chain_id | string, '--token', warrant_canary_usdc,
               '--amount', warrant_canary_amount | string, '--max-cost', warrant_canary_max_cost | string,
               '--instance', warrant_canary_instance_rel,
-              '--accept-window', warrant_canary_accept_window | string,
+              '--accept-window', _wc_accept_window | string,
               '--settle-window', _wc_settle_window | string]
              + _wc_account_args }}
         chdir: "{{ warrant_canary_src_dir }}"
       environment: "{{ _wc_env }}"
+
+    - name: Record the run directory for the workflow (run.json)
+      ansible.builtin.copy:
+        content: "{{ {'run_dir': 'mainnet/' ~ (_wc_run | basename)} | to_json }}\n"
+        dest: "{{ _wc_records_dir }}/run.json"
+        mode: "0644"
 
     - name: Copy the before report into the run directory
       ansible.builtin.copy:
@@ -117,7 +123,11 @@
         mode: "0644"
       when: _wc_broadcast | bool and _wc_retry_of not in [none, '', 'None']
 
-    - name: Fetch the run records
+  always:
+    - name: Unstage (unconditional)
+      ansible.builtin.include_tasks: unstage_cleanup.yml
+
+    - name: Fetch the run records (also after a failure)
       ansible.builtin.include_tasks: fetch_outputs.yml
       vars:
         _wc_fetch_list:
@@ -125,10 +135,7 @@
           - "{{ _wc_run }}/deployment.json"
           - "{{ _wc_run }}/arc-before.json"
           - "{{ _wc_run }}/arc-after.json"
-
-  always:
-    - name: Unstage (unconditional)
-      ansible.builtin.include_tasks: unstage_cleanup.yml
+          - "{{ _wc_records_dir }}/run.json"
 
     - name: Delete the -simulate run directory
       ansible.builtin.file:

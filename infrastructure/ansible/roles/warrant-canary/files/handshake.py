@@ -24,6 +24,16 @@ DEAL_TOOLS = ("propose_deployment", "deploy_with_escrow", "submit_acceptance")
 LIMITS = ("One deal at a time.", "has not been exercised with money")
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect: the credential must only go to the seller endpoint."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, f"refusing redirect to {newurl}", headers, fp)
+
+
+OPENER = urllib.request.build_opener(NoRedirect, urllib.request.HTTPSHandler(context=ssl.create_default_context()))
+
+
 def post(url, body, auth=None, session=None):
     headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
     if auth:
@@ -32,7 +42,7 @@ def post(url, body, auth=None, session=None):
         headers["mcp-session-id"] = session
     req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=30, context=ssl.create_default_context()) as resp:
+        with OPENER.open(req, timeout=30) as resp:
             return resp.status, dict(resp.headers), resp.read().decode()
     except urllib.error.HTTPError as exc:
         return exc.code, dict(exc.headers), exc.read().decode(errors="replace")

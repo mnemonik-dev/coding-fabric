@@ -2,7 +2,7 @@
 # Shared molecule values (test-only).
 warrant_canary_skip_toolchain: true
 warrant_canary_src_repo: /opt/wc-fixture/policy-execution
-warrant_canary_expected_image_id: "0xabababababababababababababababababababababababababababababababab"
+warrant_canary_expected_image_id: "0x00ababababababababababababababababababababababababababababababab"  # leading zeros on purpose (sops 0x regression)
 warrant_canary_max_cost: "1000"
 warrant_canary_test_health_targets:
   mcp: { url: "http://127.0.0.1:18080/mcp", container: "" }

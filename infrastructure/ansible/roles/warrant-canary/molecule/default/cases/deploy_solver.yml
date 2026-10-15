@@ -16,7 +16,7 @@
     expect_msg: settle_window must be a string of digits
     warrant_canary_action: deploy-solver
     warrant_canary_settle_window: "{{ item }}"
-  loop: ["", "7200;id", "abc", "7200\n"]
+  loop: ["", "7200;id", "abc", "7200\n", !unsafe "{{ 7*7 }}"]
 
 - name: Seed a green rehearsal with prove_seconds 2000
   ansible.builtin.include_tasks: "{{ t }}/seed_rehearsal.yml"
@@ -190,6 +190,7 @@
     warrant_canary_deploy_contracts: true
     warrant_canary_execute: true
     warrant_canary_run_dir: mainnet/20261015T000003Z
+    warrant_canary_output_dir: "{{ _out_root.path }}/retry"
 
 - name: Inspect the mainnet runs
   ansible.builtin.shell: |
@@ -206,6 +207,7 @@
       - _new | length == 4
       - _new[0] is regex('\A' ~ '[0-9]{8}T[0-9]{6}Z' ~ '\Z')
       - _new[1:] == ['1', 'before', 'after']
+      - "(lookup('ansible.builtin.file', _out_root.path ~ '/retry/run.json') | from_json) == {'run_dir': 'mainnet/' ~ _new[0]}"
     fail_msg: "{{ _retry.stdout }}"
     quiet: true
   vars:

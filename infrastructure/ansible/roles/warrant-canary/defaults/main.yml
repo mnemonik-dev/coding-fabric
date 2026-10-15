@@ -102,6 +102,8 @@ warrant_canary_r0vm_version: "3.0.5"
 warrant_canary_foundry_version: "1.8.4"
 warrant_canary_node_major: "20"
 warrant_canary_python_version: "3.12"
+# NodeSource repository signing key (configure refuses any other key).
+warrant_canary_nodesource_key_fpr: 6F71F525282841EEDAF851B42F59B5F99B1BE0B4
 # risc0-build 3.0.5 default guest builder tag (solver-canary.py DEFAULT_BUILDER_TAG).
 warrant_canary_builder_tag: r0.1.88.0
 warrant_canary_rayon_threads: 4
@@ -122,16 +124,14 @@ warrant_canary_chain_id: 5042
 warrant_canary_rpc: https://rpc.mainnet.arc.io
 warrant_canary_usdc: "0x3600000000000000000000000000000000000000"
 warrant_canary_amount: 2000000
-warrant_canary_accept_window: 1800
 warrant_canary_settle_min: 7200
 warrant_canary_settle_max: 86400
 warrant_canary_settle_factor: 4
 # Rehearsal (loopback Anvil).
 warrant_canary_anvil_port: 8546
 warrant_canary_anvil_chain_id: 31337
-# Refund order windows: accept above the 120 s script margin, short settle.
-warrant_canary_refund_accept_window: 600
-warrant_canary_refund_settle_window: 900
+# The accept window (1800 s, Decision 11) and the rehearsal refund-order
+# windows are constants in the tasks, not variables.
 
 # --- Stop rule (Decision 12) ---
 warrant_canary_min_disk_gb: 10

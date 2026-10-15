@@ -18,6 +18,9 @@
 - name: Deploy the seller service
   when: not (warrant_canary_render_only | bool)
   block:
+    - name: Refuse while keys are staged (Decision 17, the seller key is used sequentially)
+      ansible.builtin.include_tasks: not_staged.yml
+
     - name: Inspect the seller key, io.net key, basic auth and registry key (booleans only)
       ansible.builtin.set_fact:
         _wc_seller_secret_checks:
@@ -39,6 +42,9 @@
           {{ warrant_canary_deploy_dir }}/task-escrow.json with all checks true. Failed:
           {{ _wc_seller_secret_checks | dict2items | rejectattr('value', 'equalto', true) | map(attribute='key') | join(', ') }}
         quiet: true
+
+    - name: The checkout is at the pin and clean
+      ansible.builtin.include_tasks: checkout_check.yml
 
     - name: Keys directory in the checkout (gitignored)
       ansible.builtin.file:
@@ -83,6 +89,19 @@
         regexp: '^buyer_acceptance_key:'
         state: absent
 
+    - name: Read the published public keys and the acceptance key path
+      ansible.builtin.shell: |
+        grep -c buyer_acceptance {{ (_wc_config_dir ~ '/mainnet-public_keys.yaml') | quote }} || true
+        test -e {{ (warrant_canary_src_dir ~ '/' ~ warrant_canary_acceptance_key_rel) | quote }} && echo key-present || echo key-absent
+      register: _wc_strip_check
+      changed_when: false
+
+    - name: Refuse unless the acceptance key is gone from disk and from the published file (Decision 15)
+      ansible.builtin.assert:
+        that: _wc_strip_check.stdout_lines == ['0', 'key-absent']
+        fail_msg: "Decision 15 strip failed: {{ _wc_strip_check.stdout_lines }}; nothing was built or started."
+        quiet: true
+
     - name: Look for the seller image
       ansible.builtin.command:
         argv: [docker, image, inspect, "{{ _wc_seller_image }}"]
@@ -109,6 +128,22 @@
         src: docker-compose.yml.j2
         dest: "{{ warrant_canary_deploy_dir }}/seller/docker-compose.yml"
         mode: "0640"
+
+    - name: Stat the seller secret files
+      become: true
+      ansible.builtin.stat:
+        path: "{{ warrant_canary_secrets_dir }}/{{ item }}"
+      loop: [seller.env, seller.key]
+      register: _wc_secret_files
+
+    - name: Refuse unless configure rendered both secret files (0600, UID {{ warrant_canary_seller_uid }})
+      ansible.builtin.assert:
+        that:
+          - _wc_secret_files.results | selectattr('stat.exists') | list | length == 2
+          - _wc_secret_files.results | map(attribute='stat.mode') | unique | list == ['0600']
+          - _wc_secret_files.results | map(attribute='stat.uid') | unique | list == [warrant_canary_seller_uid | int]
+        fail_msg: "Run configure first: {{ warrant_canary_secrets_dir }}/seller.env and seller.key must exist, 0600, owned by {{ warrant_canary_seller_uid }}."
+        quiet: true
 
     - name: Start the seller container (reads the root-owned env_file, so become)
       become: true

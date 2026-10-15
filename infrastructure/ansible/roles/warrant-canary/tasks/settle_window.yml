@@ -14,7 +14,7 @@
     _wc_settle_window: "{{ warrant_canary_settle_window | string | int }}"
     _wc_settle_lower: >-
       {{ [warrant_canary_settle_min | int,
-          warrant_canary_accept_window | int + warrant_canary_settle_factor | int * _wc_green.prove_seconds | int] | max }}
+          _wc_accept_window | int + warrant_canary_settle_factor | int * _wc_green.prove_seconds | int] | max }}
 
 - name: Refuse when the rehearsal is too slow for the upper bound
   ansible.builtin.assert:

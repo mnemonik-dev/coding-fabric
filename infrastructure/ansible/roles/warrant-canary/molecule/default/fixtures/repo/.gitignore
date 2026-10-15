@@ -1,0 +1,6 @@
+.venv/
+.keys/
+target/
+contracts/broadcast/
+contracts/node_modules/
+__pycache__/

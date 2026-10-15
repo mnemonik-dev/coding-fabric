@@ -31,7 +31,6 @@
     expect_msg: Image ID mismatch
     warrant_canary_action: configure
     warrant_canary_expected_image_id_override: "0x{{ 'de' * 32 }}"
-    warrant_canary_rpc_override: https://rpc.testnet.arc.io
 
 - name: sha256 of the env file after
   ansible.builtin.command: sha256sum /opt/warrant-canary/env

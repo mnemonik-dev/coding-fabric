@@ -52,7 +52,7 @@
     expect_msg: refused together with warrant_canary_execute
     warrant_canary_action: configure
     warrant_canary_execute: true
-    warrant_canary_expected_image_id_override: "0x1234"
+    warrant_canary_expected_image_id_override: "0x{{ 'de' * 32 }}"
 
 - name: "overrides_refused_with_execute: RPC override with execute"
   ansible.builtin.include_tasks: "{{ run }}"
@@ -65,6 +65,114 @@
     warrant_canary_execute: "true"
     warrant_canary_settle_window: "9800"
     warrant_canary_rpc_override: https://rpc.testnet.arc.io
+
+# --- sops_hex_values_stay_strings (task 6 finding: YAML 1.1 turns unquoted 0x... into int) ---
+- name: "sops_hex_values_stay_strings: stub values with leading zeros are 0x strings"
+  ansible.builtin.assert:
+    that:
+      - warrant_canary_address_deployer is string
+      - warrant_canary_address_deployer is regex('^0x00[0-9a-fA-F]{38}$')
+      - warrant_canary_expected_image_id is string
+      - warrant_canary_expected_image_id is regex('^0x00[0-9a-fA-F]{62}$')
+    quiet: true
+
+- name: "sops_hex_values_stay_strings: an address that became an integer is refused"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: sops_hex_values_stay_strings int address
+    expect: fail
+    expect_msg: must be a 0x-prefixed hex string
+    warrant_canary_action: stage-keys
+    warrant_canary_address_seller: 975919884393617425693427211416089063081227803410
+
+- name: "sops_hex_values_stay_strings: an image ID that became an integer is refused"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: sops_hex_values_stay_strings int image id
+    expect: fail
+    expect_msg: must be a 0x-prefixed hex string
+    warrant_canary_action: configure
+    warrant_canary_expected_image_id: 4835703278458516698824704
+
+# --- override confinement and input validation (review round 1) ---
+- name: "overrides_confined: rpc_override on a non-deploy-solver action is refused"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: "overrides_confined rpc_override on {{ item }}"
+    expect: fail
+    expect_msg: accepted only by configure
+    warrant_canary_action: "{{ item }}"
+    warrant_canary_render_only: true
+    warrant_canary_rpc_override: https://rpc.testnet.arc.io
+  loop: [configure, deploy-seller, rehearse]
+
+- name: "overrides_confined: image ID override outside configure is refused"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: overrides_confined image id on deploy-solver
+    expect: fail
+    expect_msg: accepted only by configure
+    warrant_canary_action: deploy-solver
+    warrant_canary_settle_window: "9800"
+    warrant_canary_expected_image_id_override: "0x{{ 'de' * 32 }}"
+
+- name: "input_validation: malformed values are refused"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: "input_validation {{ item.name }}"
+    expect: fail
+    expect_msg: "Invalid input"
+    warrant_canary_action: "{{ item.action }}"
+    warrant_canary_settle_window: "9800"
+    warrant_canary_rpc_override: "{{ item.rpc | default('') }}"
+    warrant_canary_output_dir: "{{ item.out | default('') }}"
+    warrant_canary_force_unstage: "{{ item.force | default(false) }}"
+    warrant_canary_force_unstage_reason: "{{ item.reason | default('') }}"
+  loop:
+    - { name: rpc with a shell character, action: deploy-solver, rpc: "https://x.io/$(id)" }
+    - { name: relative output_dir, action: configure, out: "out/records" }
+    - { name: output_dir with .., action: configure, out: "/tmp/../etc" }
+    - { name: reason with a newline, action: unstage-keys, force: true, reason: "two\nlines" }
+
+- name: "input_validation: a short commit pin is refused"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: input_validation short commit
+    expect: fail
+    expect_msg: Invalid input
+    warrant_canary_action: configure
+    warrant_canary_src_commit: main
+
+# --- templating_payloads_refused: what the workflow passes as !unsafe must still be refused ---
+- name: "templating_payloads_refused: reason holding a template expression"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: templating_payloads_refused reason
+    expect: fail
+    expect_msg: Invalid input
+    warrant_canary_action: unstage-keys
+    warrant_canary_force_unstage: true
+    warrant_canary_force_unstage_reason: !unsafe "{{ 7*7 }}"
+
+- name: "templating_payloads_refused: run_dir holding a template expression"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: templating_payloads_refused run_dir
+    expect: fail
+    expect_msg: warrant_canary_run_dir must be
+    warrant_canary_action: deploy-solver
+    warrant_canary_settle_window: "9800"
+    warrant_canary_run_dir: !unsafe "mainnet/{{ 7*7 }}"
+
+- name: "input_validation: plain http RPC override is refused"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: input_validation http rpc
+    expect: fail
+    expect_msg: Invalid input
+    warrant_canary_action: deploy-solver
+    warrant_canary_settle_window: "9800"
+    warrant_canary_rpc_override: http://rpc.testnet.arc.io
 
 - name: Nothing staged by the input cases
   ansible.builtin.include_tasks: "{{ t }}/never_staged.yml"

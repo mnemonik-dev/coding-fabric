@@ -71,3 +71,19 @@
   ansible.builtin.file:
     path: /opt/warrant-canary/stopped-services.json
     state: absent
+
+# --- health_before_requires_reachable (review round 1) ---
+- name: "health_before_requires_reachable: an unreachable service before the action fails it"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: health_before_requires_reachable
+    expect: fail
+    expect_msg: non-zero return code
+    warrant_canary_action: configure
+    warrant_canary_render_only: true
+    warrant_canary_test_health_targets:
+      mcp: { url: "http://127.0.0.1:18080/mcp", container: "" }
+      kaneo: { url: "http://127.0.0.1:18099/", container: "" }
+      vaultwarden: { url: "http://127.0.0.1:18080/vaultwarden", container: "" }
+      caddy: { url: "http://127.0.0.1:18080/caddy", container: "" }
+      ollama: { url: "http://127.0.0.1:18080/ollama", container: "" }

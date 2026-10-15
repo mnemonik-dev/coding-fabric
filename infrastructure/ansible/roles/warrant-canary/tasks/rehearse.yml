@@ -12,10 +12,16 @@
     fail_msg: "rehearse needs warrant_canary_src_commit and the expected image ID (sops)."
     quiet: true
 
+- name: The checkout is at the pin and clean
+  ansible.builtin.include_tasks: checkout_check.yml
+
 - name: Rehearsal facts
   ansible.builtin.set_fact:
     _wc_anvil_url: "http://127.0.0.1:{{ warrant_canary_anvil_port }}"
     _wc_anvil_pidfile: "{{ _wc_records_dir }}/anvil.pid"
+    # Refund order: accept window above the script's 120 s margin, short settle window.
+    _wc_refund_accept_window: 600
+    _wc_refund_settle_window: 900
     warrant_canary_keystore_roles: [deployer, buyer, seller, relayer]
     warrant_canary_password_roles: [deployer, buyer, seller, relayer]
 
@@ -32,6 +38,13 @@
   block:
     - name: Stage all four keystores and passwords
       ansible.builtin.include_tasks: stage.yml
+
+    - name: Refuse when the Anvil port is already in use
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ warrant_canary_anvil_port }}"
+        state: stopped
+        timeout: 2
 
     - name: Start loopback Anvil (chain 31337)
       ansible.builtin.shell: >-
@@ -55,6 +68,10 @@
           - "{{ _wc_bin }}/rehearse.py"
           - --src
           - "{{ warrant_canary_src_dir }}"
+          - --build-stamp
+          - "{{ warrant_canary_base_dir }}/stamps/build-{{ warrant_canary_src_commit }}"
+          - --run-note
+          - "{{ _wc_records_dir }}/rehearsal-run"
           - --local-dir
           - "{{ warrant_canary_canary_dir }}/local"
           - --anvil-key
@@ -87,30 +104,19 @@
           - --max-cost
           - "{{ warrant_canary_max_cost }}"
           - --accept-window
-          - "{{ warrant_canary_accept_window }}"
+          - "{{ _wc_accept_window }}"
           - --settle-window
           - "{{ warrant_canary_settle_max }}"
           - --refund-accept-window
-          - "{{ warrant_canary_refund_accept_window }}"
+          - "{{ _wc_refund_accept_window }}"
           - --refund-settle-window
-          - "{{ warrant_canary_refund_settle_window }}"
+          - "{{ _wc_refund_settle_window }}"
       environment: "{{ _wc_env | combine({'WARRANT_CANARY_RPC': _wc_anvil_url}) }}"
       register: _wc_rehearsal
 
     - name: Rehearsal result
       ansible.builtin.set_fact:
         _wc_rehearsal_result: "{{ _wc_rehearsal.stdout_lines | last | from_json }}"
-
-    - name: Fetch the rehearsal records
-      ansible.builtin.include_tasks: fetch_outputs.yml
-      vars:
-        _wc_fetch_list:
-          - "{{ _wc_rehearsal_result.run }}/rehearsal.md"
-          - "{{ _wc_rehearsal_result.run }}/rehearsal.json"
-          - "{{ _wc_rehearsal_result.run }}/prove.time"
-          - "{{ _wc_rehearsal_result.run }}/wrap-stats.log"
-          - "{{ _wc_rehearsal_result.run }}/arc-before.json"
-          - "{{ _wc_rehearsal_result.run }}/arc-after.json"
 
   always:
     - name: Stop Anvil
@@ -123,6 +129,33 @@
 
     - name: Unstage (unconditional, no state gate)
       ansible.builtin.include_tasks: unstage_cleanup.yml
+
+    - name: Which run directory did the driver create
+      ansible.builtin.slurp:
+        src: "{{ _wc_records_dir }}/rehearsal-run"
+      register: _wc_rehearsal_run
+      failed_when: false
+
+    - name: Record the run directory for the workflow (run.json)
+      ansible.builtin.copy:
+        content: "{{ {'run_dir': 'local/' ~ (_wc_rehearsal_run.content | b64decode | trim | basename)} | to_json }}\n"
+        dest: "{{ _wc_records_dir }}/run.json"
+        mode: "0644"
+      when: _wc_rehearsal_run.content is defined
+
+    - name: Fetch the rehearsal records (also after a failure)
+      ansible.builtin.include_tasks: fetch_outputs.yml
+      vars:
+        _wc_run_dir: "{{ (_wc_rehearsal_run.content | default('') | b64decode | trim) or '/nonexistent' }}"
+        _wc_fetch_list:
+          - "{{ _wc_run_dir }}/rehearsal.md"
+          - "{{ _wc_run_dir }}/rehearsal.json"
+          - "{{ _wc_run_dir }}/prove.time"
+          - "{{ _wc_run_dir }}/wrap-stats.log"
+          - "{{ _wc_run_dir }}/arc-before.json"
+          - "{{ _wc_run_dir }}/arc-after.json"
+          - "{{ _wc_records_dir }}/anvil.log"
+          - "{{ _wc_records_dir }}/run.json"
 
 - name: Report
   ansible.builtin.debug:

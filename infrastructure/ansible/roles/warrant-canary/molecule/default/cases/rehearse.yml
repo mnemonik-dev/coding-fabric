@@ -132,6 +132,7 @@
       - _rec.instance_hash == _instance_hash
       - _rest == ['1', '1', 'prove.time', 'wrap-stats.log']
       - lookup('ansible.builtin.file', _out_root.path ~ '/rehearse/rehearsal.json') | from_json == _rec
+      - "(lookup('ansible.builtin.file', _out_root.path ~ '/rehearse/run.json') | from_json) == {'run_dir': 'local/' ~ (_first | basename)}"
     fail_msg: "{{ _records.stdout }}"
     quiet: true
   vars:

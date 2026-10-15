@@ -137,3 +137,42 @@
   loop:
     - "{{ _seller_render }}"
     - "{{ _wc_render_dir }}"
+
+# --- deploy_seller_requires_basic_auth (Task 3: the seller exits 1 without both values) ---
+- name: "deploy_seller_requires_basic_auth: empty value refused before anything is written"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: "deploy_seller_requires_basic_auth {{ item.key }}"
+    expect: fail
+    expect_msg: "{{ item.msg }}"
+    warrant_canary_action: deploy-seller
+    warrant_canary_test_caddy_container: wc-test-caddy
+    warrant_canary_mcp_auth_user: "{{ item.user }}"
+    warrant_canary_mcp_auth_pass: "{{ item.pass }}"
+  loop:
+    - { key: user, user: "", pass: "x", msg: mcp_auth_user_present }
+    - { key: pass, user: "u", pass: "", msg: mcp_auth_pass_present }
+
+- name: Nothing written or started by the refused deploy-seller
+  ansible.builtin.shell: |
+    test -e /opt/warrant-canary/src/showcases/ionet_arc/.keys/registry.key && echo key || echo no-key
+    test -e /opt/warrant-canary/src/showcases/ionet_arc/config/mainnet-manifest.yaml && echo manifest || echo no-manifest
+    docker inspect warrant-seller >/dev/null 2>&1 && echo seller-present || echo seller-absent
+  register: _auth_refused
+  changed_when: false
+
+- name: "deploy_seller_requires_basic_auth: no registry key, no manifest, no container"
+  ansible.builtin.assert:
+    that: _auth_refused.stdout.split() == ['no-key', 'no-manifest', 'seller-absent']
+    fail_msg: "{{ _auth_refused.stdout }}"
+    quiet: true
+
+- name: "configure_requires_basic_auth: render_only refuses an empty MCP_AUTH_PASS"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: configure_requires_basic_auth
+    expect: fail
+    expect_msg: mcp_auth_pass_present
+    warrant_canary_action: configure
+    warrant_canary_render_only: true
+    warrant_canary_mcp_auth_pass: ""

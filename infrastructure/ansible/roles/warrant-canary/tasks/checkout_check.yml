@@ -1,0 +1,33 @@
+---
+# The checkout must sit at the pinned commit with a clean tree (Decision 2:
+# source_dirty must stay false). Run dirs and mainnet config are excluded
+# through .git/info/exclude; build outputs are gitignored upstream.
+- name: Require a full 40-hex pinned commit
+  ansible.builtin.assert:
+    that: warrant_canary_src_commit is regex('\A' ~ '[0-9a-f]{40}' ~ '\Z')
+    fail_msg: "REFUSED: warrant_canary_src_commit must be a full 40-hex sha (sops)."
+    quiet: true
+
+- name: Read the checkout status
+  ansible.builtin.command:
+    argv: [git, -C, "{{ warrant_canary_src_dir }}", status, --porcelain=v1, --branch, --no-ahead-behind]
+  register: _wc_git_status
+  changed_when: false
+
+- name: Read the checkout HEAD
+  ansible.builtin.command:
+    argv: [git, -C, "{{ warrant_canary_src_dir }}", rev-parse, HEAD]
+  register: _wc_git_head
+  changed_when: false
+
+- name: Refuse a checkout that is not at the pin or not clean
+  ansible.builtin.assert:
+    that:
+      - _wc_git_head.stdout | trim == warrant_canary_src_commit
+      - _wc_git_status.stdout_lines | reject('match', '^## ') | list | length == 0
+    fail_msg: >-
+      REFUSED: the checkout {{ warrant_canary_src_dir }} is at {{ _wc_git_head.stdout | trim }}
+      (pin {{ warrant_canary_src_commit }}) or has local changes:
+      {{ _wc_git_status.stdout_lines | reject('match', '^## ') | list | join('; ') | truncate(400) }}.
+      Run configure.
+    quiet: true

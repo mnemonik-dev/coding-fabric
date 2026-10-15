@@ -42,6 +42,64 @@
       empty or mainnet/<YYYYMMDDTHHMMSSZ> (no -simulate, no absolute path, no ..).
     quiet: true
 
+- name: Refuse sops values that lost their 0x form (YAML 1.1 turns unquoted 0x... into integers)
+  ansible.builtin.assert:
+    that: _wc_bad_hex | length == 0
+    fail_msg: >-
+      {{ _wc_bad_hex | join(', ') }} must be a 0x-prefixed hex string. Load sops with
+      `sops -d --output-type json` so 0x values stay strings.
+    quiet: true
+  vars:
+    _wc_hex_values:
+      warrant_canary_address_buyer: "{{ warrant_canary_address_buyer }}"
+      warrant_canary_address_seller: "{{ warrant_canary_address_seller }}"
+      warrant_canary_address_relayer: "{{ warrant_canary_address_relayer }}"
+      warrant_canary_address_deployer: "{{ warrant_canary_address_deployer }}"
+      warrant_canary_expected_image_id: "{{ warrant_canary_expected_image_id }}"
+    _wc_bad_hex: >-
+      {{ _wc_hex_values | dict2items
+         | rejectattr('value', 'string')
+         | map(attribute='key') | list
+         + (_wc_hex_values | dict2items
+            | selectattr('value', 'string')
+            | rejectattr('value', 'equalto', '')
+            | rejectattr('value', 'regex', '\A' ~ '0x[0-9a-fA-F]+' ~ '\Z')
+            | map(attribute='key') | list) }}
+
+- name: Validate free-text and path inputs
+  ansible.builtin.assert:
+    that:
+      - >-
+        warrant_canary_force_unstage_reason | length == 0
+        or warrant_canary_force_unstage_reason is regex('\A' ~ '[A-Za-z0-9 .,:;_()/#-]{1,200}' ~ '\Z')
+      - >-
+        warrant_canary_output_dir | length == 0
+        or (warrant_canary_output_dir.startswith('/') and '/../' not in (warrant_canary_output_dir ~ '/'))
+      - >-
+        warrant_canary_rpc_override | length == 0
+        or warrant_canary_rpc_override is regex('\A' ~ 'https://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?' ~ '\Z')
+      - >-
+        warrant_canary_expected_image_id_override | length == 0
+        or warrant_canary_expected_image_id_override is regex('\A' ~ '0x[0-9a-fA-F]{64}' ~ '\Z')
+      - >-
+        warrant_canary_src_commit | length == 0
+        or warrant_canary_src_commit is regex('\A' ~ '[0-9a-f]{40}' ~ '\Z')
+    fail_msg: >-
+      Invalid input (values are not echoed): force_unstage_reason must be 1-200 plain characters (letters, digits, space and .,:;_()/#-);
+      output_dir must be an absolute controller path without ..; rpc_override must be an https URL;
+      expected_image_id_override must be 0x plus 64 hex digits; warrant_canary_src_commit must be a full 40-hex sha.
+    quiet: true
+
+- name: Confine the negative-dispatch overrides to the action they test
+  ansible.builtin.assert:
+    that:
+      - warrant_canary_expected_image_id_override | length == 0 or warrant_canary_action == 'configure'
+      - warrant_canary_rpc_override | length == 0 or warrant_canary_action == 'deploy-solver'
+    fail_msg: >-
+      expected_image_id_override is accepted only by configure and rpc_override only by
+      deploy-solver (the negative dispatches); other actions would persist them.
+    quiet: true
+
 - name: Refuse negative-dispatch overrides together with execute
   ansible.builtin.assert:
     that:
@@ -75,6 +133,8 @@
     _wc_render_dir: ""
     _wc_fetch_list: []
     _wc_all_roles: [deployer, buyer, seller, relayer]
+    # Fixed by Decision 11; deliberately not a variable.
+    _wc_accept_window: 1800
     _wc_account_args:
       - --deployer
       - account:warrant-canary-deployer

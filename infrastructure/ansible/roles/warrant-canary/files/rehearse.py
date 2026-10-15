@@ -214,7 +214,7 @@ def wrap_stats(path):
 
 def main():
     ap = argparse.ArgumentParser()
-    for name in ("src", "local-dir", "anvil-key", "instance", "commit", "expected-image-id", "pw-dir",
+    for name in ("src", "build-stamp", "run-note", "local-dir", "anvil-key", "instance", "commit", "expected-image-id", "pw-dir",
                  "bin-dir", "addresses", "health-targets", "health-before", "stopped-file"):
         ap.add_argument(f"--{name}", required=True)
     for name in ("chain-id", "amount", "max-cost", "accept-window", "settle-window",
@@ -223,15 +223,34 @@ def main():
     a = ap.parse_args()
     d = Driver(a)
 
+    head = d.run(["git", "rev-parse", "HEAD"], quiet=True).stdout.strip()
+    if head != a.commit:
+        raise Fail(f"checkout HEAD {head} differs from the pinned commit {a.commit}")
+    if d.run(["git", "status", "--porcelain"], quiet=True).stdout.strip():
+        raise Fail("checkout has local changes (source_dirty would be true)")
+    chain = d.cast("chain-id")
+    if chain != str(a.chain_id):
+        raise Fail(f"Anvil reports chain id {chain}, expected {a.chain_id}")
+
+    build_seconds = None
+    try:
+        with open(a.build_stamp) as fh:
+            build_seconds = int(fh.read().strip())
+    except (OSError, ValueError):
+        pass
     start = time.monotonic()
     image_out = d.run(["warrant-host", "solver-image-id"]).stdout.split()
-    build_seconds = math.ceil(time.monotonic() - start)
+    image_check_seconds = math.ceil(time.monotonic() - start)
+    if build_seconds is None:
+        build_seconds = image_check_seconds
     image_id = image_out[-1] if image_out else ""
     hash_out = d.run(["warrant-solver", "instance-hash", a.instance]).stdout.split()
     instance_hash = hash_out[-1] if hash_out else ""
 
     token = d.setup_chain()
     first = d.fresh()
+    with open(a.run_note, "w") as fh:
+        fh.write(first + "\n")
     prove_seconds = d.first_order(token, first)
     refund_ok, refund_note = True, "refund past settleBy restored the buyer balance; retry quote succeeded"
     try:
@@ -250,7 +269,7 @@ def main():
     free_gb = shutil.disk_usage("/").free / 1024 ** 3
     delta = d.health_delta(first)
 
-    record = {"commit": a.commit, "image_id": image_id, "instance_hash": instance_hash,
+    record = {"commit": head, "image_id": image_id, "instance_hash": instance_hash,
               "build_seconds": build_seconds, "prove_seconds": prove_seconds,
               "real_proof": real_proof, "refund_ok": refund_ok}
     with open(os.path.join(first, "rehearsal.json"), "w") as fh:
@@ -259,10 +278,11 @@ def main():
     md = [
         "# Rehearsal on loopback Anvil",
         "",
-        f"- Commit: {a.commit}",
+        f"- Commit: {head}",
         f"- Image ID: {image_id}",
         f"- Instance hash: {instance_hash}",
-        f"- Build (warrant-host solver-image-id) seconds: {build_seconds}",
+        f"- Build seconds (configure cargo build of this commit; else the image-ID check): {build_seconds}",
+        f"- Image-ID check seconds (warrant-host solver-image-id, warm cache): {image_check_seconds}",
         f"- Prove seconds (whole prove step): {prove_seconds}",
         f"- Wrap seconds (docker stats samples): {wrap_seconds if wrap_seconds is not None else 'no samples'}",
         f"- Peak RSS of prove (prove.time): {rss if rss is not None else 'unknown'} kB",

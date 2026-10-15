@@ -42,5 +42,7 @@ elif cmd == "send" and len(args) >= 5 and args[2].startswith("mint("):
     key = "balance-" + addr_key(args[3])
     chain_set(key, int(chain_get(key, "0")) + int(args[4]))
     print('{"status": "0x1"}')
+elif cmd == "chain-id":
+    print(ctl("chain-id", "31337"))
 elif cmd == "rpc":
     print("null")

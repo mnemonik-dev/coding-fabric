@@ -43,7 +43,7 @@
       block:
         - name: npm ci in contracts/
           ansible.builtin.command:
-            cmd: npm ci
+            cmd: npm ci --ignore-scripts
             chdir: "{{ warrant_canary_src_dir }}/contracts"
             creates: "{{ warrant_canary_base_dir }}/stamps/npm-{{ warrant_canary_src_commit }}"
           environment: "{{ _wc_env }}"
@@ -57,11 +57,13 @@
             chdir: "{{ warrant_canary_src_dir }}"
             creates: "{{ warrant_canary_base_dir }}/stamps/venv-{{ warrant_canary_src_commit }}"
 
-        - name: Build warrant-host (release, guest in Docker) and warrant-solver (debug)
+        - name: Build warrant-host (release, guest in Docker) and warrant-solver (debug); stamp holds the seconds
           ansible.builtin.shell: |
             set -e
+            start=$(date +%s)
             cargo build -p warrant-host --release --locked
             cargo build -p warrant-solver --locked
+            echo $(( $(date +%s) - start )) > {{ (warrant_canary_base_dir ~ '/stamps/build-' ~ warrant_canary_src_commit) | quote }}
           args:
             chdir: "{{ warrant_canary_src_dir }}"
             creates: "{{ warrant_canary_base_dir }}/stamps/build-{{ warrant_canary_src_commit }}"
@@ -74,7 +76,7 @@
             mode: "0644"
             modification_time: preserve
             access_time: preserve
-          loop: [npm, venv, build]
+          loop: [npm, venv]
 
     - name: Read the checker image ID (warrant-host solver-image-id)
       ansible.builtin.command:

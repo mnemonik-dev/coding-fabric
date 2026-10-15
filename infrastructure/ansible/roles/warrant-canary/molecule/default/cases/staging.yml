@@ -36,8 +36,37 @@
   vars:
     _parts: "{{ _staged.stdout.split('---') | map('trim') | list }}"
 
+- name: Secret residue outside the tmpfs
+  ansible.builtin.shell: |
+    test -d /run/warrant-canary/.ansible-tmp && echo tmp-in-tmpfs || echo tmp-missing
+    grep -rlFf {{ wc_patterns }} /home/op/.ansible /tmp/ansible* 2>/dev/null | wc -l
+  register: _residue
+  changed_when: false
+
+- name: "stage_keys_writes_keystores: Ansible temp files for the secret writes live in the tmpfs; no secret left on disk"
+  ansible.builtin.assert:
+    that: _residue.stdout.split() == ['tmp-in-tmpfs', '0']
+    fail_msg: "{{ _residue.stdout }}"
+    quiet: true
+
+- name: "deploy_seller_refuses_while_staged"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: deploy_seller_refuses_while_staged
+    expect: fail
+    expect_msg: keys are already staged
+    warrant_canary_action: deploy-seller
+
 - name: Clean up after stage_keys_writes_keystores
   ansible.builtin.include_tasks: "{{ t }}/unstage.yml"
+
+# --- unstage_keys_noop_when_not_staged ---
+- name: "unstage_keys_noop_when_not_staged: nothing staged, no active run, no gate"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: unstage_keys_noop_when_not_staged
+    expect: pass
+    warrant_canary_action: unstage-keys
 
 # --- stage_keys_rejects_keystore_without_address ---
 - name: "stage_keys_rejects_keystore_without_address"
