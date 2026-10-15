@@ -5,4 +5,8 @@
 # `solver-canary.py init --max-cost` receives. Task 9 sets it from
 # solver-bounty/instance-ionet.md in policy-execution (Task 4 provenance).
 # Empty until then: `rehearse` and `deploy-solver` refuse an empty value.
-warrant_canary_max_cost: ""
+#
+# Source: policy-execution solver-bounty/instance-ionet.md, "Values" table, at
+# pin 7723910fe795d42f08924f68a9abb6130b34960a. Unit: micro-USD-seconds per
+# hour (3600 x 490000, the full one-hour lease); not USD, not token base units.
+warrant_canary_max_cost: "1764000000"
