@@ -18,5 +18,7 @@
 
 - name: Fail on a health change not recorded as an operator stop
   ansible.builtin.fail:
-    msg: "{{ _wc_health_rule.stdout_lines | last }}"
+    msg: >-
+      {{ _wc_health_rule.stdout_lines | last if _wc_health_rule.stdout_lines | length > 0
+         else 'HEALTH RULE FAILED: ' ~ (_wc_health_rule.stderr | default('') | trim | truncate(300)) }}
   when: _wc_health_rule.rc != 0

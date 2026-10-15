@@ -79,6 +79,39 @@
   ansible.builtin.command: test ! -e /run/warrant-canary
   changed_when: false
 
+# --- unstage_keys_ignores_bad_health_record (review round 3) ---
+- name: "unstage_keys_ignores_bad_health_record: stage buyer again"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: unstage_keys_ignores_bad_health_record stage
+    expect: pass
+    warrant_canary_action: stage-keys
+    warrant_canary_roles: [buyer]
+
+- name: Write a malformed operator record
+  ansible.builtin.copy:
+    content: '{"stopped": "kaneo"}'
+    dest: /opt/warrant-canary/stopped-services.json
+    mode: "0644"
+
+- name: "unstage_keys_ignores_bad_health_record: the before record fails, unstage still runs"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: unstage_keys_ignores_bad_health_record
+    expect: fail
+    warrant_canary_action: unstage-keys
+    warrant_canary_force_unstage: true
+    warrant_canary_force_unstage_reason: "test cleanup with a bad operator record"
+
+- name: "unstage_keys_ignores_bad_health_record: tmpfs gone"
+  ansible.builtin.command: test ! -e /run/warrant-canary
+  changed_when: false
+
+- name: Remove the malformed operator record
+  ansible.builtin.file:
+    path: /opt/warrant-canary/stopped-services.json
+    state: absent
+
 - name: Clean up after stage_keys_writes_keystores
   ansible.builtin.include_tasks: "{{ t }}/unstage.yml"
 

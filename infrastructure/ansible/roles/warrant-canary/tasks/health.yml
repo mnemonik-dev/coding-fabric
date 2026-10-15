@@ -2,8 +2,10 @@
 # Write health-<phase>.json into the records directory (D15 schema).
 # The probe runs on the VM; services stopped by the operator are copied from
 # stopped-services.json into the `stopped` field (D16).
-# unstage-keys skips --require-reachable: an unrelated dead service must never
-# keep the mainnet keys staged.
+# unstage-keys skips --require-reachable and does not fail on the before
+# record at all (bad targets, malformed stopped-services.json): nothing about
+# other services may keep the mainnet keys staged. The health rule after the
+# action still reports the problem.
 - name: "Health snapshot ({{ _wc_health_phase }})"
   ansible.builtin.script:
     cmd: >-
@@ -19,3 +21,11 @@
          if _wc_health_phase == 'after' else _wc_health_targets }}
   register: _wc_health_out
   changed_when: false
+  failed_when: >-
+    _wc_health_out.rc != 0
+    and not (warrant_canary_action == 'unstage-keys' and _wc_health_phase == 'before')
+
+- name: Report a failed before record (unstage-keys continues)
+  ansible.builtin.debug:
+    msg: "HEALTH before record failed (rc {{ _wc_health_out.rc }}); unstaging anyway: {{ _wc_health_out.stderr | default('') | trim | truncate(300) }}"
+  when: _wc_health_out.rc != 0
