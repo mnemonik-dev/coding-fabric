@@ -1,0 +1,64 @@
+---
+# Warrant canary on Arc mainnet. One action per run, chosen by
+# warrant_canary_action (see roles/warrant-canary/README.md).
+#
+# Deliberately isolated from deploy.yml: no base hardening, no other role.
+# Runs as `op` with become: false; the role uses task-level become only for
+# the tmpfs mount, the secrets directory, the Caddy steps and the root-only
+# configure setup (apt, creating /opt/warrant-canary).
+#
+# The workflow passes the D1 inputs as extra-vars; they reach the role
+# unchanged. sops keys are mapped with default('') so a key that is not in
+# sops yet (warrant_canary_src_commit until Task 9) does not fail the play.
+- name: Warrant canary
+  hosts: mnemonic-fabric
+  remote_user: op
+  become: false
+  gather_facts: false
+
+  vars_files:
+    - vars/warrant-canary.yml
+
+  pre_tasks:
+    - name: Load SOPS secrets as JSON on the controller
+      delegate_to: localhost
+      ansible.builtin.set_fact:
+        sops: "{{ lookup('ansible.builtin.pipe', 'sops -d --output-type json ' ~ (playbook_dir ~ '/../../secrets/secrets.sops.yml')) | from_json }}"
+      no_log: true
+
+    - name: Refuse test-only overrides outside molecule
+      ansible.builtin.assert:
+        that:
+          - (warrant_canary_test_mem_available_kb | default('')) | string | length == 0
+          - (warrant_canary_test_disk_free_kb | default('')) | string | length == 0
+          - (warrant_canary_test_health_targets | default({})) | length == 0
+          - (warrant_canary_test_health_targets_after | default({})) | length == 0
+          - (warrant_canary_test_caddy_container | default('')) | length == 0
+          - not (warrant_canary_test_broken_snippet | default(false) | bool)
+          - not (warrant_canary_test_keep_render_dir | default(false) | bool)
+          - not (warrant_canary_skip_toolchain | default(false) | bool)
+        fail_msg: "warrant_canary_test_* and warrant_canary_skip_toolchain are molecule-only and must not be set on the VM."
+        quiet: true
+
+  roles:
+    - role: warrant-canary
+      vars:
+        warrant_canary_address_buyer: "{{ sops.warrant_canary_address_buyer | default('') }}"
+        warrant_canary_address_seller: "{{ sops.warrant_canary_address_seller | default('') }}"
+        warrant_canary_address_relayer: "{{ sops.warrant_canary_address_relayer | default('') }}"
+        warrant_canary_address_deployer: "{{ sops.warrant_canary_address_deployer | default('') }}"
+        warrant_canary_keystore_buyer: "{{ sops.warrant_canary_keystore_buyer | default('') }}"
+        warrant_canary_keystore_seller: "{{ sops.warrant_canary_keystore_seller | default('') }}"
+        warrant_canary_keystore_relayer: "{{ sops.warrant_canary_keystore_relayer | default('') }}"
+        warrant_canary_keystore_deployer: "{{ sops.warrant_canary_keystore_deployer | default('') }}"
+        warrant_canary_keystore_password_buyer: "{{ sops.warrant_canary_keystore_password_buyer | default('') }}"
+        warrant_canary_keystore_password_seller: "{{ sops.warrant_canary_keystore_password_seller | default('') }}"
+        warrant_canary_keystore_password_relayer: "{{ sops.warrant_canary_keystore_password_relayer | default('') }}"
+        warrant_canary_keystore_password_deployer: "{{ sops.warrant_canary_keystore_password_deployer | default('') }}"
+        warrant_canary_ionet_api_key: "{{ sops.warrant_canary_ionet_api_key | default('') }}"
+        warrant_canary_seller_key_hex: "{{ sops.warrant_canary_seller_key_hex | default('') }}"
+        warrant_canary_registry_key: "{{ sops.warrant_canary_registry_key | default('') }}"
+        warrant_canary_mcp_auth_user: "{{ sops.warrant_canary_mcp_auth_user | default('') }}"
+        warrant_canary_mcp_auth_pass: "{{ sops.warrant_canary_mcp_auth_pass | default('') }}"
+        warrant_canary_expected_image_id: "{{ sops.warrant_canary_expected_image_id | default('') }}"
+        warrant_canary_src_commit: "{{ sops.warrant_canary_src_commit | default('') }}"

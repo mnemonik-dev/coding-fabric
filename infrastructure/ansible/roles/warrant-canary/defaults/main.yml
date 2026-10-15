@@ -1,0 +1,185 @@
+---
+# warrant-canary role defaults.
+#
+# Sections:
+#   1. Workflow inputs (the D1 contract with .github/workflows/warrant-canary.yml).
+#      The workflow passes exactly these keys as extra-vars. Its unit test
+#      compares its keys with the keys between the two marker lines below,
+#      so names and types here are a contract. Do not add keys to this block
+#      without changing the workflow and its test.
+#   2. Non-input values (sops, vars file, internal lists).
+#   3. Secrets (mapped from sops by the playbook; empty here).
+#   4. Paths, pins, chain, stop rule, Caddy and seller, health.
+#   5. Test-only overrides (molecule). Never set by the workflow; the
+#      playbook asserts they are at their defaults.
+
+# --- BEGIN workflow inputs (D1) ---
+# One of: preflight, configure, rehearse, stage-keys, unstage-keys,
+# deploy-solver, deploy-task, deploy-seller.
+warrant_canary_action: ""
+# Broadcast happens only when both are true (each coerced with | bool).
+warrant_canary_deploy_contracts: false
+warrant_canary_execute: false
+# configure / deploy-seller: render templates into a temp dir, start nothing.
+warrant_canary_render_only: false
+# stage-keys: list of buyer, seller, relayer, deployer. Never a string.
+warrant_canary_roles: [buyer, seller, relayer]
+# deploy-solver retry after a partial deployment: empty or mainnet/<UTC ts>,
+# relative to /opt/warrant-canary/src/solver-bounty/canary/.
+warrant_canary_run_dir: ""
+# deploy-solver: seconds as a string of digits; no usable default.
+warrant_canary_settle_window: ""
+# unstage-keys: override the chain-state gate; needs a non-empty reason.
+warrant_canary_force_unstage: false
+warrant_canary_force_unstage_reason: ""
+# Negative dispatches only; refused together with warrant_canary_execute.
+warrant_canary_expected_image_id_override: ""
+warrant_canary_rpc_override: ""
+# Controller path for fetched records; empty skips the fetch.
+warrant_canary_output_dir: ""
+# --- END workflow inputs (D1) ---
+
+# --- Non-input values ---
+# Toolchain installs and cargo builds are skipped when true (molecule).
+warrant_canary_skip_toolchain: false
+# From sops (asserted non-empty by configure and the green-rehearsal gate).
+warrant_canary_src_commit: ""
+warrant_canary_expected_image_id: ""
+# From playbooks/vars/warrant-canary.yml (positive integer, asserted by
+# rehearse and deploy-solver).
+warrant_canary_max_cost: ""
+# Internal: which keystores and password files an action stages. Set by
+# each action (stage-keys, rehearse, deploy-solver, deploy-task); not inputs.
+warrant_canary_keystore_roles: []
+warrant_canary_password_roles: []
+
+# --- Secrets (mapped from sops by playbooks/warrant-canary.yml) ---
+warrant_canary_address_buyer: ""
+warrant_canary_address_seller: ""
+warrant_canary_address_relayer: ""
+warrant_canary_address_deployer: ""
+warrant_canary_keystore_buyer: ""
+warrant_canary_keystore_seller: ""
+warrant_canary_keystore_relayer: ""
+warrant_canary_keystore_deployer: ""
+warrant_canary_keystore_password_buyer: ""
+warrant_canary_keystore_password_seller: ""
+warrant_canary_keystore_password_relayer: ""
+warrant_canary_keystore_password_deployer: ""
+warrant_canary_ionet_api_key: ""
+warrant_canary_seller_key_hex: ""
+warrant_canary_registry_key: ""
+warrant_canary_mcp_auth_user: ""
+warrant_canary_mcp_auth_pass: ""
+
+# --- Paths ---
+warrant_canary_user: op
+warrant_canary_home: /home/op
+warrant_canary_base_dir: /opt/warrant-canary
+warrant_canary_src_dir: "{{ warrant_canary_base_dir }}/src"
+warrant_canary_secrets_dir: "{{ warrant_canary_base_dir }}/secrets"
+warrant_canary_state_dir: "{{ warrant_canary_base_dir }}/state"
+warrant_canary_deploy_dir: "{{ warrant_canary_base_dir }}/deploy"
+warrant_canary_runs_dir: "{{ warrant_canary_base_dir }}/runs"
+warrant_canary_bin_dir: "{{ warrant_canary_base_dir }}/bin"
+warrant_canary_venv_dir: "{{ warrant_canary_src_dir }}/.venv"
+warrant_canary_env_file: "{{ warrant_canary_base_dir }}/env"
+warrant_canary_stopped_services_file: "{{ warrant_canary_base_dir }}/stopped-services.json"
+warrant_canary_stage_log: "{{ warrant_canary_runs_dir }}/stage.log"
+warrant_canary_tmpfs_dir: /run/warrant-canary
+warrant_canary_tmpfs_size: 16m
+warrant_canary_keystore_dir: "{{ warrant_canary_home }}/.foundry/keystores"
+# Overridable for molecule (a local fixture repository).
+warrant_canary_src_repo: https://github.com/mnemonik-xyz/policy-execution.git
+warrant_canary_canary_dir: "{{ warrant_canary_src_dir }}/solver-bounty/canary"
+warrant_canary_instance_rel: solver-bounty/instance-ionet.json
+warrant_canary_registry_key_rel: showcases/ionet_arc/.keys/registry.key
+warrant_canary_acceptance_key_rel: showcases/ionet_arc/.keys/mainnet-buyer_acceptance.key
+
+# --- Toolchain pins ---
+warrant_canary_rust_version: "1.98.1"
+warrant_canary_r0vm_version: "3.0.5"
+warrant_canary_foundry_version: "1.8.4"
+warrant_canary_node_major: "20"
+warrant_canary_python_version: "3.12"
+# risc0-build 3.0.5 default guest builder tag (solver-canary.py DEFAULT_BUILDER_TAG).
+warrant_canary_builder_tag: r0.1.88.0
+warrant_canary_rayon_threads: 4
+warrant_canary_apt_packages:
+  - build-essential
+  - pkg-config
+  - libssl-dev
+  - git
+  - curl
+  - jq
+  - time
+  - python3.12-venv
+  - python3-pip
+  - ca-certificates
+
+# --- Chain ---
+warrant_canary_chain_id: 5042
+warrant_canary_rpc: https://rpc.mainnet.arc.io
+warrant_canary_usdc: "0x3600000000000000000000000000000000000000"
+warrant_canary_amount: 2000000
+warrant_canary_accept_window: 1800
+warrant_canary_settle_min: 7200
+warrant_canary_settle_max: 86400
+warrant_canary_settle_factor: 4
+# Rehearsal (loopback Anvil).
+warrant_canary_anvil_port: 8546
+warrant_canary_anvil_chain_id: 31337
+# Refund order windows: accept above the 120 s script margin, short settle.
+warrant_canary_refund_accept_window: 600
+warrant_canary_refund_settle_window: 900
+
+# --- Stop rule (Decision 12) ---
+warrant_canary_min_disk_gb: 10
+warrant_canary_min_mem_gb: 6
+
+# --- Caddy and seller ---
+warrant_canary_caddy_container: vaultwarden-caddy-1
+warrant_canary_caddy_admin: 127.0.0.1:2020
+warrant_canary_caddy_validator_image: caddy:2.9.1
+warrant_canary_caddy_conf_d: /opt/vaultwarden/caddy_conf_d
+warrant_canary_caddy_live_caddyfile: /opt/vaultwarden/Caddyfile
+warrant_canary_seller_domain: seller.mnemonik.xyz
+warrant_canary_vm_ip: 178.105.207.172
+# Fixed: matches the Task 3 Dockerfile.seller user (D17).
+warrant_canary_seller_uid: 10001
+warrant_canary_seller_image: warrant-seller
+warrant_canary_seller_container: warrant-seller
+warrant_canary_seller_network: vaultwarden_vaultwarden
+warrant_canary_seller_port: 8000
+warrant_canary_seller_app_dir: /app
+# IONET_STATE_DIR set by Dockerfile.seller (Task 3); the role only mounts it.
+warrant_canary_seller_state_mount: /var/lib/warrant-seller
+warrant_canary_seller_mem_limit: 1g
+warrant_canary_seller_cpus: "1.0"
+warrant_canary_seller_pids_limit: 256
+warrant_canary_seller_label: "after seller acceptance anyone can trigger payout; no proof; amounts up to 1 USD"
+
+# --- Health (D5, D15, D16) ---
+# Each target is probed from the VM with curl; `container` runs curl inside
+# that container instead (Ollama is reachable only on the mnemonik network).
+warrant_canary_health_targets:
+  mcp: { url: "https://mcp.mnemonik.xyz/health", container: "" }
+  kaneo: { url: "https://kaneo.mnemonik.xyz/api/health", container: "" }
+  vaultwarden: { url: "https://vault.mnemonic-fabric.ts:8443/alive", container: "" }
+  caddy: { url: "http://127.0.0.1:80/", container: "" }
+  ollama: { url: "http://ollama:11434/api/version", container: "mnemonik-mcp-1" }
+
+# --- Test-only overrides (molecule only; the playbook asserts these stay at
+# their defaults, and the workflow never passes them) ---
+# Stop rule measurements in kB (empty = read /proc/meminfo and df).
+warrant_canary_test_mem_available_kb: ""
+warrant_canary_test_disk_free_kb: ""
+# Replace the health targets (before and after) or only the after probe.
+warrant_canary_test_health_targets: {}
+warrant_canary_test_health_targets_after: {}
+# Caddy container name for preflight and deploy-seller.
+warrant_canary_test_caddy_container: ""
+# deploy-seller render_only: render a snippet that cannot parse.
+warrant_canary_test_broken_snippet: false
+# render_only: keep the temp dir for inspection instead of deleting it.
+warrant_canary_test_keep_render_dir: false

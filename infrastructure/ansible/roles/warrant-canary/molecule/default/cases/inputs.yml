@@ -1,0 +1,82 @@
+---
+- name: Staging state before the input cases
+  ansible.builtin.include_tasks: "{{ t }}/stage_state.yml"
+
+- name: Remember it
+  ansible.builtin.set_fact:
+    _stage_before: "{{ _stage }}"
+
+- name: Count records directories
+  ansible.builtin.shell: ls /opt/warrant-canary/runs | wc -l
+  register: _runs_before
+  changed_when: false
+
+# --- input_contract_types ---
+- name: "input_contract_types: roles as a comma string is refused"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: input_contract_types roles string
+    expect: fail
+    expect_msg: never a comma string
+    warrant_canary_action: stage-keys
+    warrant_canary_roles: "buyer,seller"
+
+- name: "input_contract_types: bad run_dir is refused"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: "input_contract_types run_dir {{ item }}"
+    expect: fail
+    expect_msg: warrant_canary_run_dir must be
+    warrant_canary_action: deploy-solver
+    warrant_canary_settle_window: "9800"
+    warrant_canary_run_dir: "{{ item }}"
+  loop:
+    - mainnet/20261015T120000Z-simulate
+    - ../x
+    - /abs
+
+- name: "input_contract_types: unknown action is refused"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: input_contract_types action foo
+    expect: fail
+    expect_msg: warrant_canary_action must be one of
+    warrant_canary_action: foo
+
+# --- overrides_refused_with_execute ---
+- name: "overrides_refused_with_execute: image ID override with execute"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: overrides_refused_with_execute image id
+    expect: fail
+    expect_msg: refused together with warrant_canary_execute
+    warrant_canary_action: configure
+    warrant_canary_execute: true
+    warrant_canary_expected_image_id_override: "0x1234"
+
+- name: "overrides_refused_with_execute: RPC override with execute"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: overrides_refused_with_execute rpc
+    expect: fail
+    expect_msg: refused together with warrant_canary_execute
+    warrant_canary_action: deploy-solver
+    warrant_canary_deploy_contracts: true
+    warrant_canary_execute: "true"
+    warrant_canary_settle_window: "9800"
+    warrant_canary_rpc_override: https://rpc.testnet.arc.io
+
+- name: Nothing staged by the input cases
+  ansible.builtin.include_tasks: "{{ t }}/never_staged.yml"
+  vars:
+    label: input cases
+
+- name: Count records directories again
+  ansible.builtin.shell: ls /opt/warrant-canary/runs | wc -l
+  register: _runs_after
+  changed_when: false
+
+- name: "Refusals happen before anything else (no records directory created)"
+  ansible.builtin.assert:
+    that: _runs_after.stdout == _runs_before.stdout
+    quiet: true

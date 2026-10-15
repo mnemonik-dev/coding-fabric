@@ -1,0 +1,73 @@
+---
+# --- health_rule_stopped_services (configure render_only as the cheap action) ---
+- name: Operator record lists kaneo as stopped, not restarted
+  ansible.builtin.copy:
+    content: '{"stopped": ["kaneo"], "stopped_at": "2026-10-15T00:00:00Z", "restarted_at": null}'
+    dest: /opt/warrant-canary/stopped-services.json
+    mode: "0644"
+
+- name: "health_rule_stopped_services: kaneo down after, recorded as stopped -> pass"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: health_rule_stopped_services recorded
+    expect: pass
+    warrant_canary_action: configure
+    warrant_canary_render_only: true
+    warrant_canary_output_dir: "{{ _out_root.path }}/health"
+    warrant_canary_test_health_targets_after:
+      kaneo: { url: "http://127.0.0.1:18099/", container: "" }
+
+- name: "health_rule_stopped_services: D15 schema and stopped copied"
+  ansible.builtin.assert:
+    that:
+      - _before.services | list | sort == ['caddy', 'kaneo', 'mcp', 'ollama', 'vaultwarden']
+      - _after.services | list | sort == ['caddy', 'kaneo', 'mcp', 'ollama', 'vaultwarden']
+      - _before.services | dict2items | map(attribute='value.status') | map('type_debug') | unique == ['int']
+      - _after.services | dict2items | map(attribute='value.status') | map('type_debug') | unique == ['int']
+      - _before.stopped == ['kaneo']
+      - _after.stopped == ['kaneo']
+      - _before.services.kaneo.status == 200
+      - _after.services.kaneo.status == 0
+    fail_msg: "before={{ _before }} after={{ _after }}"
+    quiet: true
+  vars:
+    _before: "{{ lookup('ansible.builtin.file', _out_root.path ~ '/health/health-before.json') | from_json }}"
+    _after: "{{ lookup('ansible.builtin.file', _out_root.path ~ '/health/health-after.json') | from_json }}"
+
+- name: No operator record
+  ansible.builtin.file:
+    path: /opt/warrant-canary/stopped-services.json
+    state: absent
+
+- name: "health_rule_stopped_services: kaneo down, not recorded -> fail"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: health_rule_stopped_services not recorded
+    expect: fail
+    expect_msg: HEALTH RULE FAILED
+    warrant_canary_action: configure
+    warrant_canary_render_only: true
+    warrant_canary_test_health_targets_after:
+      kaneo: { url: "http://127.0.0.1:18099/", container: "" }
+
+- name: Operator record with restarted_at set
+  ansible.builtin.copy:
+    content: '{"stopped": ["kaneo"], "stopped_at": "2026-10-15T00:00:00Z", "restarted_at": "2026-10-15T01:00:00Z"}'
+    dest: /opt/warrant-canary/stopped-services.json
+    mode: "0644"
+
+- name: "health_rule_stopped_services: restarted but not back at its before code -> fail"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: health_rule_stopped_services restarted mismatch
+    expect: fail
+    expect_msg: HEALTH RULE FAILED
+    warrant_canary_action: configure
+    warrant_canary_render_only: true
+    warrant_canary_test_health_targets_after:
+      kaneo: { url: "http://127.0.0.1:18099/", container: "" }
+
+- name: Remove the operator record
+  ansible.builtin.file:
+    path: /opt/warrant-canary/stopped-services.json
+    state: absent

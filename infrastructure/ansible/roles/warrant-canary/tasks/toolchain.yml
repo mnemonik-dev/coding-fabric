@@ -1,0 +1,73 @@
+---
+# configure: pinned toolchain, installed idempotently (probe before install).
+- name: Build tools and time (apt; root-only setup, D1 clarification)
+  become: true
+  ansible.builtin.apt:
+    name: "{{ warrant_canary_apt_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Probe installed versions
+  ansible.builtin.shell: |
+    {{ warrant_canary_home }}/.cargo/bin/rustc +{{ warrant_canary_rust_version }} --version 2>/dev/null | head -1 || true
+    echo '---'
+    {{ warrant_canary_home }}/.risc0/bin/r0vm --version 2>/dev/null | head -1 || true
+    echo '---'
+    {{ warrant_canary_home }}/.foundry/bin/forge --version 2>/dev/null | head -1 || true
+    echo '---'
+    node --version 2>/dev/null || true
+    echo '---'
+    python3 --version 2>/dev/null || true
+  register: _wc_versions
+  changed_when: false
+
+- name: Parse probes
+  ansible.builtin.set_fact:
+    _wc_rust_ok: "{{ ('rustc ' ~ warrant_canary_rust_version) in _wc_versions.stdout.split('---')[0] }}"
+    _wc_r0vm_ok: "{{ warrant_canary_r0vm_version in _wc_versions.stdout.split('---')[1] }}"
+    _wc_forge_ok: "{{ warrant_canary_foundry_version in _wc_versions.stdout.split('---')[2] }}"
+    _wc_node_ok: "{{ _wc_versions.stdout.split('---')[3] | trim is match('v' ~ warrant_canary_node_major ~ '\\.') }}"
+    _wc_python_ok: "{{ ('Python ' ~ warrant_canary_python_version) in _wc_versions.stdout.split('---')[4] }}"
+
+- name: Python {{ warrant_canary_python_version }} is the system python3
+  ansible.builtin.assert:
+    that: _wc_python_ok | bool
+    fail_msg: "python3 is not {{ warrant_canary_python_version }}: {{ _wc_versions.stdout.split('---')[4] | trim }}"
+    quiet: true
+
+- name: Rust {{ warrant_canary_rust_version }} via rustup
+  ansible.builtin.shell: |
+    set -e
+    if [ ! -x "$HOME/.cargo/bin/rustup" ]; then
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain {{ warrant_canary_rust_version }}
+    else
+      "$HOME/.cargo/bin/rustup" toolchain install {{ warrant_canary_rust_version }} --profile minimal
+    fi
+  when: not (_wc_rust_ok | bool)
+
+- name: rzup with r0vm {{ warrant_canary_r0vm_version }}
+  ansible.builtin.shell: |
+    set -e
+    if [ ! -x "$HOME/.risc0/bin/rzup" ]; then
+      curl --proto '=https' --tlsv1.2 -sSfL https://risczero.com/install | bash
+    fi
+    "$HOME/.risc0/bin/rzup" install r0vm {{ warrant_canary_r0vm_version }}
+  when: not (_wc_r0vm_ok | bool)
+
+- name: Foundry {{ warrant_canary_foundry_version }}
+  ansible.builtin.shell: |
+    set -e
+    if [ ! -x "$HOME/.foundry/bin/foundryup" ]; then
+      curl --proto '=https' --tlsv1.2 -sSfL https://foundry.paradigm.xyz | bash
+    fi
+    "$HOME/.foundry/bin/foundryup" --install {{ warrant_canary_foundry_version }}
+  when: not (_wc_forge_ok | bool)
+
+- name: Node {{ warrant_canary_node_major }} (NodeSource; root-only setup)
+  become: true
+  ansible.builtin.shell: |
+    set -e
+    curl -fsSL https://deb.nodesource.com/setup_{{ warrant_canary_node_major }}.x | bash -
+    apt-get install -y nodejs
+  when: not (_wc_node_ok | bool)

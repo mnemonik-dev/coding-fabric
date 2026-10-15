@@ -1,0 +1,19 @@
+---
+# configure with skip_toolchain against the fixture repository. The
+# idempotence step runs this twice and requires 0 changed the second time.
+- name: Converge
+  hosts: all
+  gather_facts: false
+  vars_files:
+    - fixtures/stub-secrets.yml
+    - vars.yml
+  pre_tasks:
+    - name: Read the fixture commit
+      ansible.builtin.slurp:
+        src: /opt/wc-fixture/commit
+      register: _fixture_commit
+  roles:
+    - role: warrant-canary
+      vars:
+        warrant_canary_action: configure
+        warrant_canary_src_commit: "{{ _fixture_commit.content | b64decode | trim }}"

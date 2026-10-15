@@ -1,0 +1,105 @@
+---
+# --- configure_env_exports_rpc (env file from converge) ---
+- name: Read the env file and grep it for stub secrets
+  ansible.builtin.shell: |
+    cat /opt/warrant-canary/env
+    echo ---
+    grep -Ff {{ wc_patterns }} /opt/warrant-canary/env; echo "rc=$?"
+  register: _env
+  changed_when: false
+
+- name: "configure_env_exports_rpc"
+  ansible.builtin.assert:
+    that:
+      - "'WARRANT_CANARY_RPC=' in _env.stdout.split('---')[0]"
+      - "'RISC0_USE_DOCKER=1' in _env.stdout.split('---')[0]"
+      - "'rc=1' in _env.stdout.split('---')[1]"
+    fail_msg: "{{ _env.stdout }}"
+    quiet: true
+
+# --- configure_image_id_mismatch_keeps_env ---
+- name: sha256 of the env file before
+  ansible.builtin.command: sha256sum /opt/warrant-canary/env
+  register: _env_sha_before
+  changed_when: false
+
+- name: "configure_image_id_mismatch_keeps_env"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: configure_image_id_mismatch_keeps_env
+    expect: fail
+    expect_msg: Image ID mismatch
+    warrant_canary_action: configure
+    warrant_canary_expected_image_id_override: "0x{{ 'de' * 32 }}"
+    warrant_canary_rpc_override: https://rpc.testnet.arc.io
+
+- name: sha256 of the env file after
+  ansible.builtin.command: sha256sum /opt/warrant-canary/env
+  register: _env_sha_after
+  changed_when: false
+
+- name: "configure_image_id_mismatch_keeps_env: env file unchanged"
+  ansible.builtin.assert:
+    that: _env_sha_before.stdout == _env_sha_after.stdout
+    quiet: true
+
+# --- configure_render_only_modes ---
+- name: "configure_render_only_modes: render"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: configure_render_only_modes
+    expect: pass
+    warrant_canary_action: configure
+    warrant_canary_render_only: true
+    warrant_canary_test_keep_render_dir: true
+
+- name: Remember the configure render dir
+  ansible.builtin.set_fact:
+    _configure_render: "{{ _wc_render_dir }}"
+
+- name: Modes of the rendered tree
+  become: true
+  ansible.builtin.shell: |
+    stat -c '%n %a %U:%G' {{ _configure_render }}/secrets
+    stat -c '%n %a %u:%g' {{ _configure_render }}/secrets/seller.env {{ _configure_render }}/secrets/seller.key
+    echo ---
+    grep -Ff {{ wc_patterns }} {{ _configure_render }}/env; echo "rc=$?"
+    echo ---
+    cat {{ _configure_render }}/secrets/seller.key | grep -c '^0x' || true
+  register: _render_modes
+  changed_when: false
+
+- name: "configure_render_only_modes: 0711 root:root dir, 0600 files owned by 10001, env without secrets, bare hex key"
+  ansible.builtin.assert:
+    that:
+      - _lines[0] == _configure_render ~ '/secrets 711 root:root'
+      - _lines[1] == _configure_render ~ '/secrets/seller.env 600 10001:10001'
+      - _lines[2] == _configure_render ~ '/secrets/seller.key 600 10001:10001'
+      - "'rc=1' in _render_modes.stdout.split('---')[1]"
+      - _render_modes.stdout.split('---')[2] | trim == '0'
+    fail_msg: "{{ _render_modes.stdout }}"
+    quiet: true
+  vars:
+    _lines: "{{ _render_modes.stdout.split('---')[0].splitlines() }}"
+
+# --- no_secret_in_rendered_tree ---
+- name: Pattern file has no empty line (D12)
+  ansible.builtin.command: grep -c '^$' {{ wc_patterns }}
+  register: _empty_lines
+  changed_when: false
+  failed_when: _empty_lines.stdout | trim != '0'
+
+- name: Grep the rendered tree outside secrets/, the env file and the health files
+  become: true
+  ansible.builtin.shell: >-
+    grep -rFf {{ wc_patterns }} --exclude-dir=secrets {{ _configure_render }}
+    /opt/warrant-canary/env /opt/warrant-canary/runs/*/health-*.json
+  register: _leak
+  changed_when: false
+  failed_when: _leak.rc != 1
+
+- name: Remove the configure render dir
+  become: true
+  ansible.builtin.file:
+    path: "{{ _configure_render }}"
+    state: absent

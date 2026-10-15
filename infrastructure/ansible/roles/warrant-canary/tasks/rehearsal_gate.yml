@@ -1,0 +1,41 @@
+---
+# Green-rehearsal gate (How it works 2): the newest canary/local/*/rehearsal.json
+# must match the pinned commit, the expected image ID and the instance hash,
+# with real_proof and refund_ok true. Sets _wc_green {run, prove_seconds}.
+- name: Require the pinned commit and the expected image ID
+  ansible.builtin.assert:
+    that:
+      - warrant_canary_src_commit | length > 0
+      - _wc_expected_image_id | trim | length > 0
+    fail_msg: "REFUSED (green rehearsal): warrant_canary_src_commit and the expected image ID must be set (sops)."
+    quiet: true
+
+- name: Hash the instance (warrant-solver instance-hash)
+  ansible.builtin.command:
+    argv: [warrant-solver, instance-hash, "{{ warrant_canary_instance_rel }}"]
+    chdir: "{{ warrant_canary_src_dir }}"
+  environment: "{{ _wc_env }}"
+  register: _wc_instance_hash
+  changed_when: false
+
+- name: Check the newest rehearsal record
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ _wc_bin }}/rehearsal-gate.py"
+      - "{{ warrant_canary_canary_dir }}/local"
+      - "{{ warrant_canary_src_commit }}"
+      - "{{ _wc_expected_image_id | trim }}"
+      - "{{ (_wc_instance_hash.stdout.split() or [''])[-1] }}"
+  register: _wc_green_out
+  changed_when: false
+  failed_when: false
+
+- name: Refuse without a green rehearsal
+  ansible.builtin.fail:
+    msg: "{{ _wc_green_out.stderr | trim }}"
+  when: _wc_green_out.rc != 0
+
+- name: Remember the green rehearsal
+  ansible.builtin.set_fact:
+    _wc_green: "{{ _wc_green_out.stdout | from_json }}"

@@ -1,0 +1,14 @@
+---
+# Sets _calls (list of call log lines) and _steps (canary/probe step names in order).
+- name: Read the call log
+  ansible.builtin.slurp:
+    src: /tmp/wc-calls.log
+  register: _calls_raw
+
+- name: Parse the call log
+  ansible.builtin.set_fact:
+    _calls: "{{ (_calls_raw.content | b64decode).splitlines() }}"
+    _steps: >-
+      {{ (_calls_raw.content | b64decode).splitlines()
+         | select('match', '^(canary|probe) ')
+         | map('regex_replace', '^(?:canary|probe) (\S+).*$', '\1') | list }}

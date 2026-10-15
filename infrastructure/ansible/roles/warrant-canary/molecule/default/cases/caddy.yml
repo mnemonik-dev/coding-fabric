@@ -1,0 +1,139 @@
+---
+# --- caddy_reload_smoke (throwaway caddy:2.9.1 running the new vaultwarden Caddyfile.j2) ---
+- name: StartedAt before the reload
+  ansible.builtin.command: docker inspect -f '{{ "{{" }}.State.StartedAt{{ "}}" }}' wc-test-caddy
+  register: _started_before
+  changed_when: false
+
+- name: "caddy_reload_smoke: reload through the admin endpoint"
+  ansible.builtin.command: docker exec wc-test-caddy caddy reload --config /etc/caddy/Caddyfile --address 127.0.0.1:2020
+  changed_when: false
+
+- name: "caddy_reload_smoke: metrics answer on 2020"
+  ansible.builtin.shell: docker exec wc-test-caddy wget -qO- http://127.0.0.1:2020/metrics | grep -c caddy_
+  changed_when: false
+
+- name: StartedAt after the reload
+  ansible.builtin.command: docker inspect -f '{{ "{{" }}.State.StartedAt{{ "}}" }}' wc-test-caddy
+  register: _started_after
+  changed_when: false
+
+- name: "caddy_reload_smoke: no restart"
+  ansible.builtin.assert:
+    that: _started_before.stdout == _started_after.stdout
+    quiet: true
+
+# --- preflight_checks_admin_endpoint ---
+- name: "preflight_checks_admin_endpoint: new template passes"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: preflight_checks_admin_endpoint new template
+    expect: pass
+    warrant_canary_action: preflight
+    warrant_canary_test_caddy_container: wc-test-caddy
+    warrant_canary_output_dir: "{{ _out_root.path }}/preflight"
+
+- name: "preflight_checks_admin_endpoint: health-before.json fetched in the D15 shape"
+  ansible.builtin.assert:
+    that:
+      - _hb.services | list | sort == ['caddy', 'kaneo', 'mcp', 'ollama', 'vaultwarden']
+      - _hb.stopped == []
+    quiet: true
+  vars:
+    _hb: "{{ lookup('ansible.builtin.file', _out_root.path ~ '/preflight/health-before.json') | from_json }}"
+
+- name: "preflight_checks_admin_endpoint: old template (2019 block, no 2020 admin) fails"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: preflight_checks_admin_endpoint old template
+    expect: fail
+    expect_msg: Caddy admin endpoint missing on 127.0.0.1:2020
+    warrant_canary_action: preflight
+    warrant_canary_test_caddy_container: wc-test-caddy-old
+
+# --- deploy_seller_render_only ---
+- name: "deploy_seller_render_only: validate passes"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: deploy_seller_render_only
+    expect: pass
+    warrant_canary_action: deploy-seller
+    warrant_canary_render_only: true
+    warrant_canary_test_keep_render_dir: true
+    warrant_canary_test_caddy_container: wc-test-caddy
+
+- name: Remember the seller render dir
+  ansible.builtin.set_fact:
+    _seller_render: "{{ _wc_render_dir }}"
+
+- name: Read the rendered compose file and manifest
+  ansible.builtin.shell: |
+    cat {{ _seller_render }}/docker-compose.yml
+    echo ---
+    cat {{ _seller_render }}/mainnet-manifest.yaml
+    echo ---
+    grep -rFf {{ wc_patterns }} {{ _seller_render }}; echo "rc=$?"
+  register: _seller_files
+  changed_when: false
+
+- name: "deploy_seller_render_only: Decision 14 hardening and manifest shape, no secret"
+  ansible.builtin.assert:
+    that:
+      - (_compose.services.seller.read_only) is sameas true
+      - _compose.services.seller.cap_drop == ['ALL']
+      - _compose.services.seller.security_opt == ['no-new-privileges:true']
+      - _compose.services.seller.restart == 'unless-stopped'
+      - _compose.services.seller.tmpfs == ['/tmp']
+      - _compose.services.seller.pids_limit == 256
+      - _compose.services.seller.mem_limit == '1g'
+      - _compose.services.seller.expose == ['8000']
+      - _compose.services.seller.env_file == ['/opt/warrant-canary/secrets/seller.env']
+      - _compose.services.seller.networks.vaultwarden_vaultwarden.aliases == ['warrant-seller']
+      - _compose.networks.vaultwarden_vaultwarden.external is sameas true
+      - _compose.services.seller.volumes | select('search', ':ro$') | list | length == 2
+      - "'/opt/warrant-canary/secrets/seller.key:/run/secrets/seller.key:ro' in _compose.services.seller.volumes"
+      - "'/opt/warrant-canary/state:/var/lib/warrant-seller' in _compose.services.seller.volumes"
+      - _manifest.chain_id == 5042
+      - _manifest.private_key_files.seller_key == '/run/secrets/seller.key'
+      - "'buyer_address' not in _manifest"
+      - "'rc=1' in _seller_files.stdout.split('---')[2]"
+    fail_msg: "{{ _seller_files.stdout }}"
+    quiet: true
+  vars:
+    _compose: "{{ _seller_files.stdout.split('---')[0] | from_yaml }}"
+    _manifest: "{{ _seller_files.stdout.split('---')[1] | from_yaml }}"
+
+- name: "deploy_seller_render_only: a broken snippet fails validation"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: deploy_seller_render_only broken snippet
+    expect: fail
+    expect_msg: caddy validate failed
+    warrant_canary_action: deploy-seller
+    warrant_canary_render_only: true
+    warrant_canary_test_keep_render_dir: true
+    warrant_canary_test_broken_snippet: true
+
+- name: State after the broken snippet
+  ansible.builtin.shell: |
+    test -e {{ _wc_render_dir }}/caddy/conf.d/warrant-seller.conf && echo snippet-present || echo snippet-removed
+    test -e /opt/vaultwarden/caddy_conf_d/warrant-seller.conf && echo installed || echo not-installed
+    docker inspect -f '{{ "{{" }}.State.StartedAt{{ "}}" }}' wc-test-caddy
+    docker inspect warrant-seller >/dev/null 2>&1 && echo seller-present || echo seller-absent
+  register: _broken
+  changed_when: false
+
+- name: "deploy_seller_render_only: snippet removed, nothing installed, nothing restarted"
+  ansible.builtin.assert:
+    that: _broken.stdout.split() == ['snippet-removed', 'not-installed', _started_after.stdout | trim, 'seller-absent']
+    fail_msg: "{{ _broken.stdout }}"
+    quiet: true
+
+- name: Remove the render dirs
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ _seller_render }}"
+    - "{{ _wc_render_dir }}"

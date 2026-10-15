@@ -1,0 +1,18 @@
+---
+# Action stage-keys (How it works step 3, operator step 5).
+- name: Stage the requested roles
+  ansible.builtin.set_fact:
+    warrant_canary_keystore_roles: "{{ warrant_canary_roles }}"
+    warrant_canary_password_roles: "{{ warrant_canary_roles }}"
+
+- name: Refuse while keys are staged
+  ansible.builtin.include_tasks: not_staged.yml
+
+- name: Stage keystores and passwords
+  ansible.builtin.include_tasks: stage.yml
+
+- name: Report
+  ansible.builtin.debug:
+    msg: >-
+      Staged {{ warrant_canary_roles | join(', ') }} in {{ warrant_canary_tmpfs_dir }}
+      (bound at {{ warrant_canary_keystore_dir }}). Run unstage-keys when the order is Paid or Refunded.

@@ -1,0 +1,82 @@
+---
+# Runs before any rehearsal exists: canary/local has no rehearsal.json yet.
+- name: No rehearsal record exists yet
+  ansible.builtin.shell: ls {{ wc_canary }}/local/*/rehearsal.json 2>/dev/null | wc -l
+  register: _no_rehearsal
+  changed_when: false
+  failed_when: _no_rehearsal.stdout | trim != '0'
+
+- name: Staging state before the gate cases
+  ansible.builtin.include_tasks: "{{ t }}/stage_state.yml"
+
+- name: Remember it
+  ansible.builtin.set_fact:
+    _stage_before: "{{ _stage }}"
+
+# --- deploy_solver_requires_green_rehearsal ---
+- name: "deploy_solver_requires_green_rehearsal: no rehearsal.json"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: deploy_solver_requires_green_rehearsal missing
+    expect: fail
+    expect_msg: no rehearsal.json
+    warrant_canary_action: deploy-solver
+    warrant_canary_settle_window: "9800"
+
+- name: "deploy_solver_requires_green_rehearsal: seeded records that are not green"
+  ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/not_green.yml"
+  loop:
+    - { name: commit differs, seed: { commit: "0000000000000000000000000000000000000000" }, msg: differs from the pinned commit }
+    - { name: no prove_seconds, seed: { prove_seconds: __drop__ }, msg: lacks prove_seconds }
+    - { name: real_proof false, seed: { real_proof: false }, msg: real_proof is not true }
+    - { name: instance_hash mismatch, seed: { instance_hash: "0x{{ '00' * 32 }}" }, msg: instance_hash differs }
+  loop_control:
+    loop_var: bad
+
+# --- deploy_task_refuses_existing_record ---
+- name: Remove the seeded rehearsal
+  ansible.builtin.file:
+    path: "{{ wc_canary }}/local/29991231T235959Z"
+    state: absent
+
+- name: "deploy_task_refuses_existing_record: missing green rehearsal"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: deploy_task_refuses_existing_record no rehearsal
+    expect: fail
+    expect_msg: no rehearsal.json
+    warrant_canary_action: deploy-task
+
+- name: Seed a green rehearsal
+  ansible.builtin.include_tasks: "{{ t }}/seed_rehearsal.yml"
+  vars:
+    _seed: {}
+
+- name: Seed an existing task-escrow.json
+  ansible.builtin.copy:
+    content: '{"transactions": []}'
+    dest: /opt/warrant-canary/deploy/task-escrow.json
+    mode: "0644"
+
+- name: "deploy_task_refuses_existing_record: record exists"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: deploy_task_refuses_existing_record exists
+    expect: fail
+    expect_msg: task-escrow.json exists
+    warrant_canary_action: deploy-task
+    warrant_canary_deploy_contracts: true
+    warrant_canary_execute: true
+
+- name: Remove the seeded record and rehearsal
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /opt/warrant-canary/deploy/task-escrow.json
+    - "{{ wc_canary }}/local/29991231T235959Z"
+
+- name: "Gate refusals staged nothing"
+  ansible.builtin.include_tasks: "{{ t }}/never_staged.yml"
+  vars:
+    label: gate refusals

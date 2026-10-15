@@ -1,0 +1,10 @@
+---
+- name: Require warrant_canary_max_cost as a positive integer (playbooks/vars/warrant-canary.yml)
+  ansible.builtin.assert:
+    that:
+      - (warrant_canary_max_cost | string) is regex('\A' ~ '[0-9]+' ~ '\Z')
+      - warrant_canary_max_cost | string | int > 0
+    fail_msg: >-
+      REFUSED: warrant_canary_max_cost must be a positive integer (Task 9 sets it in
+      playbooks/vars/warrant-canary.yml from instance-ionet.md); nothing was staged.
+    quiet: true

@@ -1,0 +1,42 @@
+---
+# Action preflight (How it works step 0). Read-only: changes nothing on the host.
+- name: Passwordless sudo works
+  ansible.builtin.command:
+    argv: [sudo, -n, "true"]
+  changed_when: false
+
+- name: Disk, memory and containers
+  ansible.builtin.shell: |
+    set -e
+    df -h /
+    free -m
+    docker ps --format '{{ "{{" }}.Names{{ "}}" }} {{ "{{" }}.Status{{ "}}" }}'
+  register: _wc_preflight_host
+  changed_when: false
+
+- name: Show disk, memory and containers
+  ansible.builtin.debug:
+    msg: "{{ _wc_preflight_host.stdout_lines }}"
+
+- name: Validate the live Caddy config
+  ansible.builtin.command:
+    argv: [docker, exec, "{{ _wc_caddy_container }}", caddy, validate, --config, /etc/caddy/Caddyfile, --adapter, caddyfile]
+  register: _wc_caddy_validate
+  changed_when: false
+
+- name: Check the Caddy admin endpoint on 127.0.0.1:2020 (wget; the image has no curl)
+  ansible.builtin.command:
+    argv: [docker, exec, "{{ _wc_caddy_container }}", wget, -qO-, "http://{{ warrant_canary_caddy_admin }}/metrics"]
+  register: _wc_caddy_admin
+  changed_when: false
+  failed_when: false
+
+- name: Refuse when the admin endpoint is missing
+  ansible.builtin.assert:
+    that: _wc_caddy_admin.rc == 0
+    fail_msg: >-
+      Caddy admin endpoint missing on {{ warrant_canary_caddy_admin }} inside {{ _wc_caddy_container }}
+      (wget http://{{ warrant_canary_caddy_admin }}/metrics failed). Roll out the vaultwarden
+      Caddyfile with the global `admin {{ warrant_canary_caddy_admin }}` and `metrics` options
+      (Decision 20, Task 9) before any other action.
+    quiet: true

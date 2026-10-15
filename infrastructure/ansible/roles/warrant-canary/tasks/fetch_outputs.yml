@@ -1,0 +1,27 @@
+---
+# Fetch records to warrant_canary_output_dir on the controller (flat).
+# Never from secrets/, .keys/ or the tmpfs.
+- name: Refuse to fetch from secret locations
+  ansible.builtin.assert:
+    that:
+      - _wc_fetch_list | select('search', '/secrets/|/\.keys/|^' ~ warrant_canary_tmpfs_dir) | list | length == 0
+    fail_msg: "fetch list touches secrets/, .keys/ or the tmpfs"
+    quiet: true
+  when: warrant_canary_output_dir | length > 0
+
+- name: Stat records to fetch
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ _wc_fetch_list }}"
+  register: _wc_fetch_stat
+  when: warrant_canary_output_dir | length > 0
+
+- name: Fetch records
+  ansible.builtin.fetch:
+    src: "{{ item.stat.path }}"
+    dest: "{{ warrant_canary_output_dir }}/"
+    flat: true
+  loop: "{{ _wc_fetch_stat.results | default([]) | selectattr('stat', 'defined') | selectattr('stat.exists') | list }}"
+  loop_control:
+    label: "{{ item.stat.path }}"
+  when: warrant_canary_output_dir | length > 0

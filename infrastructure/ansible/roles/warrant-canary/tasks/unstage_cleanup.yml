@@ -1,0 +1,25 @@
+---
+# Unmount the keystore bind and the tmpfs, remove the mountpoint and prove it
+# is gone. Unconditional; the chain-state gate lives in unstage_keys.yml.
+- name: Unmount the Foundry keystore bind
+  become: true
+  ansible.posix.mount:
+    path: "{{ warrant_canary_keystore_dir }}"
+    state: unmounted
+
+- name: Unmount the tmpfs
+  become: true
+  ansible.posix.mount:
+    path: "{{ warrant_canary_tmpfs_dir }}"
+    state: unmounted
+
+- name: Remove the tmpfs mountpoint
+  become: true
+  ansible.builtin.file:
+    path: "{{ warrant_canary_tmpfs_dir }}"
+    state: absent
+
+- name: Assert the tmpfs path no longer exists (test ! -e)
+  ansible.builtin.command:
+    argv: [test, "!", -e, "{{ warrant_canary_tmpfs_dir }}"]
+  changed_when: false

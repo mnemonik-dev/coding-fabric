@@ -1,0 +1,147 @@
+---
+# Stage keystores and password files into the tmpfs (Decision 4).
+# Input (set by the calling action): warrant_canary_keystore_roles and
+# warrant_canary_password_roles. On any failure the tmpfs is removed again.
+
+- name: Validate the staging lists
+  ansible.builtin.assert:
+    that:
+      - warrant_canary_keystore_roles | length > 0
+      - warrant_canary_keystore_roles | difference(_wc_all_roles) | length == 0
+      - warrant_canary_password_roles | difference(warrant_canary_keystore_roles) | length == 0
+    fail_msg: "keystore roles must be a non-empty subset of {{ _wc_all_roles }}; password roles a subset of them"
+    quiet: true
+
+- name: Stop rule (free disk and MemAvailable)
+  ansible.builtin.script:
+    cmd: >-
+      stop-rule.py {{ warrant_canary_min_disk_gb }} {{ warrant_canary_min_mem_gb }}
+      --disk-kb {{ warrant_canary_test_disk_free_kb | string | quote }}
+      --mem-kb {{ warrant_canary_test_mem_available_kb | string | quote }}
+    executable: python3
+  changed_when: false
+
+- name: Inspect keystores and passwords (role names only in the result)
+  ansible.builtin.set_fact:
+    _wc_stage_problems: >-
+      {%- set out = [] -%}
+      {%- for r in warrant_canary_keystore_roles -%}
+        {%- set raw = lookup('ansible.builtin.vars', 'warrant_canary_keystore_' ~ r) -%}
+        {%- set want = lookup('ansible.builtin.vars', 'warrant_canary_address_' ~ r) | string | trim | lower | regex_replace('^0x', '') -%}
+        {%- if raw is not mapping and raw | string | trim | length == 0 -%}
+          {%- set _ = out.append(r ~ ': keystore is empty') -%}
+        {%- else -%}
+          {%- set ks = raw if raw is mapping else (raw | string | from_json) -%}
+          {%- set got = (ks.address | default('')) | string | trim | lower | regex_replace('^0x', '') -%}
+          {%- if got | length == 0 -%}
+            {%- set _ = out.append(r ~ ': keystore has no address field') -%}
+          {%- elif want | length == 0 -%}
+            {%- set _ = out.append(r ~ ': warrant_canary_address_' ~ r ~ ' is empty') -%}
+          {%- elif got != want -%}
+            {%- set _ = out.append(r ~ ': keystore address differs from warrant_canary_address_' ~ r) -%}
+          {%- endif -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {%- for r in warrant_canary_password_roles -%}
+        {%- if lookup('ansible.builtin.vars', 'warrant_canary_keystore_password_' ~ r) | string | length == 0 -%}
+          {%- set _ = out.append(r ~ ': keystore password is empty') -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ out }}
+  no_log: true
+
+- name: Refuse keystores that fail the address check
+  ansible.builtin.assert:
+    that: _wc_stage_problems | length == 0
+    fail_msg: "Keystore check failed, nothing staged: {{ _wc_stage_problems | join('; ') }}"
+    quiet: true
+
+- name: Record the staging in stage.log (time, action, role names; no secrets)
+  ansible.builtin.shell: >-
+    printf '%s\n' {{ _wc_line | quote }} >> {{ warrant_canary_stage_log | quote }}
+  vars:
+    _wc_line: >-
+      {{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }} action={{ warrant_canary_action }}
+      keystores={{ warrant_canary_keystore_roles | join(',') }}
+      passwords={{ warrant_canary_password_roles | join(',') | default('-', true) }}
+  changed_when: true
+
+- name: Look up the operator uid and gid
+  ansible.builtin.command:
+    argv: [getent, passwd, "{{ warrant_canary_user }}"]
+  register: _wc_passwd
+  changed_when: false
+
+- name: Mount and fill the tmpfs
+  block:
+    - name: Mount tmpfs (noswap, 0700, owned by the operator, no fstab entry)
+      become: true
+      ansible.posix.mount:
+        path: "{{ warrant_canary_tmpfs_dir }}"
+        src: tmpfs
+        fstype: tmpfs
+        opts: "size={{ warrant_canary_tmpfs_size }},mode=0700,uid={{ _wc_passwd.stdout.split(':')[2] }},gid={{ _wc_passwd.stdout.split(':')[3] }},noswap"
+        state: ephemeral
+
+    - name: Assert the tmpfs is mounted with noswap
+      ansible.builtin.command:
+        argv: [findmnt, -no, "FSTYPE,OPTIONS", "{{ warrant_canary_tmpfs_dir }}"]
+      register: _wc_findmnt
+      changed_when: false
+      failed_when: >-
+        _wc_findmnt.rc != 0
+        or 'tmpfs' not in _wc_findmnt.stdout
+        or 'noswap' not in _wc_findmnt.stdout
+
+    - name: Create keystore and password directories in the tmpfs
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0700"
+      loop:
+        - "{{ warrant_canary_tmpfs_dir }}/keystores"
+        - "{{ warrant_canary_tmpfs_dir }}/pw"
+
+    - name: Create the Foundry keystore mountpoint
+      ansible.builtin.file:
+        path: "{{ warrant_canary_keystore_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Bind-mount the tmpfs keystores onto the Foundry keystore directory
+      become: true
+      ansible.posix.mount:
+        path: "{{ warrant_canary_keystore_dir }}"
+        src: "{{ warrant_canary_tmpfs_dir }}/keystores"
+        fstype: none
+        opts: bind
+        state: ephemeral
+
+    - name: Write keystores
+      ansible.builtin.copy:
+        content: "{{ _raw if _raw is string else (_raw | to_json) }}"
+        dest: "{{ warrant_canary_tmpfs_dir }}/keystores/warrant-canary-{{ item }}"
+        mode: "0600"
+      vars:
+        _raw: "{{ lookup('ansible.builtin.vars', 'warrant_canary_keystore_' ~ item) }}"
+      loop: "{{ warrant_canary_keystore_roles }}"
+      no_log: true
+
+    - name: Write password files for the password roles only
+      ansible.builtin.copy:
+        content: "{{ lookup('ansible.builtin.vars', 'warrant_canary_keystore_password_' ~ item) }}"
+        dest: "{{ warrant_canary_tmpfs_dir }}/pw/{{ item }}"
+        mode: "0600"
+      loop: "{{ warrant_canary_password_roles }}"
+      no_log: true
+
+  rescue:
+    - name: Remove the tmpfs after a staging failure
+      ansible.builtin.include_tasks: unstage_cleanup.yml
+
+    - name: Fail the staging
+      ansible.builtin.fail:
+        msg: >-
+          Staging failed and the tmpfs was removed:
+          {{ ansible_failed_task.name | default('') }}:
+          {{ ansible_failed_result.msg | default('see the task output') }}

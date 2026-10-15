@@ -1,0 +1,36 @@
+---
+# Decision 11: settle_window must be digits only and satisfy
+# max(7200, 1800 + 4 * prove_seconds) <= settle_window <= 86400,
+# with prove_seconds (rounded up) from the green rehearsal.
+- name: Refuse a settle_window that is not a plain string of digits
+  ansible.builtin.assert:
+    that:
+      - (warrant_canary_settle_window | string) is regex('\A' ~ '[0-9]+' ~ '\Z')
+    fail_msg: "REFUSED: settle_window must be a string of digits (seconds); nothing was staged."
+    quiet: true
+
+- name: Compute the settle window bounds
+  ansible.builtin.set_fact:
+    _wc_settle_window: "{{ warrant_canary_settle_window | string | int }}"
+    _wc_settle_lower: >-
+      {{ [warrant_canary_settle_min | int,
+          warrant_canary_accept_window | int + warrant_canary_settle_factor | int * _wc_green.prove_seconds | int] | max }}
+
+- name: Refuse when the rehearsal is too slow for the upper bound
+  ansible.builtin.assert:
+    that: _wc_settle_lower | int <= warrant_canary_settle_max | int
+    fail_msg: >-
+      REFUSED: rehearsal too slow for the upper bound: 1800 + 4 * {{ _wc_green.prove_seconds }}
+      = {{ _wc_settle_lower }} exceeds {{ warrant_canary_settle_max }}; every settle_window is refused.
+    quiet: true
+
+- name: Refuse a settle_window outside the bounds
+  ansible.builtin.assert:
+    that:
+      - _wc_settle_window | int >= _wc_settle_lower | int
+      - _wc_settle_window | int <= warrant_canary_settle_max | int
+    fail_msg: >-
+      REFUSED: settle_window {{ _wc_settle_window }} is outside
+      [{{ _wc_settle_lower }}, {{ warrant_canary_settle_max }}]
+      (max(7200, 1800 + 4 * prove_seconds {{ _wc_green.prove_seconds }}) .. 86400); nothing was staged.
+    quiet: true

@@ -1,0 +1,135 @@
+---
+# Runs as root. Docker inside the container, the `op` user, the fakes, the
+# fixture repository, a health stub and a throwaway Caddy running the new
+# vaultwarden Caddyfile.j2 (Decision 20).
+- name: Prepare
+  hosts: all
+  gather_facts: false
+  vars:
+    ansible_user: root
+    fixtures: "{{ playbook_dir }}/fixtures"
+  tasks:
+    - name: Packages
+      ansible.builtin.apt:
+        name: [docker.io, sudo, curl, git, time, procps, util-linux, iproute2, python3, ca-certificates]
+        state: present
+        update_cache: true
+
+    - name: Start dockerd (no systemd in the container)
+      ansible.builtin.shell: |
+        if ! docker info >/dev/null 2>&1; then
+          nohup dockerd > /var/log/dockerd.log 2>&1 &
+          for i in $(seq 1 60); do docker info >/dev/null 2>&1 && exit 0; sleep 1; done
+          cat /var/log/dockerd.log; exit 1
+        fi
+      changed_when: false
+
+    - name: Operator user (docker group, passwordless sudo)
+      ansible.builtin.user:
+        name: op
+        shell: /bin/bash
+        home: /home/op
+        create_home: true
+        groups: [docker]
+        append: true
+
+    - name: Passwordless sudo for op
+      ansible.builtin.copy:
+        content: "op ALL=(ALL) NOPASSWD:ALL\n"
+        dest: /etc/sudoers.d/op
+        mode: "0440"
+        validate: visudo -cf %s
+
+    - name: Fake helpers library
+      ansible.builtin.copy:
+        src: "{{ fixtures }}/bin/fakelib.py"
+        dest: /usr/local/lib/wc-fake/
+        mode: "0644"
+
+    - name: Fakes on PATH
+      ansible.builtin.copy:
+        src: "{{ fixtures }}/bin/{{ item }}"
+        dest: /usr/local/bin/{{ item }}
+        mode: "0755"
+      loop: [cast, forge, anvil, warrant-host, warrant-solver]
+
+    - name: Control and log files writable by op
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: "{{ item.state }}"
+        owner: op
+        group: op
+        mode: "0777"
+      loop:
+        - { path: /tmp/wc-fake, state: directory }
+        - { path: /tmp/wc-calls.log, state: touch }
+
+    - name: Fixture repository sources
+      ansible.builtin.copy:
+        src: "{{ fixtures }}/repo/"
+        dest: /opt/wc-fixture/policy-execution/
+        mode: preserve
+
+    - name: Commit the fixture repository
+      ansible.builtin.shell: |
+        set -e
+        cd /opt/wc-fixture/policy-execution
+        if [ ! -d .git ]; then
+          git init -q -b main
+          git -c user.name=fixture -c user.email=fixture@example.invalid add -A
+          git -c user.name=fixture -c user.email=fixture@example.invalid commit -qm fixture
+        fi
+        git rev-parse HEAD > /opt/wc-fixture/commit
+        chown -R op:op /opt/wc-fixture
+      changed_when: false
+
+    - name: Install the health stub
+      ansible.builtin.copy:
+        src: "{{ fixtures }}/health-stub.py"
+        dest: /usr/local/bin/wc-health-stub
+        mode: "0755"
+
+    - name: Start the health stub
+      ansible.builtin.shell: |
+        curl -s -o /dev/null http://127.0.0.1:18080/ && exit 0
+        nohup python3 /usr/local/bin/wc-health-stub >/dev/null 2>&1 < /dev/null &
+        for i in $(seq 1 20); do curl -s -o /dev/null http://127.0.0.1:18080/ && exit 0; sleep 0.5; done
+        exit 1
+      changed_when: false
+
+    - name: Vaultwarden Caddy layout (rendered from the real template)
+      ansible.builtin.file:
+        path: /opt/vaultwarden/caddy_conf_d
+        state: directory
+        mode: "0755"
+
+    - name: Render the vaultwarden Caddyfile.j2 (Decision 20)
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../../vaultwarden/templates/Caddyfile.j2"
+        dest: /opt/vaultwarden/Caddyfile
+        mode: "0644"
+      vars:
+        vaultwarden_caddy_log_level: INFO
+        vaultwarden_tailnet_domain: vault.test.ts
+
+    - name: Old-shape Caddyfile for the negative preflight case
+      ansible.builtin.copy:
+        src: "{{ fixtures }}/Caddyfile.pre-d20"
+        dest: /opt/vaultwarden/Caddyfile.pre-d20
+        mode: "0644"
+
+    - name: Pull caddy:2.9.1
+      ansible.builtin.command: docker pull caddy:2.9.1
+      changed_when: false
+
+    - name: Throwaway Caddy containers (new template and old shape)
+      ansible.builtin.shell: |
+        docker rm -f {{ item.name }} >/dev/null 2>&1 || true
+        docker run -d --name {{ item.name }} \
+          -v {{ item.caddyfile }}:/etc/caddy/Caddyfile:ro \
+          -v /opt/vaultwarden/caddy_conf_d:/etc/caddy/conf.d:ro \
+          caddy:2.9.1
+      loop:
+        - { name: wc-test-caddy, caddyfile: /opt/vaultwarden/Caddyfile }
+        - { name: wc-test-caddy-old, caddyfile: /opt/vaultwarden/Caddyfile.pre-d20 }
+      changed_when: false

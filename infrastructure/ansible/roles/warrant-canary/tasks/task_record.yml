@@ -1,0 +1,25 @@
+---
+# Read TaskEscrow and JournalVerifier addresses from task-escrow.json.
+# Sets _wc_task_record_found (all checks true) and the two addresses.
+- name: Look for task-escrow.json
+  ansible.builtin.stat:
+    path: "{{ warrant_canary_deploy_dir }}/task-escrow.json"
+  register: _wc_task_record_stat
+
+- name: Read task-escrow.json
+  ansible.builtin.slurp:
+    src: "{{ warrant_canary_deploy_dir }}/task-escrow.json"
+  register: _wc_task_record_raw
+  when: _wc_task_record_stat.stat.exists
+
+- name: Task set addresses
+  ansible.builtin.set_fact:
+    _wc_task_record_found: "{{ _wc_checks | length > 0 and _wc_flags | select('equalto', true) | list | length == _wc_flags | length }}"
+    _wc_task_escrow: "{{ _wc_checks.escrow | default(_wc_task_escrow) }}"
+    _wc_task_verifier: "{{ _wc_checks.verifier | default(_wc_task_verifier) }}"
+  vars:
+    _wc_checks: "{{ (_wc_task_record_raw.content | b64decode | from_json).checks | default({}) if _wc_task_record_stat.stat.exists else {} }}"
+    _wc_flags: >-
+      {{ [_wc_checks.escrow_has_code | default(false), _wc_checks.verifier_has_code | default(false),
+          _wc_checks.token_ok | default(false), _wc_checks.image_id_ok | default(false),
+          _wc_checks.verifier_ok | default(false), _wc_checks.total_reserved_zero | default(false)] }}

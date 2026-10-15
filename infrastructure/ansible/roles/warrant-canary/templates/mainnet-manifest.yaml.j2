@@ -1,0 +1,23 @@
+# Managed by Ansible (warrant-canary role, deploy-seller). VM only; excluded
+# from git through .git/info/exclude. Addresses from task-escrow.json.
+chain_id: {{ warrant_canary_chain_id }}
+rpc_url: '{{ _wc_rpc }}'
+escrow_address: '{{ _wc_task_escrow }}'
+verifier_address: '{{ _wc_task_verifier }}'
+token_address: '{{ warrant_canary_usdc }}'
+seller_address: '{{ _wc_seller_address }}'
+category: 42
+max_budget_usd: 1.00
+duration_hours: 1
+validity_seconds: 900
+vendor_validity_days: 365
+
+public_files:
+  public_keys: showcases/ionet_arc/config/mainnet-public_keys.yaml
+  vendor_credential: showcases/ionet_arc/config/mainnet-vendor_credential.yaml
+  vendor_signature: showcases/ionet_arc/config/mainnet-vendor_signature.yaml
+
+private_key_files:
+  registry_key: {{ warrant_canary_registry_key_rel }}
+  buyer_acceptance_key: {{ warrant_canary_acceptance_key_rel }}
+  seller_key: /run/secrets/seller.key

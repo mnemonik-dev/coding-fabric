@@ -1,0 +1,41 @@
+---
+# configure in render_only: every template into a temp dir with the same
+# modes. No install, clone, build or assert. The temp dir holds secret values,
+# so it is removed at the end unless the test-only keep flag is set.
+- name: Create the render directory
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: warrant-canary-render.
+  register: _wc_render_tmp
+  changed_when: false
+
+- name: Remember the render directory
+  ansible.builtin.set_fact:
+    _wc_render_dir: "{{ _wc_render_tmp.path }}"
+
+- name: Render and clean up
+  block:
+    - name: Render the environment file
+      ansible.builtin.template:
+        src: env.j2
+        dest: "{{ _wc_render_dir }}/env"
+        mode: "0644"
+      changed_when: false
+
+    - name: Render the seller secrets
+      ansible.builtin.include_tasks: seller_secrets.yml
+      vars:
+        _wc_secrets_target: "{{ _wc_render_dir }}/secrets"
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: "render_only: rendered into {{ _wc_render_dir }}; nothing installed, cloned or built."
+
+  always:
+    - name: Remove the render directory (holds secret values)
+      become: true
+      ansible.builtin.file:
+        path: "{{ _wc_render_dir }}"
+        state: absent
+      when: not (warrant_canary_test_keep_render_dir | bool)
+      changed_when: false

@@ -1,0 +1,12 @@
+---
+# Assert nothing was staged since _stage_before was recorded.
+- name: Read the staging state
+  ansible.builtin.include_tasks: "{{ t }}/stage_state.yml"
+
+- name: "Never staged: {{ label }}"
+  ansible.builtin.assert:
+    that:
+      - _stage.lines | int == _stage_before.lines | int
+      - not (_stage.tmpfs | bool)
+    fail_msg: "{{ label }}: stage.log grew ({{ _stage_before.lines }} -> {{ _stage.lines }}) or /run/warrant-canary exists"
+    quiet: true

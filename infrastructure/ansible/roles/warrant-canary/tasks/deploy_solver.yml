@@ -1,0 +1,145 @@
+---
+# Action deploy-solver (How it works step 4; order per D4). Every refusal
+# below happens before any key is staged and before any transaction.
+- name: Require max_cost
+  ansible.builtin.include_tasks: max_cost.yml
+
+- name: Green-rehearsal gate
+  ansible.builtin.include_tasks: rehearsal_gate.yml
+
+- name: Validate settle_window
+  ansible.builtin.include_tasks: settle_window.yml
+
+- name: Make sure the mainnet run parent exists
+  ansible.builtin.file:
+    path: "{{ warrant_canary_canary_dir }}/mainnet"
+    state: directory
+    mode: "0755"
+
+- name: Refuse when a deployed run exists (unless run_dir names it for a retry)
+  ansible.builtin.command:
+    argv: [python3, "{{ _wc_bin }}/mainnet-runs.py", escrow-check, "{{ warrant_canary_canary_dir }}/mainnet", "{{ warrant_canary_run_dir }}"]
+  register: _wc_escrow_check
+  changed_when: false
+  failed_when: false
+
+- name: Report the escrow refusal
+  ansible.builtin.fail:
+    msg: "{{ _wc_escrow_check.stderr | trim }}"
+  when: _wc_escrow_check.rc != 0
+
+- name: Refuse while keys are staged
+  ansible.builtin.include_tasks: not_staged.yml
+
+- name: Probe the chain before deployment (check-arc-solver.py before)
+  ansible.builtin.command:
+    argv:
+      - python3
+      - scripts/check-arc-solver.py
+      - before
+      - "{{ _wc_green.run }}/evm.json"
+      - --image-id
+      - "{{ _wc_expected_image_id | trim }}"
+      - --out
+      - "{{ _wc_records_dir }}/arc-before.json"
+    chdir: "{{ warrant_canary_src_dir }}"
+  environment: "{{ _wc_env }}"
+  changed_when: false
+
+- name: Name the run directory
+  ansible.builtin.command:
+    argv: >-
+      {{ ['python3', _wc_bin ~ '/fresh-dir.py', 'name', warrant_canary_canary_dir ~ '/mainnet']
+         + ([] if _wc_broadcast | bool else ['--suffix', '-simulate']) }}
+  register: _wc_run_name
+  changed_when: false
+
+- name: Run facts
+  ansible.builtin.set_fact:
+    _wc_run: "{{ _wc_run_name.stdout | trim }}"
+    _wc_retry_of: "{{ (_wc_escrow_check.stdout | from_json).retry_of }}"
+    _wc_send: >-
+      {{ ['--execute', '--confirm-chain', warrant_canary_chain_id | string, '--confirm-amount', warrant_canary_amount | string]
+         if _wc_broadcast | bool else [] }}
+    warrant_canary_keystore_roles: [deployer, buyer, seller, relayer]
+    warrant_canary_password_roles: [deployer]
+
+- name: Deploy the solver set with keys staged
+  block:
+    - name: Stage all four keystores and the deployer password
+      ansible.builtin.include_tasks: stage.yml
+
+    - name: solver-canary.py init
+      ansible.builtin.command:
+        argv: >-
+          {{ ['python3', 'scripts/solver-canary.py', 'init', '--dir', _wc_run,
+              '--chain-id', warrant_canary_chain_id | string, '--token', warrant_canary_usdc,
+              '--amount', warrant_canary_amount | string, '--max-cost', warrant_canary_max_cost | string,
+              '--instance', warrant_canary_instance_rel,
+              '--accept-window', warrant_canary_accept_window | string,
+              '--settle-window', _wc_settle_window | string]
+             + _wc_account_args }}
+        chdir: "{{ warrant_canary_src_dir }}"
+      environment: "{{ _wc_env }}"
+
+    - name: Copy the before report into the run directory
+      ansible.builtin.copy:
+        src: "{{ _wc_records_dir }}/arc-before.json"
+        dest: "{{ _wc_run }}/arc-before.json"
+        remote_src: true
+        mode: "0644"
+
+    - name: solver-canary.py check
+      ansible.builtin.command:
+        argv: [python3, scripts/solver-canary.py, check, --dir, "{{ _wc_run }}"]
+        chdir: "{{ warrant_canary_src_dir }}"
+      environment: "{{ _wc_env }}"
+
+    - name: "solver-canary.py deploy ({{ 'broadcast' if _wc_broadcast | bool else 'simulate' }})"
+      ansible.builtin.command:
+        argv: "{{ ['python3', 'scripts/solver-canary.py', 'deploy', '--dir', _wc_run] + _wc_send }}"
+        chdir: "{{ warrant_canary_src_dir }}"
+      environment: "{{ _wc_env | combine({'ETH_PASSWORD': warrant_canary_tmpfs_dir ~ '/pw/deployer'}) }}"
+
+    - name: Probe the deployed contracts (check-arc-solver.py after)
+      ansible.builtin.command:
+        argv: [python3, scripts/check-arc-solver.py, after, "{{ _wc_run }}/state.json", --out, "{{ _wc_run }}/arc-after.json"]
+        chdir: "{{ warrant_canary_src_dir }}"
+      environment: "{{ _wc_env }}"
+      when: _wc_broadcast | bool
+
+    - name: Mark the retried run abandoned
+      ansible.builtin.copy:
+        content: |
+          abandoned_at: {{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}
+          replaced_by: {{ _wc_run | basename }}
+        dest: "{{ warrant_canary_canary_dir }}/mainnet/{{ _wc_retry_of }}/abandoned"
+        mode: "0644"
+      when: _wc_broadcast | bool and _wc_retry_of not in [none, '', 'None']
+
+    - name: Fetch the run records
+      ansible.builtin.include_tasks: fetch_outputs.yml
+      vars:
+        _wc_fetch_list:
+          - "{{ _wc_run }}/state.json"
+          - "{{ _wc_run }}/deployment.json"
+          - "{{ _wc_run }}/arc-before.json"
+          - "{{ _wc_run }}/arc-after.json"
+
+  always:
+    - name: Unstage (unconditional)
+      ansible.builtin.include_tasks: unstage_cleanup.yml
+
+    - name: Delete the -simulate run directory
+      ansible.builtin.file:
+        path: "{{ _wc_run }}"
+        state: absent
+      when: not (_wc_broadcast | bool) and _wc_run.endswith('-simulate')
+
+- name: Report
+  ansible.builtin.debug:
+    msg: >-
+      {{ ('Deployed the solver set in ' ~ _wc_run)
+         if _wc_broadcast | bool else
+         ('simulate: deploy-solver dry run only (deploy_contracts and execute not both true); '
+          ~ _wc_run ~ ' was deleted') }}

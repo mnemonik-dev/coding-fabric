@@ -1,0 +1,5 @@
+---
+- name: Reset fake control files, chain state and the call log
+  ansible.builtin.shell: |
+    rm -rf /tmp/wc-fake/* && : > /tmp/wc-calls.log
+  changed_when: false

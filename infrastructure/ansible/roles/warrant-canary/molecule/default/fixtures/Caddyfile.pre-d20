@@ -1,0 +1,16 @@
+# Shape of the vaultwarden Caddyfile before Decision 20 (test fixture):
+# no global admin option and a 127.0.0.1:2019 metrics site block.
+{
+  storage file_system /data/caddy
+}
+
+vault.test.ts:8443 {
+  tls internal
+  respond "ok"
+}
+
+127.0.0.1:2019 {
+  metrics
+}
+
+import /etc/caddy/conf.d/*.conf

@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+"""Fake warrant-host (molecule only)."""
+import sys
+
+sys.path.insert(0, "/usr/local/lib/wc-fake")
+from fakelib import ctl, log  # noqa: E402
+
+log("warrant-host", sys.argv[1:])
+if sys.argv[1:2] == ["solver-image-id"]:
+    print(ctl("image-id", "0x" + "ab" * 32))

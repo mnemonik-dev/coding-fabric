@@ -1,0 +1,15 @@
+---
+galaxy_info:
+  author: "Mnemonic Protocol"
+  description: "Warrant canary on Arc mainnet: preflight, configure, rehearse, key staging and the three deployment actions on mnemonic-fabric"
+  company: "Mnemonic Protocol"
+  license: "MIT"
+  min_ansible_version: "2.15"
+  tags:
+    - warrant
+    - canary
+    - caddy
+    - docker
+
+dependencies: []
+# Driven only by playbooks/warrant-canary.yml (one action per run).

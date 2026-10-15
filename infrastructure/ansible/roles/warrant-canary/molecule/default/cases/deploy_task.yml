@@ -1,0 +1,124 @@
+---
+# --- deploy_task_checks_object ---
+- name: Reset the fakes
+  ansible.builtin.include_tasks: "{{ t }}/reset_fakes.yml"
+
+- name: "deploy_task_checks_object: broadcast"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: deploy_task_checks_object broadcast
+    expect: pass
+    warrant_canary_action: deploy-task
+    warrant_canary_deploy_contracts: true
+    warrant_canary_execute: true
+
+- name: Read the record and the forge call
+  ansible.builtin.shell: |
+    cat /opt/warrant-canary/deploy/task-escrow.json
+    echo ---
+    grep '^forge script ' /tmp/wc-calls.log
+  register: _task
+  changed_when: false
+
+- name: "deploy_task_checks_object: checks object with code hashes, all flags true; forge broadcast with --rpc-url"
+  ansible.builtin.assert:
+    that:
+      - _checks.escrow_code_hash is regex('^0x[0-9a-f]{64}$')
+      - _checks.verifier_code_hash is regex('^0x[0-9a-f]{64}$')
+      - _checks.token_ok is sameas true
+      - _checks.image_id_ok is sameas true
+      - _checks.verifier_ok is sameas true
+      - _checks.total_reserved_zero is sameas true
+      - "'--broadcast --slow' in _forge"
+      - "'--rpc-url ' ~ wc_rpc_default in _forge"
+      - "'--account warrant-canary-deployer' in _forge"
+      - "'ETH_PASSWORD=/run/warrant-canary/pw/deployer' in _forge"
+    fail_msg: "{{ _task.stdout }}"
+    quiet: true
+  vars:
+    _checks: "{{ (_task.stdout.split('---')[0] | from_json).checks }}"
+    _forge: "{{ _task.stdout.split('---')[1] }}"
+
+- name: Remove the record; fake token() returns another address
+  ansible.builtin.shell: |
+    rm -f /opt/warrant-canary/deploy/task-escrow.json
+    printf '0x%s' "$(printf 'bb%.0s' $(seq 1 20))" > /tmp/wc-fake/token
+  changed_when: false
+
+- name: "deploy_task_checks_object: token mismatch fails after the record is written"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: deploy_task_checks_object token mismatch
+    expect: fail
+    expect_msg: token_ok
+    warrant_canary_action: deploy-task
+    warrant_canary_deploy_contracts: true
+    warrant_canary_execute: true
+
+- name: Read the failed record
+  ansible.builtin.command: cat /opt/warrant-canary/deploy/task-escrow.json
+  register: _task_bad
+  changed_when: false
+
+- name: "deploy_task_checks_object: token_ok false recorded"
+  ansible.builtin.assert:
+    that: (_task_bad.stdout | from_json).checks.token_ok is sameas false
+    quiet: true
+
+- name: Remove the record and the token override; clear the call log
+  ansible.builtin.shell: |
+    rm -f /opt/warrant-canary/deploy/task-escrow.json /tmp/wc-fake/token && rm -rf /opt/warrant-canary/src/contracts/broadcast && : > /tmp/wc-calls.log
+  changed_when: false
+
+- name: "deploy_task_checks_object: simulate"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: deploy_task_checks_object simulate
+    expect: pass
+    warrant_canary_action: deploy-task
+
+- name: Simulate left no broadcast and no record
+  ansible.builtin.shell: |
+    grep '^forge script ' /tmp/wc-calls.log
+    echo ---
+    test -e /opt/warrant-canary/deploy/task-escrow.json && echo record || echo no-record
+  register: _task_sim
+  changed_when: false
+
+- name: "deploy_task_checks_object: no --broadcast and no record without the switches"
+  ansible.builtin.assert:
+    that:
+      - "'--broadcast' not in _task_sim.stdout.split('---')[0]"
+      - _task_sim.stdout.split('---')[1] | trim == 'no-record'
+    quiet: true
+
+# --- output_dir_fetch ---
+- name: "output_dir_fetch: deploy-task broadcast with an output dir"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: output_dir_fetch
+    expect: pass
+    warrant_canary_action: deploy-task
+    warrant_canary_deploy_contracts: true
+    warrant_canary_execute: true
+    warrant_canary_output_dir: "{{ _out_root.path }}/fetch"
+
+- name: List the fetched files
+  delegate_to: localhost
+  ansible.builtin.find:
+    paths: "{{ _out_root.path }}/fetch"
+    recurse: true
+    file_type: any
+  register: _fetched
+
+- name: "output_dir_fetch: the record and the health files, nothing from secrets/ or the tmpfs"
+  ansible.builtin.assert:
+    that:
+      - _fetched.files | map(attribute='path') | map('basename') | sort == ['health-after.json', 'health-before.json', 'task-escrow.json']
+    fail_msg: "{{ _fetched.files | map(attribute='path') | list }}"
+    quiet: true
+
+- name: Remove the record
+  ansible.builtin.file:
+    path: /opt/warrant-canary/deploy/task-escrow.json
+    state: absent

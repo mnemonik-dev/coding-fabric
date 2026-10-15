@@ -1,0 +1,177 @@
+---
+# --- rehearse_requires_max_cost ---
+- name: Staging state before rehearse_requires_max_cost
+  ansible.builtin.include_tasks: "{{ t }}/stage_state.yml"
+
+- name: Remember it
+  ansible.builtin.set_fact:
+    _stage_before: "{{ _stage }}"
+
+- name: "rehearse_requires_max_cost"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: rehearse_requires_max_cost
+    expect: fail
+    expect_msg: warrant_canary_max_cost must be a positive integer
+    warrant_canary_action: rehearse
+    warrant_canary_max_cost: ""
+
+- name: "rehearse_requires_max_cost: never staged"
+  ansible.builtin.include_tasks: "{{ t }}/never_staged.yml"
+  vars:
+    label: rehearse_requires_max_cost
+
+# --- rehearse_runs_explicit_chain ---
+- name: Reset the fakes
+  ansible.builtin.include_tasks: "{{ t }}/reset_fakes.yml"
+
+- name: "rehearse_runs_explicit_chain: rehearse"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: rehearse_runs_explicit_chain
+    expect: pass
+    warrant_canary_action: rehearse
+    warrant_canary_output_dir: "{{ _out_root.path }}/rehearse"
+
+- name: Read the call log
+  ansible.builtin.include_tasks: "{{ t }}/calls.yml"
+
+- name: Chain facts
+  ansible.builtin.set_fact:
+    _first: "{{ _wc_rehearsal_result.run }}"
+    _token: "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+    _inits: "{{ _calls | select('match', '^canary init ') | list }}"
+    _canary_lines: "{{ _calls | select('match', '^(canary|probe) ') | list }}"
+    _after: "{{ _calls | select('match', '^probe after ') | first }}"
+    _before: "{{ _calls | select('match', '^probe before ') | first }}"
+    _refund: "{{ _calls | select('match', '^canary refund ') | first }}"
+
+- name: Refund and retry directories
+  ansible.builtin.set_fact:
+    _refund_run: "{{ _inits[1] | regex_search('--dir (\\S+)', '\\1') | first }}"
+    _third_run: "{{ _inits[2] | regex_search('--dir (\\S+)', '\\1') | first }}"
+
+- name: "rehearse_runs_explicit_chain: order (D7, D19)"
+  ansible.builtin.assert:
+    that:
+      - >-
+        _steps == ['init', 'check', 'deploy', 'after', 'quote', 'offer', 'accept', 'deliver', 'prove',
+                   'before', 'settle', 'evidence',
+                   'init', 'quote', 'offer', 'accept', 'refund',
+                   'init', 'quote']
+    fail_msg: "{{ _steps }}"
+    quiet: true
+
+- name: "rehearse_runs_explicit_chain: init flags"
+  ansible.builtin.assert:
+    that:
+      - _inits | length == 3
+      - _inits | select('search', '--max-cost 1000 ') | list | length == 3
+      - _inits | select('search', '--chain-id 31337 ') | list | length == 3
+      - _inits | select('search', '--token ' ~ _token ~ ' ') | list | length == 3
+      - _inits | select('search', '--instance solver-bounty/instance-ionet.json ') | list | length == 3
+      - _inits | select('search', '0x3600000000000000000000000000000000000000') | list | length == 0
+      - _inits | select('search', '--deployer account:warrant-canary-deployer --buyer account:warrant-canary-buyer --seller account:warrant-canary-seller --relayer account:warrant-canary-relayer') | list | length == 3
+      - "'--reuse-deployment' not in _inits[0]"
+      - ('--reuse-deployment ' ~ _first ~ ' ') in _inits[1]
+      - ('--reuse-deployment ' ~ _refund_run ~ ' ') in _inits[2]
+    fail_msg: "{{ _inits }}"
+    quiet: true
+
+- name: "rehearse_runs_explicit_chain: probes, refund, RPC and passwords"
+  ansible.builtin.assert:
+    that:
+      - _after is search('^probe after ' ~ _first ~ '/state.json ')
+      - _after is search('--allow-chain 31337')
+      - _after is search('--out ' ~ _first ~ '/arc-after.json')
+      - _before is search('--allow-chain 31337')
+      - _before is search('--token ' ~ _token)
+      - _before is search('--out ' ~ _first ~ '/arc-before.json')
+      - _refund is search('--dir ' ~ _refund_run ~ ' ')
+      - _refund is search('--execute --confirm-chain 31337 --confirm-amount 2000000')
+      - _canary_lines | reject('search', 'RPC=' ~ wc_anvil_url ~ ' ') | list | length == 0
+      - _calls | select('match', '^canary deploy ') | first is search('ETH_PASSWORD=/run/warrant-canary/pw/deployer$')
+      - _calls | select('match', '^canary offer ') | first is search('ETH_PASSWORD=/run/warrant-canary/pw/buyer$')
+      - _calls | select('match', '^canary accept ') | first is search('ETH_PASSWORD=/run/warrant-canary/pw/seller$')
+      - _calls | select('match', '^canary settle ') | first is search('ETH_PASSWORD=/run/warrant-canary/pw/relayer$')
+    fail_msg: "{{ _canary_lines }}"
+    quiet: true
+
+- name: Gate log of the refund run
+  ansible.builtin.command: cat {{ _refund_run }}/state-gate.log
+  register: _refund_gate
+  changed_when: false
+
+- name: "rehearse_runs_explicit_chain: the gate rejected Accepted and accepted Refunded on the Anvil run"
+  ansible.builtin.assert:
+    that:
+      - _refund_gate.stdout | regex_findall('state=([0-9]) \((\w+)\) verdict=(\w+)') | map('list') | list == [['2', 'Accepted', 'refuse'], ['4', 'Refunded', 'pass']]
+      - ('rpc=' ~ wc_anvil_url) in _refund_gate.stdout
+    fail_msg: "{{ _refund_gate.stdout }}"
+    quiet: true
+
+# --- rehearse_writes_records ---
+- name: Read the rehearsal records
+  ansible.builtin.shell: |
+    cat {{ _first }}/rehearsal.json
+    echo ---
+    grep -c -x 'realProof: true' {{ _first }}/rehearsal.md
+    grep -c '{{ warrant_canary_expected_image_id }}' {{ _first }}/rehearsal.md
+    test -s {{ _first }}/prove.time && echo prove.time
+    test -e {{ _first }}/wrap-stats.log && echo wrap-stats.log
+  register: _records
+  changed_when: false
+
+- name: "rehearse_writes_records"
+  ansible.builtin.assert:
+    that:
+      - _rec.keys() | list | sort == ['build_seconds', 'commit', 'image_id', 'instance_hash', 'prove_seconds', 'real_proof', 'refund_ok']
+      - _rec.real_proof is sameas true
+      - _rec.refund_ok is sameas true
+      - _rec.commit == warrant_canary_src_commit
+      - _rec.instance_hash == _instance_hash
+      - _rest == ['1', '1', 'prove.time', 'wrap-stats.log']
+      - lookup('ansible.builtin.file', _out_root.path ~ '/rehearse/rehearsal.json') | from_json == _rec
+    fail_msg: "{{ _records.stdout }}"
+    quiet: true
+  vars:
+    _rec: "{{ _records.stdout.split('---')[0] | from_json }}"
+    _rest: "{{ _records.stdout.split('---')[1].split() }}"
+
+# --- rehearse_cleanup_on_failure ---
+- name: Count rehearsal records before
+  ansible.builtin.shell: ls {{ wc_canary }}/local/*/rehearsal.json | wc -l
+  register: _rec_count_before
+  changed_when: false
+
+- name: Force the stub prove to fail
+  ansible.builtin.file:
+    path: /tmp/wc-fake/fail-prove
+    state: touch
+    mode: "0666"
+
+- name: "rehearse_cleanup_on_failure"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: rehearse_cleanup_on_failure
+    expect: fail
+    warrant_canary_action: rehearse
+
+- name: State after the failed rehearsal
+  ansible.builtin.shell: |
+    test -e /run/warrant-canary && echo tmpfs-present || echo tmpfs-absent
+    pgrep -f '[a]nvil --host' >/dev/null && echo anvil-running || echo anvil-stopped
+    ls {{ wc_canary }}/local/*/rehearsal.json | wc -l
+  register: _after_fail
+  changed_when: false
+
+- name: "rehearse_cleanup_on_failure: no tmpfs, no Anvil, no new rehearsal.json"
+  ansible.builtin.assert:
+    that: _after_fail.stdout.split() == ['tmpfs-absent', 'anvil-stopped', _rec_count_before.stdout | trim]
+    fail_msg: "{{ _after_fail.stdout }}"
+    quiet: true
+
+- name: Clear the forced failure
+  ansible.builtin.file:
+    path: /tmp/wc-fake/fail-prove
+    state: absent

@@ -1,0 +1,83 @@
+---
+# TDD Anchor cases (task 7). Each case runs the role through tasks/run.yml
+# (block/rescue) and asserts the outcome and its side effects.
+- name: Verify
+  hosts: all
+  gather_facts: false
+  vars_files:
+    - fixtures/stub-secrets.yml
+    - vars.yml
+  vars:
+    run: "{{ playbook_dir }}/tasks/run.yml"
+    t: "{{ playbook_dir }}/tasks"
+  pre_tasks:
+    - name: Read the fixture commit
+      ansible.builtin.slurp:
+        src: /opt/wc-fixture/commit
+      register: _fixture_commit
+
+    - name: Pin the fixture commit
+      ansible.builtin.set_fact:
+        warrant_canary_src_commit: "{{ _fixture_commit.content | b64decode | trim }}"
+
+    - name: Start from a clean state (reruns of molecule verify)
+      become: true
+      ansible.builtin.shell: |
+        umount /home/op/.foundry/keystores 2>/dev/null || true
+        umount /run/warrant-canary 2>/dev/null || true
+        rm -rf /run/warrant-canary {{ wc_canary }}/local {{ wc_canary }}/mainnet \
+          /opt/warrant-canary/deploy/task-escrow.json /opt/warrant-canary/stopped-services.json \
+          /opt/warrant-canary/src/contracts/broadcast /tmp/warrant-canary-*render.* /tmp/wc-fake/*
+        : > /tmp/wc-calls.log
+      changed_when: false
+
+    - name: Secret pattern file (D12), 0600
+      ansible.builtin.copy:
+        src: fixtures/secret-patterns.txt
+        dest: "{{ wc_patterns }}"
+        mode: "0600"
+
+    - name: Hash the fixture instance
+      ansible.builtin.command:
+        argv: [warrant-solver, instance-hash, solver-bounty/instance-ionet.json]
+        chdir: /opt/warrant-canary/src
+      register: _instance_hash_out
+      changed_when: false
+
+    - name: Remember the instance hash
+      ansible.builtin.set_fact:
+        _instance_hash: "{{ _instance_hash_out.stdout | trim }}"
+
+    - name: Controller temp dir for fetched records
+      delegate_to: localhost
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: wc-molecule-out.
+      register: _out_root
+
+  tasks:
+    - name: Inputs and overrides
+      ansible.builtin.include_tasks: cases/inputs.yml
+    - name: Key staging
+      ansible.builtin.include_tasks: cases/staging.yml
+    - name: configure
+      ansible.builtin.include_tasks: cases/configure.yml
+    - name: Health rule
+      ansible.builtin.include_tasks: cases/health.yml
+    - name: Gates without a rehearsal
+      ansible.builtin.include_tasks: cases/gates.yml
+    - name: rehearse
+      ansible.builtin.include_tasks: cases/rehearse.yml
+    - name: deploy-solver
+      ansible.builtin.include_tasks: cases/deploy_solver.yml
+    - name: deploy-task
+      ansible.builtin.include_tasks: cases/deploy_task.yml
+    - name: Caddy, preflight and deploy-seller
+      ansible.builtin.include_tasks: cases/caddy.yml
+
+  post_tasks:
+    - name: Remove the controller temp dir
+      delegate_to: localhost
+      ansible.builtin.file:
+        path: "{{ _out_root.path }}"
+        state: absent

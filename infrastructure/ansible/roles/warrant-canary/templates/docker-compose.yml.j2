@@ -1,0 +1,31 @@
+# Managed by Ansible (warrant-canary role, deploy-seller). Decision 14 hardening.
+services:
+  seller:
+    image: {{ _wc_seller_image }}
+    container_name: {{ warrant_canary_seller_container }}
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: {{ warrant_canary_seller_mem_limit }}
+    cpus: {{ warrant_canary_seller_cpus }}
+    pids_limit: {{ warrant_canary_seller_pids_limit }}
+    tmpfs:
+      - /tmp
+    env_file:
+      - {{ warrant_canary_secrets_dir }}/seller.env
+    volumes:
+      - {{ warrant_canary_src_dir }}/showcases/ionet_arc/config:{{ warrant_canary_seller_app_dir }}/showcases/ionet_arc/config:ro
+      - {{ warrant_canary_state_dir }}:{{ warrant_canary_seller_state_mount }}
+      - {{ warrant_canary_secrets_dir }}/seller.key:/run/secrets/seller.key:ro
+    expose:
+      - "{{ warrant_canary_seller_port }}"
+    networks:
+      {{ warrant_canary_seller_network }}:
+        aliases:
+          - warrant-seller
+
+networks:
+  {{ warrant_canary_seller_network }}:
+    external: true

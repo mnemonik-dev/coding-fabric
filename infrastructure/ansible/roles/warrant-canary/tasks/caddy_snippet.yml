@@ -1,0 +1,85 @@
+---
+# Decision 10 / 20: validate the snippet against a temp copy of the live config
+# inside the Caddy container, install only on success, reload through the
+# admin endpoint on 127.0.0.1:2020; restart only if the reload fails.
+- name: Render the snippet into the deploy directory
+  ansible.builtin.template:
+    src: Caddyfile.snippet.j2
+    dest: "{{ warrant_canary_deploy_dir }}/warrant-seller.conf"
+    mode: "0644"
+
+- name: Validate the snippet inside the Caddy container
+  become: true
+  block:
+    - name: Copy the live config into a temp dir inside the container
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ _wc_caddy_container }}"
+          - sh
+          - -c
+          - >-
+            rm -rf /tmp/wc-validate && mkdir -p /tmp/wc-validate/conf.d &&
+            cp /etc/caddy/Caddyfile /tmp/wc-validate/Caddyfile &&
+            for f in /etc/caddy/conf.d/*.conf; do [ -e "$f" ] && cp "$f" /tmp/wc-validate/conf.d/; done;
+            sed -i 's#/etc/caddy/conf.d/#/tmp/wc-validate/conf.d/#' /tmp/wc-validate/Caddyfile
+      changed_when: false
+
+    - name: Add the new snippet to the temp copy
+      ansible.builtin.command:
+        argv: [docker, cp, "{{ warrant_canary_deploy_dir }}/warrant-seller.conf", "{{ _wc_caddy_container }}:/tmp/wc-validate/conf.d/warrant-seller.conf"]
+      changed_when: false
+
+    - name: caddy validate the temp copy
+      ansible.builtin.command:
+        argv: [docker, exec, "{{ _wc_caddy_container }}", caddy, validate, --config, /tmp/wc-validate/Caddyfile, --adapter, caddyfile]
+      changed_when: false
+
+  rescue:
+    - name: Remove the rendered snippet; Caddy stays untouched
+      ansible.builtin.file:
+        path: "{{ warrant_canary_deploy_dir }}/warrant-seller.conf"
+        state: absent
+
+    - name: Fail on validation
+      ansible.builtin.fail:
+        msg: "Caddy snippet validation failed; the snippet was not installed and Caddy was not touched."
+
+  always:
+    - name: Remove the temp copy inside the container
+      ansible.builtin.command:
+        argv: [docker, exec, "{{ _wc_caddy_container }}", rm, -rf, /tmp/wc-validate]
+      changed_when: false
+      failed_when: false
+
+- name: Install the snippet into the shared conf.d
+  become: true
+  ansible.builtin.copy:
+    src: "{{ warrant_canary_deploy_dir }}/warrant-seller.conf"
+    dest: "{{ warrant_canary_caddy_conf_d }}/warrant-seller.conf"
+    remote_src: true
+    owner: "{{ warrant_canary_user }}"
+    group: "{{ warrant_canary_user }}"
+    mode: "0644"
+  register: _wc_snippet_install
+
+- name: Reload Caddy through the admin endpoint (no restart)
+  become: true
+  ansible.builtin.command:
+    argv: [docker, exec, "{{ _wc_caddy_container }}", caddy, reload, --config, /etc/caddy/Caddyfile, --address, "{{ warrant_canary_caddy_admin }}"]
+  register: _wc_caddy_reload
+  failed_when: false
+  when: _wc_snippet_install is changed
+
+- name: Fall back to a Caddy restart (announced)
+  when: _wc_snippet_install is changed and _wc_caddy_reload.rc != 0
+  block:
+    - name: ANNOUNCE - caddy reload failed, restarting {{ _wc_caddy_container }}
+      ansible.builtin.debug:
+        msg: "CADDY RESTART: caddy reload --address {{ warrant_canary_caddy_admin }} failed ({{ _wc_caddy_reload.stderr | default('') | trim | truncate(300) }}); restarting {{ _wc_caddy_container }}."
+
+    - name: Restart Caddy
+      become: true
+      ansible.builtin.command:
+        argv: [docker, restart, "{{ _wc_caddy_container }}"]

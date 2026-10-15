@@ -1,0 +1,8 @@
+---
+# Non-secret value for the warrant-canary role (lead decision D1).
+#
+# warrant_canary_max_cost: the checker cost ceiling in instance units that
+# `solver-canary.py init --max-cost` receives. Task 9 sets it from
+# solver-bounty/instance-ionet.md in policy-execution (Task 4 provenance).
+# Empty until then: `rehearse` and `deploy-solver` refuse an empty value.
+warrant_canary_max_cost: ""

@@ -1,0 +1,28 @@
+#!/usr/bin/env python3
+"""Fake forge (molecule only)."""
+import json
+import os
+import sys
+
+sys.path.insert(0, "/usr/local/lib/wc-fake")
+from fakelib import ctl, fail_if, log  # noqa: E402
+
+argv = sys.argv[1:]
+log("forge", argv)
+fail_if("forge")
+TOKEN = "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+if argv and argv[0] == "create":
+    print(json.dumps({"deployer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266", "deployedTo": TOKEN,
+                      "transactionHash": "0x" + "ab" * 32}))
+elif argv and argv[0] == "script":
+    if "--broadcast" in argv:
+        chain = ctl("forge-chain", "5042")
+        out = os.path.join("broadcast", "DeployMock.s.sol", chain)
+        os.makedirs(out, exist_ok=True)
+        with open(os.path.join(out, "run-latest.json"), "w") as fh:
+            json.dump({"chain": int(chain), "transactions": [
+                {"transactionType": "CREATE", "contractName": "JournalVerifier",
+                 "contractAddress": "0x" + "c1" * 20, "hash": "0x" + "01" * 32},
+                {"transactionType": "CREATE", "contractName": "TaskEscrow",
+                 "contractAddress": "0x" + "e5" * 20, "hash": "0x" + "02" * 32}]}, fh)
+    print("Script ran successfully.")

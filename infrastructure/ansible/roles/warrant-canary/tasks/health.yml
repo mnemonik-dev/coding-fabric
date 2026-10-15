@@ -1,0 +1,18 @@
+---
+# Write health-<phase>.json into the records directory (D15 schema).
+# The probe runs on the VM; services stopped by the operator are copied from
+# stopped-services.json into the `stopped` field (D16).
+- name: "Health snapshot ({{ _wc_health_phase }})"
+  ansible.builtin.script:
+    cmd: >-
+      health.py snapshot
+      --targets {{ _wc_targets | to_json | quote }}
+      --stopped-file {{ warrant_canary_stopped_services_file | quote }}
+      --out {{ (_wc_records_dir ~ '/health-' ~ _wc_health_phase ~ '.json') | quote }}
+    executable: python3
+  vars:
+    _wc_targets: >-
+      {{ _wc_health_targets | combine(warrant_canary_test_health_targets_after)
+         if _wc_health_phase == 'after' else _wc_health_targets }}
+  register: _wc_health_out
+  changed_when: false

@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+"""Fake cast (molecule only). Answers from /tmp/wc-fake control files."""
+import hashlib
+import sys
+
+sys.path.insert(0, "/usr/local/lib/wc-fake")
+from fakelib import addr_key, chain_get, chain_set, ctl, fail_if, log  # noqa: E402
+
+USDC = "0x3600000000000000000000000000000000000000"
+argv = sys.argv[1:]
+log("cast", argv)
+fail_if("cast")
+args = [a for i, a in enumerate(argv) if a != "--rpc-url" and (i == 0 or argv[i - 1] != "--rpc-url")]
+cmd = args[0] if args else ""
+if cmd == "call":
+    sig = args[2]
+    if sig.startswith("tasks(bytes32)"):
+        state = ctl("cast-state") or chain_get("task-" + args[3], "0")
+        print("0x" + "11" * 20)
+        print("0x" + "22" * 20)
+        print("0x" + "33" * 32)
+        for _ in range(4):
+            print("0")
+        print(state)
+    elif sig.startswith("balanceOf"):
+        print(chain_get("balance-" + addr_key(args[3]), "0"))
+    elif sig.startswith("token()"):
+        print(ctl("token", USDC))
+    elif sig.startswith("imageId()"):
+        print(ctl("imageId", "0x" + "0" * 63 + "1"))
+    elif sig.startswith("verifier()"):
+        print(ctl("verifier", "0x" + "c1" * 20))
+    elif sig.startswith("totalReserved()"):
+        print(ctl("totalReserved", "0"))
+    else:
+        print("0")
+elif cmd == "code":
+    print(ctl("code", "0x6080604052"))
+elif cmd == "keccak":
+    print("0x" + hashlib.sha256(args[1].encode()).hexdigest())
+elif cmd == "send" and len(args) >= 5 and args[2].startswith("mint("):
+    key = "balance-" + addr_key(args[3])
+    chain_set(key, int(chain_get(key, "0")) + int(args[4]))
+    print('{"status": "0x1"}')
+elif cmd == "rpc":
+    print("null")

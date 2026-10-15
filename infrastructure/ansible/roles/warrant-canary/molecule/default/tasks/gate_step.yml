@@ -1,0 +1,31 @@
+---
+- name: Is the tmpfs staged?
+  ansible.builtin.stat:
+    path: /run/warrant-canary
+  register: _gate_tmpfs
+
+- name: "Stage buyer for gate state {{ gate.state }}"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: "stage before gate {{ gate.state }}"
+    expect: pass
+    warrant_canary_action: stage-keys
+    warrant_canary_roles: [buyer]
+  when: not _gate_tmpfs.stat.exists
+
+- name: "Fake cast reports state {{ gate.state }}"
+  ansible.builtin.copy:
+    content: "{{ gate.state }}"
+    dest: /tmp/wc-fake/cast-state
+    mode: "0666"
+
+- name: "unstage-keys with state {{ gate.state }}"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: "unstage_keys_state_gate state {{ gate.state }}"
+    expect: "{{ gate.expect }}"
+    warrant_canary_action: unstage-keys
+
+- name: "tmpfs after state {{ gate.state }}"
+  ansible.builtin.command: "test {{ '-e' if gate.tmpfs_after else '! -e' }} /run/warrant-canary"
+  changed_when: false

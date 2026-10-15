@@ -1,0 +1,91 @@
+---
+# deploy-seller in render_only: render manifest, compose file and snippet into
+# a temp dir and validate the snippet with the live config in a throwaway
+# caddy container. Starts nothing, installs nothing, restarts nothing.
+- name: Create the render directory
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: warrant-canary-seller-render.
+  register: _wc_render_tmp
+  changed_when: false
+
+- name: Remember the render directory
+  ansible.builtin.set_fact:
+    _wc_render_dir: "{{ _wc_render_tmp.path }}"
+
+- name: Render, validate and clean up
+  block:
+    - name: Caddy config directories in the render dir
+      ansible.builtin.file:
+        path: "{{ _wc_render_dir }}/caddy/conf.d"
+        state: directory
+        mode: "0755"
+
+    - name: Render manifest and compose file
+      ansible.builtin.template:
+        src: "{{ item.src }}"
+        dest: "{{ _wc_render_dir }}/{{ item.dest }}"
+        mode: "0644"
+      loop:
+        - { src: mainnet-manifest.yaml.j2, dest: mainnet-manifest.yaml }
+        - { src: docker-compose.yml.j2, dest: docker-compose.yml }
+      changed_when: false
+
+    - name: Copy the live Caddyfile and conf.d snippets (read-only on the host)
+      become: true
+      ansible.builtin.shell: >-
+        cp {{ warrant_canary_caddy_live_caddyfile | quote }} {{ (_wc_render_dir ~ '/caddy/Caddyfile') | quote }} &&
+        for f in {{ warrant_canary_caddy_conf_d | quote }}/*.conf; do
+        [ -e "$f" ] && cp "$f" {{ (_wc_render_dir ~ '/caddy/conf.d/') | quote }}; done;
+        chown -R {{ warrant_canary_user }}: {{ (_wc_render_dir ~ '/caddy') | quote }}
+      changed_when: false
+
+    - name: Render the snippet next to the live snippets
+      ansible.builtin.template:
+        src: Caddyfile.snippet.j2
+        dest: "{{ _wc_render_dir }}/caddy/conf.d/warrant-seller.conf"
+        mode: "0644"
+      changed_when: false
+
+    - name: caddy validate in a throwaway {{ warrant_canary_caddy_validator_image }}
+      ansible.builtin.command:
+        argv:
+          - docker
+          - run
+          - --rm
+          - -v
+          - "{{ _wc_render_dir }}/caddy:/etc/caddy:ro"
+          - "{{ warrant_canary_caddy_validator_image }}"
+          - caddy
+          - validate
+          - --config
+          - /etc/caddy/Caddyfile
+          - --adapter
+          - caddyfile
+      register: _wc_render_validate
+      changed_when: false
+      failed_when: false
+
+    - name: Remove the snippet that failed validation
+      ansible.builtin.file:
+        path: "{{ _wc_render_dir }}/caddy/conf.d/warrant-seller.conf"
+        state: absent
+      when: _wc_render_validate.rc != 0
+      changed_when: false
+
+    - name: Fail on validation
+      ansible.builtin.fail:
+        msg: "render_only: caddy validate failed; the snippet was removed. {{ _wc_render_validate.stderr | trim | truncate(500) }}"
+      when: _wc_render_validate.rc != 0
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: "render_only: rendered into {{ _wc_render_dir }}; caddy validate passed; nothing started."
+
+  always:
+    - name: Remove the render directory
+      ansible.builtin.file:
+        path: "{{ _wc_render_dir }}"
+        state: absent
+      when: not (warrant_canary_test_keep_render_dir | bool)
+      changed_when: false

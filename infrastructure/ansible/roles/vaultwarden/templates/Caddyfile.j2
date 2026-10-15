@@ -1,4 +1,8 @@
 {
+  # Admin API and /metrics on 127.0.0.1:2020 (warrant canary Decision 20);
+  # `caddy reload --address 127.0.0.1:2020` applies conf.d without a restart.
+  admin 127.0.0.1:2020
+  metrics
   log {
     level {{ vaultwarden_caddy_log_level }}
   }
@@ -47,10 +51,6 @@
     output stdout
     format console
   }
-}
-
-127.0.0.1:2019 {
-  metrics
 }
 
 # Optional: snippets injected by other roles (kaneo, future apps).

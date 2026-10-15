@@ -1,0 +1,19 @@
+# Managed by Ansible (warrant-canary role, deploy-seller).
+# Public ingress for the seller MCP. TLS only; basic auth is enforced by the
+# application (Decision 7).
+{% if warrant_canary_test_broken_snippet | bool %}
+{{ warrant_canary_seller_domain }} {
+  this_is_not_a_caddy_directive on
+}
+{% else %}
+{{ warrant_canary_seller_domain }} {
+  encode gzip
+  reverse_proxy http://warrant-seller:{{ warrant_canary_seller_port }} {
+    header_up X-Real-IP {remote_host}
+  }
+
+  header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+  header X-Content-Type-Options "nosniff"
+  header Referrer-Policy "same-origin"
+}
+{% endif %}

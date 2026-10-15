@@ -1,0 +1,27 @@
+---
+# Run the role once with the caller's vars and assert the outcome.
+# Inputs: label, expect (pass|fail), optional expect_msg (substring of the
+# failure message). Sets _outcome and _outcome_msg.
+- name: "Run the role: {{ label }}"
+  block:
+    - name: "include_role warrant-canary ({{ label }})"
+      ansible.builtin.include_role:
+        name: warrant-canary
+
+    - name: Record pass
+      ansible.builtin.set_fact:
+        _outcome: pass
+        _outcome_msg: ""
+  rescue:
+    - name: Record failure
+      ansible.builtin.set_fact:
+        _outcome: fail
+        _outcome_msg: "{{ ansible_failed_result.msg | default(ansible_failed_result.stderr | default('')) | string }}"
+
+- name: "Assert outcome: {{ label }}"
+  ansible.builtin.assert:
+    that:
+      - _outcome == expect
+      - expect_msg | default('') | length == 0 or expect_msg in _outcome_msg
+    fail_msg: "{{ label }}: expected {{ expect }}{{ (' with ' ~ expect_msg) if expect_msg | default('') else '' }}, got {{ _outcome }}: {{ _outcome_msg | truncate(600) }}"
+    quiet: true

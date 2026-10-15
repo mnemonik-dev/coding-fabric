@@ -1,0 +1,201 @@
+---
+# Entry point: validate inputs, record health, run one action, record health
+# again, apply the health rule and fetch the records (README "Actions").
+
+- name: Refuse an unknown action
+  ansible.builtin.assert:
+    that:
+      - warrant_canary_action is string
+      - warrant_canary_action in _wc_action_files
+    fail_msg: >-
+      warrant_canary_action must be one of {{ _wc_action_files | list | join(', ') }}
+      (got {{ warrant_canary_action | string | truncate(64) }}).
+    quiet: true
+  vars:
+    _wc_action_files: &action_files
+      preflight: preflight.yml
+      configure: configure.yml
+      rehearse: rehearse.yml
+      stage-keys: stage_keys.yml
+      unstage-keys: unstage_keys.yml
+      deploy-solver: deploy_solver.yml
+      deploy-task: deploy_task.yml
+      deploy-seller: deploy_seller.yml
+
+- name: Validate input types (D1)
+  ansible.builtin.assert:
+    that:
+      - warrant_canary_roles is sequence
+      - warrant_canary_roles is not string
+      - warrant_canary_roles is not mapping
+      - warrant_canary_roles | select('string') | list | length == warrant_canary_roles | length
+      - warrant_canary_roles | difference(['buyer', 'seller', 'relayer', 'deployer']) | length == 0
+      - warrant_canary_run_dir is string
+      - warrant_canary_run_dir | length == 0 or warrant_canary_run_dir is regex('\A' ~ 'mainnet/[0-9]{8}T[0-9]{6}Z' ~ '\Z')
+      - warrant_canary_force_unstage_reason is string
+      - warrant_canary_expected_image_id_override is string
+      - warrant_canary_rpc_override is string
+      - warrant_canary_output_dir is string
+    fail_msg: >-
+      Invalid input: warrant_canary_roles must be a list drawn from buyer, seller,
+      relayer, deployer (never a comma string), and warrant_canary_run_dir must be
+      empty or mainnet/<YYYYMMDDTHHMMSSZ> (no -simulate, no absolute path, no ..).
+    quiet: true
+
+- name: Refuse negative-dispatch overrides together with execute
+  ansible.builtin.assert:
+    that:
+      - >-
+        not (warrant_canary_execute | bool)
+        or (warrant_canary_expected_image_id_override | length == 0
+            and warrant_canary_rpc_override | length == 0)
+    fail_msg: >-
+      warrant_canary_expected_image_id_override and warrant_canary_rpc_override exist
+      only for negative dispatches and are refused together with warrant_canary_execute.
+    quiet: true
+
+- name: Derive run facts
+  ansible.builtin.set_fact:
+    _wc_broadcast: "{{ (warrant_canary_deploy_contracts | bool) and (warrant_canary_execute | bool) }}"
+    _wc_rpc: "{{ warrant_canary_rpc_override if warrant_canary_rpc_override | length > 0 else warrant_canary_rpc }}"
+    _wc_expected_image_id: >-
+      {{ warrant_canary_expected_image_id_override
+         if warrant_canary_expected_image_id_override | length > 0
+         else warrant_canary_expected_image_id }}
+    _wc_caddy_container: >-
+      {{ warrant_canary_test_caddy_container
+         if warrant_canary_test_caddy_container | length > 0
+         else warrant_canary_caddy_container }}
+    _wc_health_targets: >-
+      {{ warrant_canary_test_health_targets
+         if warrant_canary_test_health_targets | length > 0
+         else warrant_canary_health_targets }}
+    _wc_bin: "{{ warrant_canary_bin_dir }}"
+    _wc_records_dir: ""
+    _wc_render_dir: ""
+    _wc_fetch_list: []
+    _wc_all_roles: [deployer, buyer, seller, relayer]
+    _wc_account_args:
+      - --deployer
+      - account:warrant-canary-deployer
+      - --buyer
+      - account:warrant-canary-buyer
+      - --seller
+      - account:warrant-canary-seller
+      - --relayer
+      - account:warrant-canary-relayer
+
+- name: Derive the script environment (also written to the env file)
+  ansible.builtin.set_fact:
+    _wc_env:
+      RISC0_USE_DOCKER: "1"
+      RISC0_DOCKER_CONTAINER_TAG: "{{ warrant_canary_builder_tag }}"
+      WARRANT_CANARY_RPC: "{{ _wc_rpc }}"
+      RAYON_NUM_THREADS: "{{ warrant_canary_rayon_threads | string }}"
+      PATH: >-
+        {{ [warrant_canary_venv_dir ~ '/bin',
+            warrant_canary_home ~ '/.cargo/bin',
+            warrant_canary_home ~ '/.risc0/bin',
+            warrant_canary_home ~ '/.foundry/bin',
+            warrant_canary_src_dir ~ '/target/release',
+            warrant_canary_src_dir ~ '/target/debug',
+            '/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin'] | join(':') }}
+
+- name: Records directory for preflight (temporary; preflight changes nothing on the host)
+  when: warrant_canary_action == 'preflight'
+  block:
+    - name: Create a temporary records directory
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: warrant-canary-preflight.
+      register: _wc_preflight_tmp
+      changed_when: false
+
+    - name: Use it for this action
+      ansible.builtin.set_fact:
+        _wc_records_dir: "{{ _wc_preflight_tmp.path }}"
+
+- name: Working tree, helpers and records directory
+  when: warrant_canary_action != 'preflight'
+  block:
+    - name: Create the /opt/warrant-canary tree (root-only setup, D1 clarification)
+      become: true
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner }}"
+        group: "{{ item.group }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: "{{ warrant_canary_base_dir }}", owner: "{{ warrant_canary_user }}", group: "{{ warrant_canary_user }}", mode: "0755" }
+        - { path: "{{ warrant_canary_secrets_dir }}", owner: root, group: root, mode: "0711" }
+        - { path: "{{ warrant_canary_state_dir }}", owner: "{{ warrant_canary_seller_uid }}", group: "{{ warrant_canary_seller_uid }}", mode: "0700" }
+        - { path: "{{ warrant_canary_deploy_dir }}", owner: "{{ warrant_canary_user }}", group: "{{ warrant_canary_user }}", mode: "0750" }
+        - { path: "{{ warrant_canary_runs_dir }}", owner: "{{ warrant_canary_user }}", group: "{{ warrant_canary_user }}", mode: "0750" }
+        - { path: "{{ warrant_canary_bin_dir }}", owner: "{{ warrant_canary_user }}", group: "{{ warrant_canary_user }}", mode: "0755" }
+        - { path: "{{ warrant_canary_base_dir }}/stamps", owner: "{{ warrant_canary_user }}", group: "{{ warrant_canary_user }}", mode: "0755" }
+
+    - name: Install helper scripts
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: "{{ warrant_canary_bin_dir }}/{{ item }}"
+        mode: "0755"
+      loop:
+        - fresh-dir.py
+        - health.py
+        - stop-rule.py
+        - state-gate.py
+        - mainnet-runs.py
+        - rehearsal-gate.py
+        - task-escrow-checks.py
+        - rehearse.py
+        - wrap-sampler.sh
+        - handshake.py
+
+    - name: Create the records directory for this action
+      ansible.builtin.command:
+        argv: [python3, "{{ _wc_bin }}/fresh-dir.py", create, "{{ warrant_canary_runs_dir }}", "{{ warrant_canary_action }}"]
+      register: _wc_records_mk
+      changed_when: false
+
+    - name: Use it for this action
+      ansible.builtin.set_fact:
+        _wc_records_dir: "{{ _wc_records_mk.stdout | trim }}"
+
+- name: Run the action between two health records
+  block:
+    - name: Health before
+      ansible.builtin.include_tasks: health.yml
+      vars:
+        _wc_health_phase: before
+
+    - name: "Action {{ warrant_canary_action }}"
+      ansible.builtin.include_tasks: "{{ _wc_action_file }}"
+      vars:
+        _wc_action_file: "{{ _wc_files[warrant_canary_action] }}"
+        _wc_files: *action_files
+
+  always:
+    - name: Health after
+      ansible.builtin.include_tasks: health.yml
+      vars:
+        _wc_health_phase: after
+      when: warrant_canary_action != 'preflight'
+
+    - name: Fetch the health records
+      ansible.builtin.include_tasks: fetch_outputs.yml
+      vars:
+        _wc_fetch_list:
+          - "{{ _wc_records_dir }}/health-before.json"
+          - "{{ _wc_records_dir }}/health-after.json"
+
+    - name: Remove the preflight temporary records directory
+      ansible.builtin.file:
+        path: "{{ _wc_records_dir }}"
+        state: absent
+      when: warrant_canary_action == 'preflight'
+      changed_when: false
+
+- name: Apply the health rule (D5, D16)
+  ansible.builtin.include_tasks: health_rule.yml
+  when: warrant_canary_action != 'preflight'

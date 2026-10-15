@@ -1,0 +1,12 @@
+#!/usr/bin/env python3
+"""Fake warrant-solver (molecule only): instance-hash is sha256 of the file."""
+import hashlib
+import sys
+
+sys.path.insert(0, "/usr/local/lib/wc-fake")
+from fakelib import log  # noqa: E402
+
+log("warrant-solver", sys.argv[1:])
+if sys.argv[1:2] == ["instance-hash"]:
+    with open(sys.argv[2], "rb") as fh:
+        print("0x" + hashlib.sha256(fh.read()).hexdigest())

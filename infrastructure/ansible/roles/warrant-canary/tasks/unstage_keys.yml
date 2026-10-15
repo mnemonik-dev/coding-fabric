@@ -1,0 +1,59 @@
+---
+# Action unstage-keys (How it works step 3). Unmounts only when the active
+# mainnet order is Paid or Refunded, or with force_unstage plus a reason.
+- name: Refuse force_unstage without a reason
+  ansible.builtin.assert:
+    that: warrant_canary_force_unstage_reason | trim | length > 0
+    fail_msg: "force_unstage needs a non-empty force_unstage_reason."
+    quiet: true
+  when: warrant_canary_force_unstage | bool
+
+- name: Find the active mainnet run
+  ansible.builtin.command:
+    argv: [python3, "{{ _wc_bin }}/mainnet-runs.py", active, "{{ warrant_canary_canary_dir }}/mainnet"]
+  register: _wc_active
+  changed_when: false
+  failed_when: false
+
+- name: Chain-state gate
+  when: not (warrant_canary_force_unstage | bool)
+  block:
+    - name: Refuse without an active run
+      ansible.builtin.assert:
+        that: _wc_active.rc == 0
+        fail_msg: >-
+          No active mainnet run (state.json with escrow and quote.task) to check;
+          refusing to unstage. Use force_unstage with a reason for an abandoned run.
+        quiet: true
+
+    - name: Read the order state of the active run (Paid or Refunded passes)
+      ansible.builtin.command:
+        argv: [python3, "{{ _wc_bin }}/state-gate.py", "{{ _wc_active.stdout | trim }}", "{{ _wc_rpc }}"]
+      environment: "{{ _wc_env }}"
+      register: _wc_gate
+      changed_when: false
+
+- name: Record the forced unstage
+  when: warrant_canary_force_unstage | bool
+  block:
+    - name: Write force-unstage.txt
+      ansible.builtin.copy:
+        content: |
+          forced_at: {{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}
+          run: {{ _wc_active.stdout | trim if _wc_active.rc == 0 else 'none (no active run)' }}
+          reason: {{ warrant_canary_force_unstage_reason | trim }}
+        dest: "{{ (_wc_active.stdout | trim if _wc_active.rc == 0 else _wc_records_dir) ~ '/force-unstage.txt' }}"
+        mode: "0644"
+
+    - name: Report the forced unstage
+      ansible.builtin.debug:
+        msg: "FORCED UNSTAGE (state gate overridden). Reason: {{ warrant_canary_force_unstage_reason | trim }}"
+
+    - name: Fetch force-unstage.txt with the records
+      ansible.builtin.include_tasks: fetch_outputs.yml
+      vars:
+        _wc_fetch_list:
+          - "{{ (_wc_active.stdout | trim if _wc_active.rc == 0 else _wc_records_dir) ~ '/force-unstage.txt' }}"
+
+- name: Unmount and remove the tmpfs
+  ansible.builtin.include_tasks: unstage_cleanup.yml

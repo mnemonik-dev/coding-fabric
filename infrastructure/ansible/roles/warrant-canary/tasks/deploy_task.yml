@@ -1,0 +1,82 @@
+---
+# Action deploy-task (How it works step 6): TaskEscrow and JournalVerifier
+# for the seller service, after the proven deal.
+- name: Green-rehearsal gate
+  ansible.builtin.include_tasks: rehearsal_gate.yml
+
+- name: Look for an existing task-escrow record
+  ansible.builtin.stat:
+    path: "{{ warrant_canary_deploy_dir }}/task-escrow.json"
+  register: _wc_task_record
+
+- name: Refuse when task-escrow.json exists
+  ansible.builtin.assert:
+    that: not _wc_task_record.stat.exists
+    fail_msg: "REFUSED: {{ warrant_canary_deploy_dir }}/task-escrow.json exists; the task set is already deployed."
+    quiet: true
+
+- name: Staging lists for deploy-task
+  ansible.builtin.set_fact:
+    warrant_canary_keystore_roles: [deployer]
+    warrant_canary_password_roles: [deployer]
+
+- name: Refuse while keys are staged
+  ansible.builtin.include_tasks: not_staged.yml
+
+- name: Deploy the task set with the deployer key staged
+  block:
+    - name: Stage the deployer keystore and password
+      ansible.builtin.include_tasks: stage.yml
+
+    - name: "forge script DeployMock ({{ 'broadcast' if _wc_broadcast | bool else 'simulate' }})"
+      ansible.builtin.shell: >-
+        forge script script/DeployMock.s.sol:DeployMock
+        --account warrant-canary-deployer
+        --sender {{ warrant_canary_address_deployer | quote }}
+        --rpc-url "$WARRANT_CANARY_RPC"
+        {{ '--broadcast --slow' if _wc_broadcast | bool else '' }}
+      args:
+        chdir: "{{ warrant_canary_src_dir }}/contracts"
+      environment: >-
+        {{ _wc_env | combine({'WARRANT_TOKEN': warrant_canary_usdc,
+                              'ETH_PASSWORD': warrant_canary_tmpfs_dir ~ '/pw/deployer'}) }}
+
+    - name: Record and check the broadcast
+      when: _wc_broadcast | bool
+      block:
+        - name: Copy run-latest.json to task-escrow.json
+          ansible.builtin.copy:
+            src: "{{ warrant_canary_src_dir }}/contracts/broadcast/DeployMock.s.sol/{{ warrant_canary_chain_id }}/run-latest.json"
+            dest: "{{ warrant_canary_deploy_dir }}/task-escrow.json"
+            remote_src: true
+            mode: "0644"
+
+        - name: Check the deployment with cast and write the checks object
+          ansible.builtin.command:
+            argv: [python3, "{{ _wc_bin }}/task-escrow-checks.py", "{{ warrant_canary_deploy_dir }}/task-escrow.json", "{{ warrant_canary_usdc }}"]
+          environment: "{{ _wc_env }}"
+          register: _wc_task_checks
+          changed_when: true
+          failed_when: false
+
+        - name: Fetch task-escrow.json
+          ansible.builtin.include_tasks: fetch_outputs.yml
+          vars:
+            _wc_fetch_list:
+              - "{{ warrant_canary_deploy_dir }}/task-escrow.json"
+
+        - name: Fail on a false check (the record is already written)
+          ansible.builtin.fail:
+            msg: "{{ _wc_task_checks.stderr | trim }}"
+          when: _wc_task_checks.rc != 0
+
+  always:
+    - name: Unstage (unconditional)
+      ansible.builtin.include_tasks: unstage_cleanup.yml
+
+- name: Report
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'Deployed the task set; record ' ~ warrant_canary_deploy_dir ~ '/task-escrow.json'
+         if _wc_broadcast | bool else
+         'simulate: forge script ran without --broadcast (deploy_contracts and execute not both true); no record written' }}

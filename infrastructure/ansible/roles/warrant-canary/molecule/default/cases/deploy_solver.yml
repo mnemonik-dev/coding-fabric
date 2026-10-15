@@ -1,0 +1,216 @@
+---
+# A green rehearsal exists from cases/rehearse.yml (fake prove: a few seconds).
+- name: Staging state before the settle_window cases
+  ansible.builtin.include_tasks: "{{ t }}/stage_state.yml"
+
+- name: Remember it
+  ansible.builtin.set_fact:
+    _stage_before: "{{ _stage }}"
+
+# --- deploy_solver_settle_window_validation ---
+- name: "deploy_solver_settle_window_validation: not a string of digits"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: "deploy_solver_settle_window_validation {{ item | to_json }}"
+    expect: fail
+    expect_msg: settle_window must be a string of digits
+    warrant_canary_action: deploy-solver
+    warrant_canary_settle_window: "{{ item }}"
+  loop: ["", "7200;id", "abc", "7200\n"]
+
+- name: Seed a green rehearsal with prove_seconds 2000
+  ansible.builtin.include_tasks: "{{ t }}/seed_rehearsal.yml"
+  vars:
+    _seed: { prove_seconds: 2000 }
+
+- name: "deploy_solver_settle_window_validation: out of bounds"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: "deploy_solver_settle_window_validation {{ item }}"
+    expect: fail
+    expect_msg: is outside
+    warrant_canary_action: deploy-solver
+    warrant_canary_settle_window: "{{ item }}"
+  loop: ["7200", "90000"]
+
+- name: "deploy_solver_settle_window_validation: refusals staged nothing"
+  ansible.builtin.include_tasks: "{{ t }}/never_staged.yml"
+  vars:
+    label: deploy_solver_settle_window_validation
+
+- name: "deploy_solver_settle_window_validation: 9800 accepted (simulate)"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: deploy_solver_settle_window_validation 9800
+    expect: pass
+    warrant_canary_action: deploy-solver
+    warrant_canary_settle_window: "9800"
+
+- name: Remove the seeded rehearsal
+  ansible.builtin.file:
+    path: "{{ wc_canary }}/local/29991231T235959Z"
+    state: absent
+
+# --- deploy_solver_before_runs_first ---
+- name: Reset the fakes
+  ansible.builtin.include_tasks: "{{ t }}/reset_fakes.yml"
+
+- name: "deploy_solver_before_runs_first: simulate run"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: deploy_solver_before_runs_first
+    expect: pass
+    warrant_canary_action: deploy-solver
+    warrant_canary_settle_window: "9800"
+
+- name: Read the call log
+  ansible.builtin.include_tasks: "{{ t }}/calls.yml"
+
+- name: "deploy_solver_before_runs_first: before ahead of init and check"
+  ansible.builtin.assert:
+    that: _steps == ['before', 'init', 'check', 'deploy']
+    fail_msg: "{{ _steps }}"
+    quiet: true
+
+- name: "deploy_solver_simulate_cleans_directory: deploy without --execute, -simulate dir gone"
+  ansible.builtin.shell: |
+    grep '^canary deploy ' /tmp/wc-calls.log
+    echo ---
+    ls -d {{ wc_canary }}/mainnet/*-simulate 2>/dev/null | wc -l
+  register: _sim
+  changed_when: false
+  failed_when: >-
+    '--execute' in _sim.stdout.split('---')[0]
+    or '-simulate' not in _sim.stdout.split('---')[0]
+    or _sim.stdout.split('---')[1] | trim != '0'
+
+- name: Reset the fakes and force check-arc-solver before to fail
+  ansible.builtin.shell: |
+    rm -rf /tmp/wc-fake/* && touch /tmp/wc-fake/fail-before && chmod 666 /tmp/wc-fake/fail-before && : > /tmp/wc-calls.log
+  changed_when: false
+
+- name: Staging state before the failed probe
+  ansible.builtin.include_tasks: "{{ t }}/stage_state.yml"
+
+- name: Remember it
+  ansible.builtin.set_fact:
+    _stage_before: "{{ _stage }}"
+
+- name: "deploy_solver_before_runs_first: a failing before refuses (testnet RPC negative)"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: deploy_solver_before_runs_first failing before
+    expect: fail
+    warrant_canary_action: deploy-solver
+    warrant_canary_settle_window: "9800"
+    warrant_canary_rpc_override: https://rpc.testnet.arc.io
+
+- name: "deploy_solver_before_runs_first: never staged"
+  ansible.builtin.include_tasks: "{{ t }}/never_staged.yml"
+  vars:
+    label: deploy_solver_before_runs_first failing before
+
+- name: Read the call log
+  ansible.builtin.include_tasks: "{{ t }}/calls.yml"
+
+- name: "deploy_solver_before_runs_first: deploy never called"
+  ansible.builtin.assert:
+    that:
+      - _steps == ['before']
+      - _calls | select('match', '^probe before ') | first is search('RPC=https://rpc.testnet.arc.io ')
+    fail_msg: "{{ _calls }}"
+    quiet: true
+
+- name: Clear the forced failure
+  ansible.builtin.file:
+    path: /tmp/wc-fake/fail-before
+    state: absent
+
+# --- deploy_solver_cleanup_on_failure ---
+- name: Force the stub init to fail
+  ansible.builtin.file:
+    path: /tmp/wc-fake/fail-init
+    state: touch
+    mode: "0666"
+
+- name: "deploy_solver_cleanup_on_failure"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: deploy_solver_cleanup_on_failure
+    expect: fail
+    warrant_canary_action: deploy-solver
+    warrant_canary_settle_window: "9800"
+
+- name: Staging happened, then the always block removed it
+  ansible.builtin.include_tasks: "{{ t }}/stage_state.yml"
+
+- name: "deploy_solver_cleanup_on_failure: staged once, tmpfs gone"
+  ansible.builtin.assert:
+    that:
+      - _stage.lines | int == _stage_before.lines | int + 1
+      - not (_stage.tmpfs | bool)
+    quiet: true
+
+- name: Clear the forced failure
+  ansible.builtin.file:
+    path: /tmp/wc-fake/fail-init
+    state: absent
+
+# --- deploy_solver_refuses_existing_escrow ---
+- name: Seeded deployed run directory
+  ansible.builtin.file:
+    path: "{{ wc_canary }}/mainnet/20261015T000003Z"
+    state: directory
+    mode: "0755"
+
+- name: Seed a deployed run (state.json holds escrow)
+  ansible.builtin.copy:
+    content: '{"escrow": "0x{{ "e5" * 20 }}"}'
+    dest: "{{ wc_canary }}/mainnet/20261015T000003Z/state.json"
+    mode: "0644"
+
+- name: "deploy_solver_refuses_existing_escrow: refused without run_dir"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: deploy_solver_refuses_existing_escrow no run_dir
+    expect: fail
+    expect_msg: a deployed run already exists
+    warrant_canary_action: deploy-solver
+    warrant_canary_settle_window: "9800"
+    warrant_canary_deploy_contracts: true
+    warrant_canary_execute: true
+
+- name: "deploy_solver_refuses_existing_escrow: retry with run_dir naming it"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: deploy_solver_refuses_existing_escrow with run_dir
+    expect: pass
+    warrant_canary_action: deploy-solver
+    warrant_canary_settle_window: "9800"
+    warrant_canary_deploy_contracts: true
+    warrant_canary_execute: true
+    warrant_canary_run_dir: mainnet/20261015T000003Z
+
+- name: Inspect the mainnet runs
+  ansible.builtin.shell: |
+    cat {{ wc_canary }}/mainnet/20261015T000003Z/abandoned
+    echo ---
+    for d in {{ wc_canary }}/mainnet/*/; do n=$(basename "$d"); [ "$n" = 20261015T000003Z ] || { echo "$n"; grep -c escrow "$d/state.json"; test -e "$d/arc-before.json" && echo before; test -e "$d/arc-after.json" && echo after; }; done
+  register: _retry
+  changed_when: false
+
+- name: "deploy_solver_refuses_existing_escrow: new directory deployed, old one marked abandoned"
+  ansible.builtin.assert:
+    that:
+      - "('replaced_by: ' ~ _new[0]) in _retry.stdout.split('---')[0]"
+      - _new | length == 4
+      - _new[0] is regex('\A' ~ '[0-9]{8}T[0-9]{6}Z' ~ '\Z')
+      - _new[1:] == ['1', 'before', 'after']
+    fail_msg: "{{ _retry.stdout }}"
+    quiet: true
+  vars:
+    _new: "{{ _retry.stdout.split('---')[1].split() }}"
+
+- name: Remove the mainnet runs
+  ansible.builtin.shell: rm -rf {{ wc_canary }}/mainnet/*
+  changed_when: false

@@ -1,0 +1,13 @@
+---
+# Sets _stage: {lines: <stage.log line count>, tmpfs: <bool>}.
+- name: Read the staging state
+  ansible.builtin.shell: |
+    printf '%s %s\n' "$(cat /opt/warrant-canary/runs/stage.log 2>/dev/null | wc -l)" "$(test -e /run/warrant-canary && echo yes || echo no)"
+  register: _stage_raw
+  changed_when: false
+
+- name: Parse the staging state
+  ansible.builtin.set_fact:
+    _stage:
+      lines: "{{ _stage_raw.stdout.split()[0] | int }}"
+      tmpfs: "{{ _stage_raw.stdout.split()[1] == 'yes' }}"

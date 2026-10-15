@@ -1,0 +1,108 @@
+---
+# Action configure (How it works step 1).
+- name: Render only
+  ansible.builtin.include_tasks: configure_render.yml
+  when: warrant_canary_render_only | bool
+
+- name: Configure the host
+  when: not (warrant_canary_render_only | bool)
+  block:
+    - name: Require the pinned commit and the expected image ID
+      ansible.builtin.assert:
+        that:
+          - warrant_canary_src_commit | length > 0
+          - _wc_expected_image_id | trim | length > 0
+        fail_msg: "configure needs warrant_canary_src_commit and warrant_canary_expected_image_id (sops)."
+        quiet: true
+
+    - name: Toolchain
+      ansible.builtin.include_tasks: toolchain.yml
+      when: not (warrant_canary_skip_toolchain | bool)
+
+    - name: Clone or update the pinned checkout (never force, never delete)
+      ansible.builtin.git:
+        repo: "{{ warrant_canary_src_repo }}"
+        dest: "{{ warrant_canary_src_dir }}"
+        version: "{{ warrant_canary_src_commit }}"
+        force: false
+        update: true
+        accept_newhostkey: false
+
+    - name: Keep run directories and mainnet config out of git status
+      ansible.builtin.lineinfile:
+        path: "{{ warrant_canary_src_dir }}/.git/info/exclude"
+        line: "{{ item }}"
+        create: true
+        mode: "0644"
+      loop:
+        - "solver-bounty/canary/*/"
+        - "showcases/ionet_arc/config/mainnet-*"
+
+    - name: Install dependencies and build
+      when: not (warrant_canary_skip_toolchain | bool)
+      block:
+        - name: npm ci in contracts/
+          ansible.builtin.command:
+            cmd: npm ci
+            chdir: "{{ warrant_canary_src_dir }}/contracts"
+            creates: "{{ warrant_canary_base_dir }}/stamps/npm-{{ warrant_canary_src_commit }}"
+          environment: "{{ _wc_env }}"
+
+        - name: Python {{ warrant_canary_python_version }} venv with the showcase requirements
+          ansible.builtin.shell: |
+            set -e
+            python{{ warrant_canary_python_version }} -m venv {{ warrant_canary_venv_dir | quote }}
+            {{ warrant_canary_venv_dir | quote }}/bin/pip install --quiet -r showcases/ionet_arc/requirements.txt
+          args:
+            chdir: "{{ warrant_canary_src_dir }}"
+            creates: "{{ warrant_canary_base_dir }}/stamps/venv-{{ warrant_canary_src_commit }}"
+
+        - name: Build warrant-host (release, guest in Docker) and warrant-solver (debug)
+          ansible.builtin.shell: |
+            set -e
+            cargo build -p warrant-host --release --locked
+            cargo build -p warrant-solver --locked
+          args:
+            chdir: "{{ warrant_canary_src_dir }}"
+            creates: "{{ warrant_canary_base_dir }}/stamps/build-{{ warrant_canary_src_commit }}"
+          environment: "{{ _wc_env | combine({'RISC0_BUILD_LOCKED': '1'}) }}"
+
+        - name: Stamp the commit's installs and builds
+          ansible.builtin.file:
+            path: "{{ warrant_canary_base_dir }}/stamps/{{ item }}-{{ warrant_canary_src_commit }}"
+            state: touch
+            mode: "0644"
+            modification_time: preserve
+            access_time: preserve
+          loop: [npm, venv, build]
+
+    - name: Read the checker image ID (warrant-host solver-image-id)
+      ansible.builtin.command:
+        argv: [warrant-host, solver-image-id]
+        chdir: "{{ warrant_canary_src_dir }}"
+      environment: "{{ _wc_env }}"
+      register: _wc_image_id
+      changed_when: false
+
+    - name: Assert the image ID before writing anything else
+      ansible.builtin.assert:
+        that:
+          - >-
+            (_wc_image_id.stdout.split() or [''])[-1] | lower | regex_replace('^0x', '')
+            == _wc_expected_image_id | trim | lower | regex_replace('^0x', '')
+        fail_msg: >-
+          Image ID mismatch: warrant-host solver-image-id printed
+          {{ (_wc_image_id.stdout.split() or [''])[-1] }}, expected {{ _wc_expected_image_id | trim }}.
+          The env file and the secrets were not written.
+        quiet: true
+
+    - name: Write the operator environment file (no secrets)
+      ansible.builtin.template:
+        src: env.j2
+        dest: "{{ warrant_canary_env_file }}"
+        mode: "0644"
+
+    - name: Render the seller secrets
+      ansible.builtin.include_tasks: seller_secrets.yml
+      vars:
+        _wc_secrets_target: "{{ warrant_canary_secrets_dir }}"

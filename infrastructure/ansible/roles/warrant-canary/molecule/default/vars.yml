@@ -1,0 +1,21 @@
+---
+# Shared molecule values (test-only).
+warrant_canary_skip_toolchain: true
+warrant_canary_src_repo: /opt/wc-fixture/policy-execution
+warrant_canary_expected_image_id: "0xabababababababababababababababababababababababababababababababab"
+warrant_canary_max_cost: "1000"
+warrant_canary_test_health_targets:
+  mcp: { url: "http://127.0.0.1:18080/mcp", container: "" }
+  kaneo: { url: "http://127.0.0.1:18080/kaneo", container: "" }
+  vaultwarden: { url: "http://127.0.0.1:18080/vaultwarden", container: "" }
+  caddy: { url: "http://127.0.0.1:18080/caddy", container: "" }
+  ollama: { url: "http://127.0.0.1:18080/ollama", container: "" }
+wc_rpc_default: https://rpc.mainnet.arc.io
+wc_anvil_url: http://127.0.0.1:8546
+wc_canary: /opt/warrant-canary/src/solver-bounty/canary
+wc_patterns: /tmp/wc-secret-patterns.txt
+# The laptop Docker VM may have less than 6 GB MemAvailable; pin passing
+# measurements so only stage_keys_stop_rule exercises the refusal. The real
+# /proc/meminfo and statvfs path is checked separately in cases/staging.yml.
+warrant_canary_test_mem_available_kb: "8388608"
+warrant_canary_test_disk_free_kb: "20971520"

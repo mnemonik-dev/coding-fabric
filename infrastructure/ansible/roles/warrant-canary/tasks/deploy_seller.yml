@@ -1,0 +1,166 @@
+---
+# Action deploy-seller (How it works step 7).
+- name: Seller facts
+  ansible.builtin.set_fact:
+    _wc_seller_image: "{{ warrant_canary_seller_image }}:{{ warrant_canary_src_commit[:12] | default('unpinned', true) }}"
+    _wc_seller_address: "0x{{ warrant_canary_address_seller | string | trim | lower | regex_replace('^0x', '') }}"
+    _wc_config_dir: "{{ warrant_canary_src_dir }}/showcases/ionet_arc/config"
+    _wc_task_escrow: "0x0000000000000000000000000000000000000000"
+    _wc_task_verifier: "0x0000000000000000000000000000000000000000"
+
+- name: Read the task set addresses
+  ansible.builtin.include_tasks: task_record.yml
+
+- name: Render only
+  ansible.builtin.include_tasks: deploy_seller_render.yml
+  when: warrant_canary_render_only | bool
+
+- name: Deploy the seller service
+  when: not (warrant_canary_render_only | bool)
+  block:
+    - name: Inspect the seller key, io.net key, basic auth and registry key (booleans only)
+      ansible.builtin.set_fact:
+        _wc_seller_secret_checks:
+          ionet_api_key_present: "{{ warrant_canary_ionet_api_key | length > 0 }}"
+          mcp_auth_user_present: "{{ warrant_canary_mcp_auth_user | length > 0 }}"
+          mcp_auth_pass_present: "{{ warrant_canary_mcp_auth_pass | length > 0 }}"
+          seller_key_hex_is_64_hex: "{{ warrant_canary_seller_key_hex | string | trim | regex_replace('^0x', '') is regex('\\A' ~ '[0-9a-fA-F]{64}' ~ '\\Z') }}"
+          registry_key_is_64_hex: "{{ warrant_canary_registry_key | string | trim | regex_replace('^0x', '') is regex('\\A' ~ '[0-9a-fA-F]{64}' ~ '\\Z') }}"
+      no_log: true
+
+    - name: Refuse without the io.net key and the seller key
+      ansible.builtin.assert:
+        that:
+          - _wc_seller_secret_checks | dict2items | rejectattr('value', 'equalto', true) | list | length == 0
+          - _wc_task_record_found | bool
+        fail_msg: >-
+          deploy-seller needs the io.net key, the seller key, MCP_AUTH_USER and MCP_AUTH_PASS
+          (the container exits otherwise), the registry key and
+          {{ warrant_canary_deploy_dir }}/task-escrow.json with all checks true. Failed:
+          {{ _wc_seller_secret_checks | dict2items | rejectattr('value', 'equalto', true) | map(attribute='key') | join(', ') }}
+        quiet: true
+
+    - name: Keys directory in the checkout (gitignored)
+      ansible.builtin.file:
+        path: "{{ warrant_canary_src_dir }}/{{ warrant_canary_registry_key_rel | dirname }}"
+        state: directory
+        mode: "0700"
+
+    - name: Write the registry key (bare 64-hex)
+      ansible.builtin.copy:
+        content: "{{ warrant_canary_registry_key | string | trim | regex_replace('^0x', '') }}"
+        dest: "{{ warrant_canary_src_dir }}/{{ warrant_canary_registry_key_rel }}"
+        mode: "0600"
+      no_log: true
+
+    - name: Render the mainnet seller manifest
+      ansible.builtin.template:
+        src: mainnet-manifest.yaml.j2
+        dest: "{{ _wc_config_dir }}/mainnet-manifest.yaml"
+        mode: "0644"
+      register: _wc_manifest
+
+    - name: Look for the published public keys
+      ansible.builtin.stat:
+        path: "{{ _wc_config_dir }}/mainnet-public_keys.yaml"
+      register: _wc_pubkeys
+
+    - name: init.py --manifest (credential and public keys)
+      ansible.builtin.command:
+        argv: [python3, showcases/ionet_arc/init.py, --manifest, showcases/ionet_arc/config/mainnet-manifest.yaml]
+        chdir: "{{ warrant_canary_src_dir }}"
+      environment: "{{ _wc_env }}"
+      when: _wc_manifest is changed or not _wc_pubkeys.stat.exists
+
+    - name: Delete the generated buyer acceptance key (Decision 15)
+      ansible.builtin.file:
+        path: "{{ warrant_canary_src_dir }}/{{ warrant_canary_acceptance_key_rel }}"
+        state: absent
+
+    - name: Strip buyer_acceptance_key from the published public keys (Decision 15)
+      ansible.builtin.lineinfile:
+        path: "{{ _wc_config_dir }}/mainnet-public_keys.yaml"
+        regexp: '^buyer_acceptance_key:'
+        state: absent
+
+    - name: Look for the seller image
+      ansible.builtin.command:
+        argv: [docker, image, inspect, "{{ _wc_seller_image }}"]
+      register: _wc_image_inspect
+      changed_when: false
+      failed_when: false
+
+    - name: Build the seller image (BIN_SOURCE=host)
+      ansible.builtin.command:
+        argv: [docker, build, --build-arg, BIN_SOURCE=host, -f, showcases/ionet_arc/Dockerfile.seller, -t, "{{ _wc_seller_image }}", .]
+        chdir: "{{ warrant_canary_src_dir }}"
+      environment:
+        DOCKER_BUILDKIT: "1"
+      when: _wc_image_inspect.rc != 0
+
+    - name: Compose directory
+      ansible.builtin.file:
+        path: "{{ warrant_canary_deploy_dir }}/seller"
+        state: directory
+        mode: "0750"
+
+    - name: Template the hardened compose file (Decision 14)
+      ansible.builtin.template:
+        src: docker-compose.yml.j2
+        dest: "{{ warrant_canary_deploy_dir }}/seller/docker-compose.yml"
+        mode: "0640"
+
+    - name: Start the seller container (reads the root-owned env_file, so become)
+      become: true
+      community.docker.docker_compose_v2:
+        project_src: "{{ warrant_canary_deploy_dir }}/seller"
+        project_name: warrant-seller
+        state: present
+        pull: never
+
+    - name: DNS precheck ({{ warrant_canary_seller_domain }} resolves to the VM)
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - "import socket,sys; print(' '.join(sorted({a[4][0] for a in socket.getaddrinfo(sys.argv[1], 443, socket.AF_INET)})))"
+          - "{{ warrant_canary_seller_domain }}"
+      register: _wc_dns
+      changed_when: false
+      failed_when: warrant_canary_vm_ip not in _wc_dns.stdout.split()
+
+    - name: Validate, install and reload the Caddy snippet
+      ansible.builtin.include_tasks: caddy_snippet.yml
+
+    - name: MCP handshake over HTTPS
+      become: true
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ _wc_bin }}/handshake.py"
+          - "https://{{ warrant_canary_seller_domain }}/mcp"
+          - "{{ warrant_canary_seller_label }}"
+          - "{{ warrant_canary_secrets_dir }}/seller.env"
+      register: _wc_handshake
+      until: _wc_handshake.rc == 0
+      retries: 12
+      delay: 10
+      changed_when: false
+
+    - name: Public manifest fields
+      ansible.builtin.copy:
+        content: >-
+          {{ {'chain_id': warrant_canary_chain_id, 'rpc_url': _wc_rpc,
+              'escrow_address': _wc_task_escrow, 'verifier_address': _wc_task_verifier,
+              'token_address': warrant_canary_usdc, 'seller_address': _wc_seller_address,
+              'category': 42, 'max_budget_usd': 1.00, 'duration_hours': 1, 'validity_seconds': 900,
+              'endpoint': 'https://' ~ warrant_canary_seller_domain ~ '/mcp'} | to_nice_json }}
+        dest: "{{ _wc_records_dir }}/seller-public-manifest.json"
+        mode: "0644"
+
+    - name: Fetch the published material
+      ansible.builtin.include_tasks: fetch_outputs.yml
+      vars:
+        _wc_fetch_list:
+          - "{{ _wc_config_dir }}/mainnet-public_keys.yaml"
+          - "{{ _wc_records_dir }}/seller-public-manifest.json"

@@ -1,0 +1,23 @@
+---
+# Seed local/29991231T235959Z/rehearsal.json (newest) from _seed (a dict
+# merged over a valid record). Requires _instance_hash.
+- name: Seeded run directory
+  ansible.builtin.file:
+    path: "{{ wc_canary }}/local/29991231T235959Z"
+    state: directory
+    mode: "0755"
+
+- name: Seed a rehearsal record
+  ansible.builtin.copy:
+    content: "{{ _valid | combine(_seed) | dict2items | rejectattr('value', 'equalto', '__drop__') | items2dict | to_json }}"
+    dest: "{{ wc_canary }}/local/29991231T235959Z/rehearsal.json"
+    mode: "0644"
+  vars:
+    _valid:
+      commit: "{{ warrant_canary_src_commit }}"
+      image_id: "{{ warrant_canary_expected_image_id }}"
+      instance_hash: "{{ _instance_hash }}"
+      build_seconds: 10
+      prove_seconds: 100
+      real_proof: true
+      refund_ok: true

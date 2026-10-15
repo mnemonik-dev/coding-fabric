@@ -1,0 +1,22 @@
+---
+# Compare health-before.json and health-after.json per service (D5, D16).
+- name: Compare health before and after
+  ansible.builtin.script:
+    cmd: >-
+      health.py compare
+      --before {{ (_wc_records_dir ~ '/health-before.json') | quote }}
+      --after {{ (_wc_records_dir ~ '/health-after.json') | quote }}
+      --stopped-file {{ warrant_canary_stopped_services_file | quote }}
+    executable: python3
+  register: _wc_health_rule
+  changed_when: false
+  failed_when: false
+
+- name: Report the health comparison
+  ansible.builtin.debug:
+    msg: "{{ _wc_health_rule.stdout_lines }}"
+
+- name: Fail on a health change not recorded as an operator stop
+  ansible.builtin.fail:
+    msg: "{{ _wc_health_rule.stdout_lines | last }}"
+  when: _wc_health_rule.rc != 0

@@ -1,0 +1,176 @@
+---
+# --- stage_keys_writes_keystores ---
+- name: "stage_keys_writes_keystores: stage buyer, seller, relayer"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: stage_keys_writes_keystores
+    expect: pass
+    warrant_canary_action: stage-keys
+    warrant_canary_roles: [buyer, seller, relayer]
+
+- name: Inspect the staged tree
+  ansible.builtin.shell: |
+    ls -1 /home/op/.foundry/keystores
+    echo ---
+    stat -c '%n %a %U' /run/warrant-canary/pw/*
+    echo ---
+    findmnt -no FSTYPE,OPTIONS /run/warrant-canary
+    echo ---
+    findmnt -no SOURCE,TARGET /home/op/.foundry/keystores
+    echo ---
+    grep -c warrant-canary /etc/fstab || true
+  register: _staged
+  changed_when: false
+
+- name: "stage_keys_writes_keystores: three keystores, 0600 op passwords, noswap tmpfs, no fstab entry"
+  ansible.builtin.assert:
+    that:
+      - _parts[0].split() == ['warrant-canary-buyer', 'warrant-canary-relayer', 'warrant-canary-seller']
+      - _parts[1].split('\n') | select | list | length == 3
+      - _parts[1].split('\n') | select | reject('search', ' 600 op$') | list | length == 0
+      - "'tmpfs' in _parts[2] and 'noswap' in _parts[2]"
+      - "'/run/warrant-canary' in _parts[3] or 'tmpfs' in _parts[3]"
+      - _parts[4] | trim == '0'
+    fail_msg: "{{ _staged.stdout }}"
+    quiet: true
+  vars:
+    _parts: "{{ _staged.stdout.split('---') | map('trim') | list }}"
+
+- name: Clean up after stage_keys_writes_keystores
+  ansible.builtin.include_tasks: "{{ t }}/unstage.yml"
+
+# --- stage_keys_rejects_keystore_without_address ---
+- name: "stage_keys_rejects_keystore_without_address"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: stage_keys_rejects_keystore_without_address
+    expect: fail
+    expect_msg: no address field
+    warrant_canary_action: stage-keys
+    warrant_canary_roles: [buyer, seller]
+    warrant_canary_keystore_buyer: "{{ wc_stub_keystore_without_address }}"
+
+- name: "stage_keys_rejects_keystore_without_address: tmpfs removed"
+  ansible.builtin.command: test ! -e /run/warrant-canary
+  changed_when: false
+
+# --- stage_keys_stop_rule ---
+- name: Staging state before the stop rule cases
+  ansible.builtin.include_tasks: "{{ t }}/stage_state.yml"
+
+- name: Remember it
+  ansible.builtin.set_fact:
+    _stage_before: "{{ _stage }}"
+
+- name: "stage_keys_stop_rule: MemAvailable under 6 GB"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: stage_keys_stop_rule memory
+    expect: fail
+    warrant_canary_action: stage-keys
+    warrant_canary_test_mem_available_kb: "1000000"
+
+- name: "stage_keys_stop_rule: free disk under 10 GB"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: stage_keys_stop_rule disk
+    expect: fail
+    warrant_canary_action: stage-keys
+    warrant_canary_test_disk_free_kb: "1000"
+
+- name: "stage_keys_stop_rule: the real measurement path reads /proc/meminfo and statvfs"
+  ansible.builtin.command: python3 /opt/warrant-canary/bin/stop-rule.py 0 0
+  register: _real_stop_rule
+  changed_when: false
+  failed_when: _real_stop_rule.rc != 0 or 'MemAvailable' not in _real_stop_rule.stdout
+
+- name: "stage_keys_stop_rule: never staged"
+  ansible.builtin.include_tasks: "{{ t }}/never_staged.yml"
+  vars:
+    label: stage_keys_stop_rule
+
+# --- unstage_keys_state_gate ---
+- name: Seeded active run directory
+  ansible.builtin.file:
+    path: "{{ wc_canary }}/mainnet/20261015T000002Z"
+    state: directory
+    mode: "0755"
+
+- name: Seed an active mainnet run (escrow and quote.task)
+  ansible.builtin.copy:
+    content: '{"escrow": "0x{{ "e5" * 20 }}", "quote": {"task": "0x{{ "77" * 32 }}"}}'
+    dest: "{{ wc_canary }}/mainnet/20261015T000002Z/state.json"
+    mode: "0644"
+
+- name: "unstage_keys_state_gate: each chain state in turn"
+  ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/gate_step.yml"
+  loop:
+    - { state: "3", expect: pass, tmpfs_after: false }
+    - { state: "2", expect: fail, tmpfs_after: true }
+    - { state: "4", expect: pass, tmpfs_after: false }
+    - { state: "0", expect: fail, tmpfs_after: true }
+  loop_control:
+    loop_var: gate
+
+- name: Read the gate log and the call log
+  ansible.builtin.shell: |
+    cat {{ wc_canary }}/mainnet/20261015T000002Z/state-gate.log
+    echo ---
+    grep -c 'cast call --rpc-url {{ wc_rpc_default }} 0x{{ "e5" * 20 }} tasks(bytes32)' /tmp/wc-calls.log
+  register: _gate_log
+  changed_when: false
+
+- name: "unstage_keys_state_gate: the gate got the run dir and the RPC; states 3, 2, 4, 0 in turn"
+  ansible.builtin.assert:
+    that:
+      - _gate_log.stdout.split('---')[0] | regex_findall('state=([0-9])') == ['3', '2', '4', '0']
+      - _gate_log.stdout.split('---')[0] | regex_findall('verdict=(\w+)') == ['pass', 'refuse', 'pass', 'refuse']
+      - ('run=' ~ wc_canary ~ '/mainnet/20261015T000002Z rpc=' ~ wc_rpc_default) in _gate_log.stdout
+      - _gate_log.stdout.split('---')[1] | trim | int >= 4
+    fail_msg: "{{ _gate_log.stdout }}"
+    quiet: true
+
+# --- unstage_keys_force_requires_reason (tmpfs still staged from the Missing case) ---
+- name: "unstage_keys_force_requires_reason: empty reason refused"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: unstage_keys_force_requires_reason empty
+    expect: fail
+    expect_msg: non-empty force_unstage_reason
+    warrant_canary_action: unstage-keys
+    warrant_canary_force_unstage: "true"
+    warrant_canary_force_unstage_reason: "   "
+
+- name: "unstage_keys_force_requires_reason: tmpfs still there"
+  ansible.builtin.command: test -e /run/warrant-canary
+  changed_when: false
+
+- name: "unstage_keys_force_requires_reason: with a reason"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: unstage_keys_force_requires_reason with reason
+    expect: pass
+    warrant_canary_action: unstage-keys
+    warrant_canary_force_unstage: true
+    warrant_canary_force_unstage_reason: "abandoned test run 42"
+    warrant_canary_output_dir: "{{ _out_root.path }}/force"
+
+- name: Read force-unstage.txt
+  ansible.builtin.command: cat {{ wc_canary }}/mainnet/20261015T000002Z/force-unstage.txt
+  register: _force_txt
+  changed_when: false
+
+- name: "unstage_keys_force_requires_reason: unmounted, reason recorded and fetched"
+  ansible.builtin.assert:
+    that:
+      - "'abandoned test run 42' in _force_txt.stdout"
+      - "'abandoned test run 42' in lookup('ansible.builtin.file', _out_root.path ~ '/force/force-unstage.txt')"
+    quiet: true
+
+- name: "unstage_keys_force_requires_reason: tmpfs gone"
+  ansible.builtin.command: test ! -e /run/warrant-canary
+  changed_when: false
+
+- name: Remove the seeded mainnet run and the cast override
+  ansible.builtin.shell: rm -rf {{ wc_canary }}/mainnet/20261015T000002Z /tmp/wc-fake/cast-state
+  changed_when: false

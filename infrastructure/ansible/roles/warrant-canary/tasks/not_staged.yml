@@ -1,0 +1,15 @@
+---
+# Refuse while keys are already staged (an operator deal may be using them).
+# Runs before any block whose `always` would unstage.
+- name: Look for an existing staging
+  ansible.builtin.stat:
+    path: "{{ warrant_canary_tmpfs_dir }}"
+  register: _wc_existing_tmpfs
+
+- name: Refuse while keys are staged
+  ansible.builtin.assert:
+    that: not _wc_existing_tmpfs.stat.exists
+    fail_msg: >-
+      {{ warrant_canary_tmpfs_dir }} exists: keys are already staged (an operator deal may be
+      running). Run unstage-keys first; nothing was changed.
+    quiet: true

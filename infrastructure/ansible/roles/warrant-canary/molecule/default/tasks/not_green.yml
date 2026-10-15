@@ -1,0 +1,14 @@
+---
+- name: "Seed: {{ bad.name }}"
+  ansible.builtin.include_tasks: "{{ t }}/seed_rehearsal.yml"
+  vars:
+    _seed: "{{ bad.seed }}"
+
+- name: "deploy_solver_requires_green_rehearsal: {{ bad.name }}"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: "deploy_solver_requires_green_rehearsal {{ bad.name }}"
+    expect: fail
+    expect_msg: "{{ bad.msg }}"
+    warrant_canary_action: deploy-solver
+    warrant_canary_settle_window: "9800"

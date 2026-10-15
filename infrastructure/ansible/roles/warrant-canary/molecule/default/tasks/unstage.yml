@@ -1,0 +1,5 @@
+---
+- name: Unstage (test cleanup)
+  ansible.builtin.include_role:
+    name: warrant-canary
+    tasks_from: unstage_cleanup.yml
