@@ -93,14 +93,14 @@ class Driver:
         res = self.run(["forge", "create", "script/ShowcaseToken.sol:ShowcaseToken", "--broadcast", "--json",
                         "--rpc-url", self.rpc, "--private-key", self.a.anvil_key],
                        cwd=os.path.join(self.src, "contracts"), quiet=True)
+        # forge create --json prints one indented JSON object over several lines.
         token = None
-        for line in res.stdout.splitlines():
-            line = line.strip()
-            if line.startswith("{"):
-                try:
-                    token = json.loads(line).get("deployedTo") or token
-                except ValueError:
-                    pass
+        out = res.stdout
+        if "{" in out and "}" in out:
+            try:
+                token = json.loads(out[out.index("{"):out.rindex("}") + 1]).get("deployedTo")
+            except ValueError:
+                pass
         if not token or not re.fullmatch(r"0x[0-9a-fA-F]{40}", token):
             raise Fail("forge create ShowcaseToken printed no deployedTo address")
         print(f"ShowcaseToken deployed at {token}", flush=True)
