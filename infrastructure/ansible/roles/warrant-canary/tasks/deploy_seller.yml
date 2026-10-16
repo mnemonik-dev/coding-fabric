@@ -127,7 +127,7 @@
 
     - name: Build the seller image (BIN_SOURCE=host)
       ansible.builtin.command:
-        argv: [docker, build, --build-arg, BIN_SOURCE=host, -f, showcases/ionet_arc/Dockerfile.seller, -t, "{{ _wc_seller_image }}", .]
+        argv: [docker, build, --build-arg, BIN_SOURCE=host, -f, showcases/ionet_arc/Dockerfile, -t, "{{ _wc_seller_image }}", .]
         chdir: "{{ warrant_canary_src_dir }}"
       environment:
         DOCKER_BUILDKIT: "1"

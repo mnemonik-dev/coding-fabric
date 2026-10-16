@@ -14,5 +14,5 @@
 - name: Reload caddy
   become: true
   ansible.builtin.shell: |
-    docker exec vaultwarden-caddy-1 caddy reload -c /etc/caddy/Caddyfile 2>&1 || true
+    docker exec vaultwarden-caddy-1 caddy reload -c /etc/caddy/Caddyfile --address 127.0.0.1:2020 2>&1 || true
   changed_when: false

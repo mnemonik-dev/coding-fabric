@@ -149,14 +149,14 @@ warrant_canary_caddy_conf_d: /opt/vaultwarden/caddy_conf_d
 warrant_canary_caddy_live_caddyfile: /opt/vaultwarden/Caddyfile
 warrant_canary_seller_domain: seller.mnemonik.xyz
 warrant_canary_vm_ip: 178.105.207.172
-# Fixed: matches the Task 3 Dockerfile.seller user (D17).
+# Fixed: matches the Task 3 seller Dockerfile user (showcases/ionet_arc/Dockerfile) (D17).
 warrant_canary_seller_uid: 10001
 warrant_canary_seller_image: warrant-seller
 warrant_canary_seller_container: warrant-seller
 warrant_canary_seller_network: vaultwarden_vaultwarden
 warrant_canary_seller_port: 8000
 warrant_canary_seller_app_dir: /app
-# IONET_STATE_DIR set by Dockerfile.seller (Task 3); the role only mounts it.
+# IONET_STATE_DIR set by the seller Dockerfile (Task 3); the role only mounts it.
 warrant_canary_seller_state_mount: /var/lib/warrant-seller
 warrant_canary_seller_mem_limit: 1g
 warrant_canary_seller_cpus: "1.0"
