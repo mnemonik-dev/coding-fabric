@@ -90,10 +90,12 @@ class WarrantCanaryWorkflowTests(unittest.TestCase):
             res = self.bash(self.step('static', 'Validate inputs')['run'], env)
             return res, summary.read_text() if summary.exists() else ''
 
-    def assertRefused(self, **overrides):
+    def assertRefused(self, expected_message=None, **overrides):
         res, summary = self.validate(**overrides)
         self.assertNotEqual(res.returncode, 0, overrides)
         self.assertIn('::error::', res.stdout, (overrides, res.stderr))
+        if expected_message is not None:
+            self.assertIn(expected_message, res.stdout, (overrides, res.stderr))
         self.assertIn('refused', summary, overrides)
 
     def assertAccepted(self, **overrides):
@@ -202,6 +204,70 @@ class WarrantCanaryWorkflowTests(unittest.TestCase):
         self.assertLess(grep.index("grep -qx ''"), grep.index('grep -rFf'))
         self.assertIn('-type l', grep)
 
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            out_dir = tmpdir / 'warrant-canary-out'
+            pattern_file = tmpdir / 'wc' / 'patterns.txt'
+
+            out_dir.mkdir(parents=True)
+            pattern_file.parent.mkdir(parents=True)
+            pattern_file.write_text('__PLACEHOLDER__\n')
+
+            env = {'PATH': os.environ['PATH'], 'HOME': os.environ.get('HOME', '/tmp'),
+                   'RUNNER_TEMP': str(tmpdir)}
+
+            res = self.bash(grep, env)
+            self.assertEqual(res.returncode, 0, (res.stdout, res.stderr))
+
+            pattern_file.write_text('stubsecret\n')
+            (out_dir / 'secret_file.txt').write_text('this contains stubsecret and should be found')
+            res = self.bash(grep, env)
+            self.assertNotEqual(res.returncode, 0, (res.stdout, res.stderr))
+            self.assertIn('::error::', res.stdout)
+            self.assertIn('secret_file.txt', res.stdout)
+
+            (out_dir / 'secret_file.txt').unlink()
+            res = self.bash(grep, env)
+            self.assertEqual(res.returncode, 0, (res.stdout, res.stderr))
+
+            pattern_file.write_text('stubsecret\n\n')
+            res = self.bash(grep, env)
+            self.assertNotEqual(res.returncode, 0, (res.stdout, res.stderr))
+            self.assertIn('::error::', res.stdout)
+            self.assertIn('empty line', res.stdout)
+
+            pattern_file.write_text('')
+            res = self.bash(grep, env)
+            self.assertNotEqual(res.returncode, 0, (res.stdout, res.stderr))
+            self.assertIn('::error::', res.stdout)
+            self.assertIn('empty', res.stdout)
+
+            pattern_file.write_text('stubsecret\n')
+            symlink_path = out_dir / 'symlink'
+            symlink_path.symlink_to('/tmp')
+            res = self.bash(grep, env)
+            self.assertNotEqual(res.returncode, 0, (res.stdout, res.stderr))
+            self.assertIn('::error::', res.stdout)
+            self.assertIn('symlink', res.stdout)
+
+            # grep exit 2 (here an unreadable record) must fail the step, never pass it as "no secret".
+            if os.geteuid() != 0:
+                symlink_path.unlink()
+                unreadable = out_dir / 'unreadable.txt'
+                unreadable.write_text('clean')
+                unreadable.chmod(0)
+                try:
+                    res = self.bash(grep, env)
+                finally:
+                    unreadable.chmod(0o600)
+                self.assertNotEqual(res.returncode, 0, (res.stdout, res.stderr))
+                self.assertIn('secret-pattern grep failed', res.stdout)
+
+    def test_static_job_installs_dependencies(self):
+        pip_step = self.step('static', 'Install PyYAML and eth-account')
+        self.assertIn('PyYAML==6.0.3', pip_step['run'])
+        self.assertIn('eth-account==0.14.0', pip_step['run'])
+
     def test_pattern_file_step_disables_xtrace(self):
         run = self.pattern_step()['run']
         self.assertTrue(run.startswith('set +x'))
@@ -287,6 +353,12 @@ class WarrantCanaryWorkflowTests(unittest.TestCase):
             self.assertIn(needle, pr['if'])
         self.assertNotIn('always()', pr['if'])
 
+    def test_pr_broadcast_condition_exactly_matches_broadcast_if(self):
+        pr = self.pr_step()
+        expected_if = ("${{ success() && steps.grep.outcome == 'success' && steps.health.outcome == 'success' && ((" +
+                      BROADCAST_IF + ") || (inputs.action == 'deploy-seller' && !inputs.render_only)) }}")
+        self.assertEqual(pr['if'], expected_if)
+
     def test_pr_token_masked_setup_and_logout(self):
         run = self.pr_step()['run']
         self.assertLess(run.index('::add-mask::'), run.index('export GH_TOKEN'))
@@ -363,10 +435,21 @@ class WarrantCanaryWorkflowTests(unittest.TestCase):
         self.assertEqual(self.run_job['if'], "github.ref == 'refs/heads/develop'")
 
     def test_overrides_refused_with_execute(self):
-        self.assertRefused(WC_ACTION='configure', WC_EXECUTE='true', WC_EXPECTED_IMAGE_ID_OVERRIDE=IMAGE_ID)
-        self.assertRefused(**SOLVER, **SWITCHED, WC_RPC_OVERRIDE=RPC)
+        self.assertRefused(expected_message='expected_image_id_override is refused together with execute',
+                          WC_ACTION='configure', WC_EXECUTE='true', WC_EXPECTED_IMAGE_ID_OVERRIDE=IMAGE_ID)
+        self.assertRefused(expected_message='rpc_override is refused together with execute',
+                          **SOLVER, **SWITCHED, WC_RPC_OVERRIDE=RPC)
         self.assertAccepted(WC_ACTION='configure', WC_EXPECTED_IMAGE_ID_OVERRIDE=IMAGE_ID)
         self.assertAccepted(**SOLVER, WC_RPC_OVERRIDE=RPC)
+
+    def test_settle_window_required_for_deploy_solver(self):
+        self.assertRefused(expected_message='settle_window is required for deploy-solver',
+                          WC_ACTION='deploy-solver', WC_DEPLOY_CONTRACTS='true', WC_EXECUTE='true')
+
+    def test_execute_only_on_develop_branch(self):
+        self.assertRefused(expected_message='execute=true is accepted only on refs/heads/develop',
+                          WC_ACTION='deploy-solver', WC_SETTLE_WINDOW='9800', WC_DEPLOY_CONTRACTS='true',
+                          WC_EXECUTE='true', GITHUB_REF='refs/heads/feature/test')
 
     def test_overrides_refused_on_other_actions(self):
         for action in ACTIONS:
