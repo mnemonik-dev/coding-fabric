@@ -7,6 +7,6 @@
 # Empty until then: `rehearse` and `deploy-solver` refuse an empty value.
 #
 # Source: policy-execution solver-bounty/instance-ionet.md, "Values" table, at
-# pin f627666aa4b151f3e0081e105799d2a1f2e9da7a. Unit: micro-USD-seconds per
+# pin 66ac239a396922667b669b5e796341ac4eeb6d76. Unit: micro-USD-seconds per
 # hour (3600 x 490000, the full one-hour lease); not USD, not token base units.
 warrant_canary_max_cost: "1764000000"
