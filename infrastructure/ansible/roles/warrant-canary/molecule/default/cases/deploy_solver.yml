@@ -46,6 +46,115 @@
     warrant_canary_action: deploy-solver
     warrant_canary_settle_window: "9800"
 
+# Decision 11 bounds at their edges: 1800 + 4 * prove_seconds (rounded up), 7200 floor, 86400 ceiling.
+- name: Baseline before the edge refusals
+  ansible.builtin.include_tasks: "{{ t }}/baseline_stage.yml"
+
+- name: "deploy_solver_settle_window_validation: one below the computed bound and above the ceiling"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: "deploy_solver_settle_window_validation {{ item }}"
+    expect: fail
+    expect_msg: is outside
+    warrant_canary_action: deploy-solver
+    warrant_canary_settle_window: "{{ item }}"
+  loop: ["9799", "86401"]
+
+- name: "deploy_solver_settle_window_validation: 9799 and 86401 staged nothing"
+  ansible.builtin.include_tasks: "{{ t }}/never_staged.yml"
+  vars:
+    label: deploy_solver_settle_window_validation upper and lower edge
+
+- name: "deploy_solver_settle_window_validation: the ceiling 86400 is accepted"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: deploy_solver_settle_window_validation 86400
+    expect: pass
+    warrant_canary_action: deploy-solver
+    warrant_canary_settle_window: "86400"
+
+- name: Seed a fast rehearsal (prove_seconds 100, so the 7200 floor binds)
+  ansible.builtin.include_tasks: "{{ t }}/seed_rehearsal.yml"
+  vars:
+    _seed: { prove_seconds: 100 }
+
+- name: Baseline before the floor refusal
+  ansible.builtin.include_tasks: "{{ t }}/baseline_stage.yml"
+
+- name: "deploy_solver_settle_window_validation: floor, 7199 refused"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: deploy_solver_settle_window_validation 7199
+    expect: fail
+    expect_msg: is outside
+    warrant_canary_action: deploy-solver
+    warrant_canary_settle_window: "7199"
+
+- name: "deploy_solver_settle_window_validation: 7199 staged nothing"
+  ansible.builtin.include_tasks: "{{ t }}/never_staged.yml"
+  vars:
+    label: deploy_solver_settle_window_validation floor
+
+- name: "deploy_solver_settle_window_validation: floor, 7200 accepted"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: deploy_solver_settle_window_validation 7200 floor
+    expect: pass
+    warrant_canary_action: deploy-solver
+    warrant_canary_settle_window: "7200"
+
+- name: Seed a fractional prove_seconds (2000.2 rounds up to 2001, bound 9804)
+  ansible.builtin.include_tasks: "{{ t }}/seed_rehearsal.yml"
+  vars:
+    _seed: { prove_seconds: 2000.2 }
+
+- name: Baseline before the rounding refusal
+  ansible.builtin.include_tasks: "{{ t }}/baseline_stage.yml"
+
+- name: "deploy_solver_settle_window_validation: rounding, 9800 refused"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: deploy_solver_settle_window_validation 9800 rounded
+    expect: fail
+    expect_msg: is outside
+    warrant_canary_action: deploy-solver
+    warrant_canary_settle_window: "9800"
+
+- name: "deploy_solver_settle_window_validation: rounded 9800 staged nothing"
+  ansible.builtin.include_tasks: "{{ t }}/never_staged.yml"
+  vars:
+    label: deploy_solver_settle_window_validation rounding
+
+- name: "deploy_solver_settle_window_validation: rounding, 9804 accepted"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: deploy_solver_settle_window_validation 9804
+    expect: pass
+    warrant_canary_action: deploy-solver
+    warrant_canary_settle_window: "9804"
+
+- name: Seed a rehearsal too slow for the ceiling (1800 + 4 * 21200 > 86400)
+  ansible.builtin.include_tasks: "{{ t }}/seed_rehearsal.yml"
+  vars:
+    _seed: { prove_seconds: 21200 }
+
+- name: Baseline before the too-slow refusal
+  ansible.builtin.include_tasks: "{{ t }}/baseline_stage.yml"
+
+- name: "deploy_solver_settle_window_validation: too slow, every value refused"
+  ansible.builtin.include_tasks: "{{ run }}"
+  vars:
+    label: deploy_solver_settle_window_validation too slow
+    expect: fail
+    expect_msg: rehearsal too slow
+    warrant_canary_action: deploy-solver
+    warrant_canary_settle_window: "86400"
+
+- name: "deploy_solver_settle_window_validation: too slow staged nothing"
+  ansible.builtin.include_tasks: "{{ t }}/never_staged.yml"
+  vars:
+    label: deploy_solver_settle_window_validation too slow
+
 - name: Remove the seeded rehearsal
   ansible.builtin.file:
     path: "{{ wc_canary }}/local/29991231T235959Z"

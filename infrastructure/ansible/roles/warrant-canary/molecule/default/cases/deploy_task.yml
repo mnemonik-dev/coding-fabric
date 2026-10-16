@@ -17,7 +17,7 @@
     cat /opt/warrant-canary/deploy/task-escrow.json
     echo ---
     grep '^forge script ' /tmp/wc-calls.log
-  register: _task
+  register: _task_record
   changed_when: false
 
 - name: "deploy_task_checks_object: checks object with code hashes, all flags true; forge broadcast with --rpc-url"
@@ -33,11 +33,11 @@
       - "'--rpc-url ' ~ wc_rpc_default in _forge"
       - "'--account warrant-canary-deployer' in _forge"
       - "'ETH_PASSWORD=/run/warrant-canary/pw/deployer' in _forge"
-    fail_msg: "{{ _task.stdout }}"
+    fail_msg: "{{ _task_record.stdout }}"
     quiet: true
   vars:
-    _checks: "{{ (_task.stdout.split('---')[0] | from_json).checks }}"
-    _forge: "{{ _task.stdout.split('---')[1] }}"
+    _checks: "{{ (_task_record.stdout.split('---')[0] | from_json).checks }}"
+    _forge: "{{ _task_record.stdout.split('---')[1] }}"
 
 - name: Remove the record; fake token() returns another address
   ansible.builtin.shell: |

@@ -1,0 +1,8 @@
+---
+# Record the staging state now, so never_staged.yml checks only what follows.
+- name: Staging state before the refusals
+  ansible.builtin.include_tasks: "{{ t }}/stage_state.yml"
+
+- name: Remember it
+  ansible.builtin.set_fact:
+    _stage_before: "{{ _stage }}"
