@@ -65,6 +65,8 @@
     grep -Ff {{ wc_patterns }} {{ _configure_render }}/env; echo "rc=$?"
     echo ---
     cat {{ _configure_render }}/secrets/seller.key | grep -c '^0x' || true
+    echo ---
+    grep -cxE 'WARRANT_VENDOR_(CREDENTIAL|SIGNATURE)=showcases/ionet_arc/config/mainnet-vendor_(credential|signature)\.yaml' {{ _configure_render }}/secrets/seller.env || true
   register: _render_modes
   changed_when: false
 
@@ -76,6 +78,8 @@
       - _lines[2] == _configure_render ~ '/secrets/seller.key 600 10001:10001'
       - "'rc=1' in _render_modes.stdout.split('---')[1]"
       - _render_modes.stdout.split('---')[2] | trim == '0'
+      # The seller must read the mainnet vendor credential, not the tracked testnet default.
+      - _render_modes.stdout.split('---')[3] | trim == '2'
     fail_msg: "{{ _render_modes.stdout }}"
     quiet: true
   vars:
