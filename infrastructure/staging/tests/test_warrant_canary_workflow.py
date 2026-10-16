@@ -263,6 +263,16 @@ class WarrantCanaryWorkflowTests(unittest.TestCase):
                 self.assertNotEqual(res.returncode, 0, (res.stdout, res.stderr))
                 self.assertIn('secret-pattern grep failed', res.stdout)
 
+    def test_pr_step_adds_the_public_keys_file_only_for_deploy_seller(self):
+        """deploy-solver and deploy-task create no mainnet-public_keys.yaml; naming it in git add fails the step."""
+        run = self.step('run', 'Open the deployment PR in policy-execution')['run']
+        add = [l for l in run.splitlines() if l.strip().startswith('git add -A')]
+        self.assertEqual(len(add), 1, add)
+        self.assertNotIn('mainnet-public_keys.yaml', add[0])
+        guard = run.index('if [ "$WC_ACTION" = deploy-seller ]; then')
+        self.assertLess(guard, run.index('paths+=(showcases/ionet_arc/config/mainnet-public_keys.yaml)'))
+        self.assertLess(run.index('paths+=(showcases/ionet_arc/config/mainnet-public_keys.yaml)'), run.index('git add -A'))
+
     def test_static_job_installs_dependencies(self):
         pip_step = self.step('static', 'Install PyYAML and eth-account')
         self.assertIn('PyYAML==6.0.3', pip_step['run'])

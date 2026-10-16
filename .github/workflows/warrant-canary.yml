@@ -796,7 +796,12 @@ jobs:
           cd "$clone"
           branch="canary/${WC_ACTION}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           git checkout -b "$branch"
-          git add -A -- solver-bounty/canary showcases/ionet_arc/README.md showcases/ionet_arc/config/mainnet-public_keys.yaml
+          # Only deploy-seller creates the public keys file; a pathspec that matches nothing fails git add.
+          paths=(solver-bounty/canary showcases/ionet_arc/README.md)
+          if [ "$WC_ACTION" = deploy-seller ]; then
+            paths+=(showcases/ionet_arc/config/mainnet-public_keys.yaml)
+          fi
+          git add -A -- "${paths[@]}"
           if git diff --cached --quiet; then
             echo '::error::nothing to commit for the deployment PR'
             exit 1
