@@ -12,7 +12,8 @@
   ansible.builtin.shell: |
     {{ warrant_canary_home }}/.cargo/bin/rustc +{{ warrant_canary_rust_version }} --version 2>/dev/null | head -1 || true
     echo '---'
-    {{ warrant_canary_home }}/.risc0/bin/r0vm --version 2>/dev/null | head -1 || true
+    # rzup links r0vm into ~/.cargo/bin, not ~/.risc0/bin.
+    {{ warrant_canary_home }}/.cargo/bin/r0vm --version 2>/dev/null | head -1 || true
     echo '---'
     {{ warrant_canary_home }}/.foundry/bin/forge --version 2>/dev/null | head -1 || true
     echo '---'
@@ -20,7 +21,8 @@
     echo '---'
     python3 --version 2>/dev/null || true
     echo '---'
-    {{ warrant_canary_home }}/.risc0/bin/rzup show 2>/dev/null | tr '\n' ' ' || true
+    # Drop the dashed underline of `rzup show`: it would split on the '---' separator.
+    {{ warrant_canary_home }}/.risc0/bin/rzup show 2>/dev/null | grep -v '^--' | tr '\n' ' ' || true
   register: _wc_versions
   changed_when: false
 

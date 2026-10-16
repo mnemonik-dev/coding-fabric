@@ -21,6 +21,8 @@
     src: "{{ item.stat.path }}"
     dest: "{{ warrant_canary_output_dir }}/"
     flat: true
+  # Writes only on the controller; the recap counts host changes (Task 9 step 6).
+  changed_when: false
   loop: "{{ _wc_fetch_stat.results | default([]) | selectattr('stat', 'defined') | selectattr('stat.exists') | list }}"
   loop_control:
     label: "{{ item.stat.path }}"
