@@ -99,6 +99,8 @@ warrant_canary_acceptance_key_rel: showcases/ionet_arc/.keys/mainnet-buyer_accep
 # --- Toolchain pins ---
 warrant_canary_rust_version: "1.98.1"
 warrant_canary_r0vm_version: "3.0.5"
+# RISC Zero guest toolchain (rzup install rust), as in the pinned README.
+warrant_canary_risc0_rust_version: "1.88.0"
 warrant_canary_foundry_version: "1.8.4"
 warrant_canary_node_major: "20"
 warrant_canary_python_version: "3.12"

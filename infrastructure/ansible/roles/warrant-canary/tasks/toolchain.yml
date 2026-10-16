@@ -19,6 +19,8 @@
     node --version 2>/dev/null || true
     echo '---'
     python3 --version 2>/dev/null || true
+    echo '---'
+    {{ warrant_canary_home }}/.risc0/bin/rzup show 2>/dev/null | tr '\n' ' ' || true
   register: _wc_versions
   changed_when: false
 
@@ -29,6 +31,7 @@
     _wc_forge_ok: "{{ warrant_canary_foundry_version in _wc_versions.stdout.split('---')[2] }}"
     _wc_node_ok: "{{ _wc_versions.stdout.split('---')[3] | trim is match('v' ~ warrant_canary_node_major ~ '\\.') }}"
     _wc_python_ok: "{{ ('Python ' ~ warrant_canary_python_version) in _wc_versions.stdout.split('---')[4] }}"
+    _wc_risc0_rust_ok: "{{ _wc_versions.stdout.split('---')[5] is search('(^| )rust \\* ' ~ (warrant_canary_risc0_rust_version | regex_escape) ~ '( |$)') }}"
 
 - name: Python {{ warrant_canary_python_version }} is the system python3
   ansible.builtin.assert:
@@ -46,7 +49,7 @@
     fi
   when: not (_wc_rust_ok | bool)
 
-- name: rzup with r0vm {{ warrant_canary_r0vm_version }}
+- name: rzup with r0vm {{ warrant_canary_r0vm_version }} and the RISC Zero Rust {{ warrant_canary_risc0_rust_version }}
   ansible.builtin.shell: |
     set -e
     # The rzup installer requires rustc on PATH; the Ansible shell has no ~/.cargo/bin.
@@ -54,8 +57,14 @@
     if [ ! -x "$HOME/.risc0/bin/rzup" ]; then
       curl --proto '=https' --tlsv1.2 -sSfL https://risczero.com/install | bash
     fi
+    {% if not (_wc_r0vm_ok | bool) %}
     "$HOME/.risc0/bin/rzup" install r0vm {{ warrant_canary_r0vm_version }}
-  when: not (_wc_r0vm_ok | bool)
+    {% endif %}
+    {% if not (_wc_risc0_rust_ok | bool) %}
+    # risc0-build reads this toolchain's version even when the guest builds in Docker.
+    "$HOME/.risc0/bin/rzup" install rust {{ warrant_canary_risc0_rust_version }}
+    {% endif %}
+  when: not (_wc_r0vm_ok | bool) or not (_wc_risc0_rust_ok | bool)
 
 - name: Foundry {{ warrant_canary_foundry_version }}
   ansible.builtin.shell: |
