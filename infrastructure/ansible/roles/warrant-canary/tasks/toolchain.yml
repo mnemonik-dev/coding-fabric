@@ -49,6 +49,8 @@
 - name: rzup with r0vm {{ warrant_canary_r0vm_version }}
   ansible.builtin.shell: |
     set -e
+    # The rzup installer requires rustc on PATH; the Ansible shell has no ~/.cargo/bin.
+    export PATH="$HOME/.cargo/bin:$PATH"
     if [ ! -x "$HOME/.risc0/bin/rzup" ]; then
       curl --proto '=https' --tlsv1.2 -sSfL https://risczero.com/install | bash
     fi
