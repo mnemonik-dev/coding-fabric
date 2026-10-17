@@ -153,13 +153,14 @@
         state: present
         pull: never
 
-    - name: DNS precheck ({{ warrant_canary_seller_domain }} resolves to the VM)
+    - name: DNS precheck (every seller hostname resolves to the VM)
       ansible.builtin.command:
         argv:
           - python3
           - -c
           - "import socket,sys; print(' '.join(sorted({a[4][0] for a in socket.getaddrinfo(sys.argv[1], 443, socket.AF_INET)})))"
-          - "{{ warrant_canary_seller_domain }}"
+          - "{{ item }}"
+      loop: "{{ [warrant_canary_seller_domain] + warrant_canary_seller_aliases }}"
       register: _wc_dns
       changed_when: false
       failed_when: warrant_canary_vm_ip not in _wc_dns.stdout.split()

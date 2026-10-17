@@ -2,11 +2,11 @@
 # Public ingress for the seller MCP. TLS only; basic auth is enforced by the
 # application (Decision 7).
 {% if warrant_canary_test_broken_snippet | bool %}
-{{ warrant_canary_seller_domain }} {
+{{ ([warrant_canary_seller_domain] + warrant_canary_seller_aliases) | join(', ') }} {
   this_is_not_a_caddy_directive on
 }
 {% else %}
-{{ warrant_canary_seller_domain }} {
+{{ ([warrant_canary_seller_domain] + warrant_canary_seller_aliases) | join(', ') }} {
   encode gzip
   request_body {
     max_size 1MB

@@ -148,6 +148,8 @@ warrant_canary_caddy_validator_image: caddy:2.9.1
 warrant_canary_caddy_conf_d: /opt/vaultwarden/caddy_conf_d
 warrant_canary_caddy_live_caddyfile: /opt/vaultwarden/Caddyfile
 warrant_canary_seller_domain: seller.mnemonik.xyz
+# Extra hostnames served by the same Caddy site block (each must resolve to the VM).
+warrant_canary_seller_aliases: []
 warrant_canary_vm_ip: 178.105.207.172
 # Fixed: matches the Task 3 seller Dockerfile user (showcases/ionet_arc/Dockerfile) (D17).
 warrant_canary_seller_uid: 10001

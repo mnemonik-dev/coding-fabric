@@ -10,3 +10,7 @@
 # pin fac8b909893cf168157d84e51ce103fdb0351299. Unit: micro-USD-seconds per
 # hour (3600 x 490000, the full one-hour lease); not USD, not token base units.
 warrant_canary_max_cost: "1764000000"
+
+# Extra hostnames served by the seller MCP site block (same VM; DNS A record required).
+warrant_canary_seller_aliases:
+  - warrant.mnemonik.xyz
