@@ -12,5 +12,5 @@
 warrant_canary_max_cost: "1764000000"
 
 # Extra hostnames served by the seller MCP site block (same VM; DNS A record required).
-warrant_canary_seller_aliases:
-  - warrant.mnemonik.xyz
+# None. warrant.mnemonik.xyz is the Warrant website on Cloudflare Pages, so it must not point at this VM.
+warrant_canary_seller_aliases: []
