@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from dispatch import (
+    apply_overrides,
     load_pat_registry,
     matches_filters,
     parse_pat_name_from_description,
@@ -230,3 +231,46 @@ def test_filters_reject_none_of_label() -> None:
 
 def test_no_filters_matches_everything() -> None:
     assert matches_filters(_wf(), _ticket(status="whatever"), "code")
+
+
+# ----- apply_overrides -----
+
+
+def test_no_labels_keeps_workflow() -> None:
+    wf = _wf()
+    assert apply_overrides(wf, _ticket()) is wf
+
+
+def test_model_label_overrides_model() -> None:
+    wf = apply_overrides(_wf(), _ticket(labels=("model:sonnet",)))
+    assert (wf.engine, wf.model) == ("claude", "sonnet")
+
+
+def test_engine_label_switches_engine_and_drops_workflow_model() -> None:
+    base = WorkflowDefinition(
+        stage="code", engine="claude", model="opus", allowed_tools=(), prompt=""
+    )
+    wf = apply_overrides(base, _ticket(labels=("engine:codex",)))
+    assert (wf.engine, wf.model) == ("codex", None)
+
+
+def test_engine_and_model_labels_together() -> None:
+    wf = apply_overrides(_wf(), _ticket(labels=("engine:codex", "model:gpt-5")))
+    assert (wf.engine, wf.model) == ("codex", "gpt-5")
+
+
+def test_same_engine_label_keeps_workflow_model() -> None:
+    base = WorkflowDefinition(
+        stage="code", engine="claude", model="opus", allowed_tools=(), prompt=""
+    )
+    assert apply_overrides(base, _ticket(labels=("engine:claude",))).model == "opus"
+
+
+def test_unknown_engine_rejected() -> None:
+    with pytest.raises(ValueError, match="unknown engine"):
+        apply_overrides(_wf(), _ticket(labels=("engine:nope",)))
+
+
+def test_bad_model_rejected() -> None:
+    with pytest.raises(ValueError, match="invalid model"):
+        apply_overrides(_wf(), _ticket(labels=("model:rm -rf",)))

@@ -114,9 +114,18 @@ Stage names = Kaneo column IDs (`in-progress` → `review` → `qa` → `ready-t
 Telegram topic is the human-facing mirror — `_notify_topic` in `dispatch.py` posts
 progress alongside Kaneo comments.
 
-Per-ticket "methodology" lives in the TARGET REPO at `.claude/skills/<stage>/WORKFLOW.md`.
-Symphony loads the right one based on ticket state and points the engine at it.
-Symphony stays dumb; methodology is version-controlled per project.
+Methodology lives in `.symphony/workflows/<stage>.md` (YAML front matter + prompt),
+read from `SYMPHONY_REPO_ROOT` (default `/opt/code/coding-fabric`) — one set for all
+projects. Stage = an explicit `stage:<name>` ticket label, else derived from status
+(`review` → review, `qa` → qa, otherwise `code`). Stages: `architect` (label-only:
+specs + child tickets), `code`, `review`, `qa`. Front-matter `poll_filters` gate which
+tickets a stage accepts and `cleanup_on.states` drop the workspace of finished tickets.
+
+Per-ticket routing: labels `engine:<claude|codex>` and `model:<id>` override the stage's
+engine/model (the architect stage sets them on the child tickets it creates). A ticket
+is run once per `status|stage` (run ledger, `SYMPHONY_LEDGER_FILE`); a failed run is
+retried up to `SYMPHONY_MAX_ATTEMPTS` (default 2), then Symphony comments and stops.
+`SYMPHONY_MCP_CONFIG` hands an MCP config to claude runs. Symphony stays dumb.
 
 ### Multi-PAT, repo binding
 
