@@ -51,6 +51,14 @@ class RunLedger:
                 return True
             return not entry.get("done")
 
+    def forget(self, ticket_id: str) -> None:
+        with self._lock:
+            if self._entries.pop(ticket_id, None) is not None:
+                try:
+                    self._save()
+                except OSError:
+                    logger.exception("run_ledger: cannot write %s", self._path)
+
     def record(self, ticket_id: str, key: str, ok: bool) -> bool:
         """Record one finished run. Returns True when this failure used up
         the last attempt (caller should tell the operator once)."""

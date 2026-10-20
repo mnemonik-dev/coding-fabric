@@ -13,12 +13,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 from pathlib import Path
 
 from auto_merge import MergePolicy, policy_from_env_or_default, schedule_or_tick
-from dispatch import dispatch_ticket, stage_for
+from dispatch import dispatch_ticket, stage_for, task_id_for
 from kaneo_client import KaneoClient, Ticket
 from run_ledger import RunLedger, ledger_key
+from workflow_loader import cleanup_states, normalize_status
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +63,7 @@ class PollLoopConfig:
         self.max_attempts: int = int(os.environ.get("SYMPHONY_MAX_ATTEMPTS", "2"))
 
 
-async def _list_active_tickets(kaneo: KaneoClient, cfg: PollLoopConfig) -> list[Ticket]:
+async def _list_all_tickets(kaneo: KaneoClient, cfg: PollLoopConfig) -> list[Ticket]:
     if cfg.project_id:
         tickets = await kaneo.list_tasks_for_project(cfg.project_id)
     else:
@@ -89,6 +91,11 @@ async def _list_active_tickets(kaneo: KaneoClient, cfg: PollLoopConfig) -> list[
                     tickets.extend(await kaneo.list_tasks_for_project(proj_id))
                 except Exception:
                     logger.exception("poll_loop: list_tasks_for_project(%s) failed", proj_id)
+    return tickets
+
+
+async def _list_active_tickets(kaneo: KaneoClient, cfg: PollLoopConfig) -> list[Ticket]:
+    tickets = await _list_all_tickets(kaneo, cfg)
     return [t for t in tickets if t.status.lower() in cfg.active_statuses]
 
 
@@ -134,7 +141,9 @@ class PollLoop:
         cfg = self._cfg
         while not self._stop_event.is_set():
             try:
-                tickets = await _list_active_tickets(self._kaneo, cfg)
+                all_tickets = await _list_all_tickets(self._kaneo, cfg)
+                await self._cleanup_finished(all_tickets)
+                tickets = [t for t in all_tickets if t.status.lower() in cfg.active_statuses]
                 logger.info("poll_loop: tick — %d active ticket(s)", len(tickets))
                 for ticket in tickets:
                     if ticket.id in self._in_flight:
@@ -155,6 +164,22 @@ class PollLoop:
                 )
             except asyncio.TimeoutError:
                 continue
+
+    async def _cleanup_finished(self, tickets: list[Ticket]) -> None:
+        """Delete workspaces (and ledger rows) of tickets in a cleanup state."""
+        cfg = self._cfg
+        states = cleanup_states(cfg.repo_root)
+        for ticket in tickets:
+            if normalize_status(ticket.status) not in states or ticket.id in self._in_flight:
+                continue
+            try:
+                path = cfg.workspace_root / task_id_for(ticket)
+            except ValueError:
+                continue
+            self._ledger.forget(ticket.id)
+            if path.is_dir():
+                logger.info("poll_loop: cleaning workspace %s (ticket %s)", path, ticket.id)
+                await asyncio.to_thread(shutil.rmtree, path, True)
 
     @staticmethod
     def _key_for(ticket: Ticket) -> str:
@@ -188,6 +213,8 @@ class PollLoop:
                         repo_root=self._cfg.repo_root,
                         workspace_root=self._cfg.workspace_root,
                     )
+                    if outcome.skipped:
+                        return
                     ok = (
                         outcome.error is None
                         and outcome.result is not None

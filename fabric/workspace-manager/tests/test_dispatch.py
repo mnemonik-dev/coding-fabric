@@ -6,6 +6,7 @@ import pytest
 
 from dispatch import (
     load_pat_registry,
+    matches_filters,
     parse_pat_name_from_description,
     parse_repo_from_description,
     parse_topic_from_description,
@@ -14,6 +15,7 @@ from dispatch import (
     task_id_for,
 )
 from kaneo_client import Ticket
+from workflow_loader import WorkflowDefinition
 
 
 def _ticket(**overrides) -> Ticket:
@@ -194,3 +196,37 @@ def test_parse_topic_absent() -> None:
 
 def test_parse_topic_non_numeric() -> None:
     assert parse_topic_from_description("topic: not-a-number") is None
+
+
+# ----- matches_filters -----
+
+
+def _wf(**filters) -> WorkflowDefinition:
+    return WorkflowDefinition(
+        stage="code", engine="claude", model=None, allowed_tools=(),
+        prompt="", poll_filters=filters,
+    )
+
+
+CODE_FILTERS = dict(
+    states={"any_of": ["to-do", "in-progress"]},
+    labels={"any_of": ["stage:code"], "none_of": ["stage:review", "stage:qa"]},
+)
+
+
+def test_filters_pass_status_routed_ticket() -> None:
+    assert matches_filters(_wf(**CODE_FILTERS), _ticket(status="to-do"), "code")
+    assert matches_filters(_wf(**CODE_FILTERS), _ticket(status="in_progress"), "code")
+
+
+def test_filters_reject_wrong_state() -> None:
+    assert not matches_filters(_wf(**CODE_FILTERS), _ticket(status="review"), "code")
+
+
+def test_filters_reject_none_of_label() -> None:
+    t = _ticket(status="to-do", labels=("stage:qa",))
+    assert not matches_filters(_wf(**CODE_FILTERS), t, "code")
+
+
+def test_no_filters_matches_everything() -> None:
+    assert matches_filters(_wf(), _ticket(status="whatever"), "code")

@@ -48,8 +48,9 @@ wrote the code should look at it. Adversarial diversity matters.
 
 4. **Transition the ticket**:
    - All approved → `mcp__kaneo__update_task_status` to `qa`
-   - Changes requested → status stays `review`, label
-     `changes-requested` added; the coding agent will pick it up.
+   - Changes requested → add label `changes-requested` and move the
+     status back to `in-progress` via `mcp__kaneo__update_task_status`;
+     Symphony re-runs the coding stage on the status change.
    - Block (critical/security) → status `blocked`, ping operator in
      the `ops` topic via `mcp__bot__send_message`.
 
