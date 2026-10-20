@@ -35,10 +35,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import yaml  # PyYAML — a direct dependency (pyproject)
 
-# yaml is in stdlib via PyYAML — already pulled in by pydantic-settings transitively
-import yaml
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)

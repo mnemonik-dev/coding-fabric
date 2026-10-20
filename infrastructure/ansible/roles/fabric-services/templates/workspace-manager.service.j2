@@ -20,6 +20,8 @@ Environment="PYTHONPATH={{ fabric_target_dir | dirname }}:{{ fabric_target_dir }
 # on EnvironmentFile makes it optional: if the file is missing,
 # workspace-manager still starts in legacy mode (the Symphony bootstrap
 # in main.py.lifespan silently no-ops without KANEO_MCP_BEARER).
+# Engines installed per-user (kimi) live under ~/.local/bin.
+Environment="PATH=/home/{{ base_operator_user }}/.local/bin:/usr/local/bin:/usr/bin:/bin"
 EnvironmentFile=-/etc/symphony.env
 Environment="SYMPHONY_POLL_ENABLED={{ symphony_poll_enabled | default('1') }}"
 Environment="SYMPHONY_POLL_INTERVAL_SECONDS={{ symphony_poll_interval_seconds | default('30') }}"

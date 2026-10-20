@@ -10,7 +10,6 @@ Provides:
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -25,7 +24,6 @@ if str(ROOT) not in sys.path:
 
 from config import Settings
 from state import StateStore
-
 
 # ---------------------------------------------------------------------------
 # Settings / directory fixtures
@@ -147,9 +145,6 @@ def mock_git(tmp_dirs: dict[str, Path]):
         result.stderr = ""
         return result
 
-    # Also ensure repo directories exist so worktree.py doesn't complain
-    repos_root = tmp_dirs["repos_root"]
-
     with patch("worktree._run", side_effect=fake_run) as mock_run:
         yield mock_run
 
@@ -176,7 +171,6 @@ def client(tmp_settings: Settings, mock_bw, mock_git, make_repo):
     Overrides FastAPI dependency injection for Settings and StateStore.
     """
     import main as app_module
-    from fastapi.testclient import TestClient
 
     # Override the settings dependency
     app_module.app.dependency_overrides[app_module.get_settings] = lambda: tmp_settings

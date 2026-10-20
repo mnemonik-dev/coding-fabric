@@ -31,6 +31,12 @@ telegram_ai_agent_home: "/opt/telegram-ai-agent"
 # and makes duplicates. Empty = keep state inside telegram_ai_agent_home
 # (legacy behaviour). deploy.yml sets it to <volume>/telegram-ai-agent.
 telegram_ai_agent_state_dir: ""
+
+# Install the Kimi Code CLI as a third engine (best effort, never fails the
+# deploy). It still needs a one-time interactive login as the service user:
+# run `kimi`, then `/login` (OAuth device code). See
+# https://www.kimi.com/code/docs/en/kimi-code-cli/guides/getting-started.html
+telegram_ai_agent_install_kimi: true
 telegram_ai_agent_config_dir: "/etc/telegram-ai-agent"
 telegram_ai_agent_owner: "op"
 telegram_ai_agent_group: "op"

@@ -10,7 +10,6 @@ no user-supplied path components are passed directly to the shell
 from __future__ import annotations
 
 import logging
-import os
 import shlex
 import subprocess
 from pathlib import Path

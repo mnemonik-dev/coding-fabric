@@ -10,12 +10,10 @@ TDD anchors:
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 import sys
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
@@ -24,14 +22,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from vault import (
-    ENV_MODE,
     VaultUnreachableError,
     _extract_env_lines,
     _load_bw_session,
     materialise_env,
     remove_env,
 )
-
 
 # ---------------------------------------------------------------------------
 # _load_bw_session
@@ -90,7 +86,7 @@ def test_env_for_topic_matches_topic_secrets(tmp_path, topic, expected_keys):
     """
     The .env written for a topic contains exactly the keys defined for that topic.
     """
-    from tests.conftest import make_bw_item, FAKE_TOPIC_SECRETS
+    from tests.conftest import make_bw_item
 
     credential = tmp_path / "bw-session"
     credential.write_text("dummy-session\n")

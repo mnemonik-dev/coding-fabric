@@ -14,14 +14,11 @@ TDD anchors covered:
 
 from __future__ import annotations
 
-import json
 import threading
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from fastapi.testclient import TestClient
-
 
 VALID_PAYLOAD = {
     "task_id": "TEST-001",
@@ -76,7 +73,7 @@ def test_delete_removes_worktree_and_env(client, tmp_dirs, make_repo):
     assert wt_path.exists()
 
     # Delete
-    resp_del = client.delete(f"/worktree/TEST-001")
+    resp_del = client.delete("/worktree/TEST-001")
     assert resp_del.status_code == 204, resp_del.text
 
     # Both must be gone
@@ -354,9 +351,8 @@ def test_vault_unreachable_returns_503(client, make_repo, mock_bw):
 
 def test_vault_failure_rolls_back_state(client, make_repo, mock_bw, tmp_settings):
     """After vault failure the state store must be empty (rollback succeeded)."""
-    from vault import VaultUnreachableError
-    import main as app_module
     from state import StateStore
+    from vault import VaultUnreachableError
 
     make_repo("mnemonic-docs")
     mock_bw["item"].side_effect = VaultUnreachableError("bw timed out")
@@ -378,7 +374,6 @@ def test_git_failure_rollback_removes_orphan_directory(
     client, tmp_settings, make_repo, mock_bw
 ):
     """After git worktree creation failure the orphan directory must be removed."""
-    from unittest.mock import patch
     from worktree import WorktreeError
 
     make_repo("mnemonic-docs")
@@ -411,9 +406,8 @@ def test_toctou_capacity_race(client, tmp_settings, make_repo):
     At most 3 may succeed (201); the rest must be 409 capacity.
     """
     import threading
-    from fastapi.testclient import TestClient
+
     import main as app_module
-    from state import StateStore
 
     make_repo("mnemonic-docs")
 

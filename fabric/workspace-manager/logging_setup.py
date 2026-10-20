@@ -30,7 +30,7 @@ def _load_sanitized_handler(log_file: Path, level: int) -> logging.Handler:
     """
     try:
         module = importlib.import_module("fabric.logs.sanitizer.handler")
-        cls = getattr(module, "SanitizedFileHandler")
+        cls = module.SanitizedFileHandler
         handler: logging.Handler = cls(str(log_file))
         handler.setLevel(level)
         return handler
@@ -80,7 +80,7 @@ def _load_sanitized_stream_handler(level: int) -> logging.Handler:
     """
     try:
         module = importlib.import_module("fabric.logs.sanitizer.handler")
-        cls = getattr(module, "SanitizedStreamHandler")
+        cls = module.SanitizedStreamHandler
         handler: logging.Handler = cls()
         handler.setLevel(level)
         return handler

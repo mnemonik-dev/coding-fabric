@@ -1,0 +1,16 @@
+{#- MCP servers for Symphony-spawned claude agents (SYMPHONY_MCP_CONFIG).
+    Server keys must match the workflows' tool names: mcp__kaneo, mcp__bot. -#}
+{%- set servers = {
+  'kaneo': {
+    'type': 'http',
+    'url': kaneo_mcp_url,
+    'headers': {'Authorization': 'Bearer ' ~ kaneo_mcp_bearer}
+  },
+  'bot': {
+    'type': 'stdio',
+    'command': '/opt/telegram-ai-agent/mcp-servers/bot/start.sh',
+    'args': [],
+    'env': {'TELEGRAM_CHAT_ID': telegram_forum_chat_id | default('') | string}
+  }
+} -%}
+{{ {'mcpServers': servers} | to_nice_json }}

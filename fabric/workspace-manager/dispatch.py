@@ -30,6 +30,7 @@ from pathlib import Path
 
 from agent_runner import AgentRunResult, get_adapter, run_agent
 from kaneo_client import KaneoClient, Ticket
+from routing import get_routing
 from workflow_loader import WorkflowDefinition, load_workflow, normalize_status
 
 logger = logging.getLogger(__name__)
@@ -199,21 +200,33 @@ def apply_overrides(workflow: WorkflowDefinition, ticket: Ticket) -> WorkflowDef
     Raises ValueError for an unknown engine or malformed model so the caller
     can fail loudly instead of silently running something else.
     """
-    engine, model = workflow.engine, workflow.model
     engine_label = model_label = None
     for label in ticket.labels:
         if label.startswith("engine:"):
             engine_label = label.removeprefix("engine:").strip()
         elif label.startswith("model:"):
             model_label = label.removeprefix("model:").strip()
-    if engine_label:
-        get_adapter(engine_label)  # ValueError listing known engines
-        if engine_label != engine:
-            engine, model = engine_label, None
-    if model_label:
-        if not _MODEL_RE.match(model_label):
-            raise ValueError(f"invalid model label: {model_label!r}")
-        model = model_label
+    return _override(workflow, engine_label, model_label)
+
+
+def apply_routing(workflow: WorkflowDefinition, stage: str) -> WorkflowDefinition:
+    """Apply the runtime routing table entry for ``stage`` (see routing.py)."""
+    entry = get_routing().get(stage)
+    return _override(workflow, entry.get("engine"), entry.get("model"))
+
+
+def _override(
+    workflow: WorkflowDefinition, engine_override: str | None, model_override: str | None
+) -> WorkflowDefinition:
+    engine, model = workflow.engine, workflow.model
+    if engine_override:
+        get_adapter(engine_override)  # ValueError listing known engines
+        if engine_override != engine:
+            engine, model = engine_override, None
+    if model_override:
+        if not _MODEL_RE.match(model_override):
+            raise ValueError(f"invalid model: {model_override!r}")
+        model = model_override
     if (engine, model) == (workflow.engine, workflow.model):
         return workflow
     return replace(workflow, engine=engine, model=model)
@@ -312,7 +325,7 @@ async def dispatch_ticket(
         )
 
     try:
-        workflow = apply_overrides(workflow, ticket)
+        workflow = apply_overrides(apply_routing(workflow, stage), ticket)
     except ValueError as exc:
         await _safe_comment(kaneo, ticket.id, f"symphony: bad engine/model label: {exc}")
         return DispatchOutcome(

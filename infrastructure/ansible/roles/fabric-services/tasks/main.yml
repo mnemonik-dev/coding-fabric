@@ -202,6 +202,49 @@
 
 - name: Install systemd units for fabric services
   block:
+    - name: Find the persistent data volume mountpoint (for Symphony state)
+      # Same discovery as the kaneo role. Empty = no volume mounted; Symphony
+      # then keeps its ledger/routing under $HOME on the root disk.
+      ansible.builtin.set_fact:
+        symphony_state_volume: >-
+          {{ (ansible_facts.mounts | default([]))
+             | selectattr('device', 'equalto', '/dev/sdb')
+             | map(attribute='mount')
+             | first | default('') }}
+
+    - name: Ensure Symphony state dir exists on the persistent volume
+      # run-ledger.json (which ticket stages already ran) and routing.json
+      # (runtime stage -> engine/model) must survive a VM rebuild.
+      become: true
+      when: symphony_state_volume | length > 0
+      ansible.builtin.file:
+        path: "{{ symphony_state_volume }}/symphony"
+        state: directory
+        owner: "{{ base_operator_user }}"
+        group: "{{ base_operator_user }}"
+        mode: "0700"
+
+    - name: Resolve Symphony state dir
+      ansible.builtin.set_fact:
+        symphony_state_dir: "{{ (symphony_state_volume ~ '/symphony') if symphony_state_volume | length > 0 else '' }}"
+
+    - name: Render MCP config for Symphony-spawned claude agents
+      # Gives the code/review/qa/architect agents the kaneo + bot MCP servers
+      # their workflows call (mcp__kaneo__*, mcp__bot__*). Holds the Kaneo
+      # bearer, so 0600 and owned by the user the agents run as. Skipped
+      # until Kaneo is paired (kaneo_mcp_url + bearer in sops).
+      become: true
+      when:
+        - kaneo_mcp_url | default('') | length > 0
+        - kaneo_mcp_bearer | default('') | length > 0
+      ansible.builtin.template:
+        src: symphony-mcp.json.j2
+        dest: /etc/symphony-mcp.json
+        owner: "{{ base_operator_user }}"
+        group: "{{ base_operator_user }}"
+        mode: "0600"
+      notify: restart workspace-manager
+
     - name: Render Symphony env-file from sops
       # workspace-manager.service loads /etc/symphony.env via
       # EnvironmentFile=. Keeps GITHUB_PATS + KANEO_MCP_BEARER + BOT_TOKEN
@@ -217,6 +260,10 @@
       vars:
         # Compact JSON map of {pat_name: token} from sops github_pats.
         github_pats_json: "{{ (github_pats | default({})) | to_json }}"
+        symphony_mcp_config_path: >-
+          {{ '/etc/symphony-mcp.json'
+             if (kaneo_mcp_url | default('') | length > 0 and kaneo_mcp_bearer | default('') | length > 0)
+             else '' }}
       notify: restart workspace-manager
 
     - name: Create workspace-manager systemd unit

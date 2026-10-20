@@ -52,3 +52,18 @@ exclude_lines = [
     "if __name__ == .__main__.:",
     "pass",
 ]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+# Line length is left to `ruff format`; long f-strings/messages are fine.
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# HTTP handlers translate domain errors into HTTPException on purpose.
+"main.py" = ["B904"]
+# Tests put the project root on sys.path before importing it.
+"tests/*" = ["E402"]
