@@ -329,7 +329,13 @@ resource "hcloud_volume_attachment" "fabric_data" {
   # the volume is re-attached to the new server before Tofu removes the old
   # attachment object from state. This avoids a brief unmount window once the
   # fabric has live data on the volume.
+  # ignore_changes = [automount]: hcloud_volume_attachment has no update
+  # operation. `automount` only matters when the attachment is created, and the
+  # provider cannot read it back on `tofu import`, so an imported attachment
+  # plans automount: null -> true and the apply dies with "doesn't support
+  # update" (deploy run 39391306389).
   lifecycle {
     create_before_destroy = true
+    ignore_changes        = [automount]
   }
 }
