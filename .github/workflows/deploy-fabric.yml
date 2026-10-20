@@ -343,7 +343,10 @@ jobs:
         with:
           name: tofu-state
           path: infrastructure/tofu/hetzner/terraform.tfstate
-          retention-days: 30
+          # 90 = the max. State lives only in this artifact: if no deploy runs
+          # for the retention window it expires and the next plan wants to
+          # re-create everything (see tofu-import-state.yml to recover).
+          retention-days: 90
           overwrite: true
 
   ansible-deploy:

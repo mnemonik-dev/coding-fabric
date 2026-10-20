@@ -1,0 +1,107 @@
+name: tofu-import-state
+
+# One-off recovery for an empty/missing OpenTofu state (the deploy-fabric
+# "Restore tofu state" step found no usable `tofu-state` artifact, so the plan
+# wants to CREATE resources Hetzner already has -> uniqueness_error).
+#
+# Imports the existing Hetzner resources into a fresh state, then verifies the
+# resulting plan does NOT destroy or replace anything. Only if that holds does
+# it upload `tofu-state`, which the next deploy-fabric run restores.
+# Manual only. Creates, changes and deletes nothing in Hetzner.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-fabric   # never overlap with a deploy
+  cancel-in-progress: false
+
+jobs:
+  import:
+    name: Import existing resources into state
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TF_VERSION: '1.8.0'
+      SERVER_NAME: mnemonic-fabric   # variables.tf: server_name default
+      HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+      TF_VAR_hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
+      TF_VAR_tailscale_auth_key: ${{ secrets.TAILSCALE_AUTH_KEY }}
+      TF_VAR_operator_ssh_pubkey: ${{ secrets.OPERATOR_SSH_PUBKEY }}
+    defaults:
+      run:
+        working-directory: infrastructure/tofu/hetzner
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: ${{ env.TF_VERSION }}
+
+      - name: Initialize OpenTofu
+        run: tofu init
+
+      - name: Look up existing Hetzner resource IDs by name
+        id: ids
+        run: |
+          set -euo pipefail
+          lookup() {  # $1 = collection, $2 = name
+            curl -fsS -H "Authorization: Bearer ${HCLOUD_TOKEN}" \
+              "https://api.hetzner.cloud/v1/$1?name=$2" | jq -r ".$1[0].id // empty"
+          }
+          FW_ID=$(lookup firewalls "${SERVER_NAME}-fw")
+          SRV_ID=$(lookup servers "${SERVER_NAME}")
+          VOL_ID=$(lookup volumes "${SERVER_NAME}-data")
+          for pair in "firewall:${FW_ID}" "server:${SRV_ID}" "volume:${VOL_ID}"; do
+            if [ -z "${pair#*:}" ]; then
+              echo "::error::Hetzner has no ${pair%%:*} named for ${SERVER_NAME}; nothing to import — a normal deploy would create it."
+              exit 1
+            fi
+          done
+          echo "Found firewall=${FW_ID} server=${SRV_ID} volume=${VOL_ID}"
+          { echo "fw=${FW_ID}"; echo "srv=${SRV_ID}"; echo "vol=${VOL_ID}"; } >> "$GITHUB_OUTPUT"
+
+      - name: Import into state
+        run: |
+          set -euo pipefail
+          if [ -s terraform.tfstate ] && [ "$(tofu state list | wc -l)" -gt 0 ]; then
+            echo "::error::State is not empty; refusing to import over it."; exit 1
+          fi
+          tofu import hcloud_firewall.fabric "${{ steps.ids.outputs.fw }}"
+          tofu import hcloud_volume.fabric_data "${{ steps.ids.outputs.vol }}"
+          tofu import hcloud_server.fabric "${{ steps.ids.outputs.srv }}"
+          tofu import hcloud_firewall_attachment.fabric "${{ steps.ids.outputs.fw }}"
+          tofu import hcloud_volume_attachment.fabric_data "${{ steps.ids.outputs.vol }}"
+          tofu state list
+
+      - name: Verify the plan destroys and replaces nothing
+        run: |
+          set -euo pipefail
+          tofu plan -out=verify.tfplan -input=false
+          tofu show -json verify.tfplan > verify.json
+          BAD=$(jq '[.resource_changes[]? | select(.change.actions | index("delete"))] | length' verify.json)
+          jq -r '.resource_changes[]? | select(.change.actions != ["no-op"]) | "\(.change.actions | join("+"))  \(.address)"' verify.json
+          if [ "$BAD" -ne 0 ]; then
+            echo "::error::Plan would destroy/replace $BAD resource(s) after import. NOT uploading state. Fix the config drift first (see list above)."
+            exit 1
+          fi
+          echo "OK: no destroy/replace."
+
+      - name: Check the state is big enough for the deploy restore filter
+        run: |
+          SIZE=$(stat -c %s terraform.tfstate)
+          echo "terraform.tfstate = ${SIZE} bytes"
+          [ "$SIZE" -gt 800 ] || { echo "::error::state <= 800 bytes; deploy-fabric would ignore it"; exit 1; }
+
+      - name: Upload tofu-state
+        uses: actions/upload-artifact@v4
+        with:
+          name: tofu-state
+          path: infrastructure/tofu/hetzner/terraform.tfstate
+          retention-days: 90
+          overwrite: true

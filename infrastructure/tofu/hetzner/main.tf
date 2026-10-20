@@ -247,9 +247,13 @@ resource "hcloud_server" "fabric" {
   # system labels being removed by a subsequent tofu apply. The role=fabric-node
   # label is declared here and will always be enforced on resource creation; only
   # post-creation label drift is ignored.
+  # ignore_changes = [image]: the persistent VM is never re-imaged through
+  # tofu (OS changes go through Ansible), and the provider cannot read `image`
+  # back on `tofu import`, so without this an imported server shows
+  # image: null -> "ubuntu-24.04", which forces REPLACEMENT of the live VM.
   lifecycle {
     prevent_destroy       = false
-    ignore_changes        = [user_data, labels]
+    ignore_changes        = [user_data, labels, image]
     create_before_destroy = true
   }
 }
