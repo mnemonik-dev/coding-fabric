@@ -20,7 +20,8 @@ telegram_ai_agent_repo: "https://github.com/mnemonik-dev/telegram-ai-agent.git"
 # (looks the name up in topic_config.json before calling Telegram).
 # 7a93e08 adds runtime user roles + invites (/invite /grant /revoke /users,
 # USERS_FILE) and the per-topic shared-chat mode (/chat direct|mention).
-telegram_ai_agent_pin: "7a93e08"
+# c6f10ef adds the operator /route command (Symphony stage engine/model).
+telegram_ai_agent_pin: "c6f10ef"
 
 # Installation paths
 telegram_ai_agent_home: "/opt/telegram-ai-agent"
