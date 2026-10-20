@@ -439,6 +439,10 @@
         github_personal_access_token: "{{ vault_github_deploy_pat | default('') }}"
         telegram_ai_agent_workspace_manager_url: "http://{{ tailscale_ip }}:8080"
         telegram_ai_agent_per_topic_config: "{{ fabric_topic_matrix | default({}) }}"
+        # Bot runtime state (topic registry, sessions) on the persistent volume.
+        telegram_ai_agent_state_dir: >-
+          {{ (content_publisher_volume_mount ~ '/telegram-ai-agent')
+             if (content_publisher_volume_mount | default('') | length > 1) else '' }}
         fabric_target_dir: "/opt/fabric"
         content_publisher_data_dir: "{{ content_publisher_volume_mount }}/content-publisher"
         content_publisher_queue_path: "{{ content_publisher_volume_mount }}/content-publisher/queue.jsonl"
