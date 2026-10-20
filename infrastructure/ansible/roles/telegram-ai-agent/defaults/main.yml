@@ -15,10 +15,20 @@ telegram_ai_agent_repo: "https://github.com/mnemonik-dev/telegram-ai-agent.git"
 # a6e0fce adds the /model command on top of 2e3af15 — per-chat model
 # override incl. General chat, to escape the VM's 1M-context engine
 # default ("Usage credits required for 1M context", incident 2026-07-28).
-telegram_ai_agent_pin: "a6e0fce"
+#
+# 8cded0a (PR #1) makes the bot's MCP create_topic idempotent by name
+# (looks the name up in topic_config.json before calling Telegram).
+telegram_ai_agent_pin: "8cded0a"
 
 # Installation paths
 telegram_ai_agent_home: "/opt/telegram-ai-agent"
+# Directory for the bot's mutable runtime state (topic_config.json,
+# session_mapping.json, channel_sessions.json, tmux_sessions/). Point it at
+# the persistent data volume so topic registrations and chat sessions
+# survive a VM rebuild — otherwise the bot forgets every topic it created
+# and makes duplicates. Empty = keep state inside telegram_ai_agent_home
+# (legacy behaviour). deploy.yml sets it to <volume>/telegram-ai-agent.
+telegram_ai_agent_state_dir: ""
 telegram_ai_agent_config_dir: "/etc/telegram-ai-agent"
 telegram_ai_agent_owner: "op"
 telegram_ai_agent_group: "op"
