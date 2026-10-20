@@ -30,7 +30,7 @@ from pathlib import Path
 
 from agent_runner import AgentRunResult, run_agent
 from kaneo_client import KaneoClient, Ticket
-from workflow_loader import WorkflowDefinition, load_workflow
+from workflow_loader import WorkflowDefinition, load_workflow, normalize_status
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +180,37 @@ class DispatchOutcome:
     workspace_path: Path | None
     result: AgentRunResult | None
     error: str | None = None
+    # True when the workflow's poll_filters rejected the ticket: nothing ran.
+    skipped: bool = False
+
+
+def matches_filters(workflow: WorkflowDefinition, ticket: Ticket, stage: str) -> bool:
+    """Apply the workflow's ``poll_filters`` (states / labels) to a ticket.
+
+    The stage the ticket was routed to counts as an implied ``stage:<stage>``
+    label, so status-routed tickets pass a ``labels.any_of: [stage:…]`` filter.
+    """
+    filters = workflow.poll_filters
+    status = normalize_status(ticket.status)
+    labels = {*ticket.labels, f"stage:{stage}"}
+
+    def _set(section: str, key: str) -> set[str] | None:
+        raw = (filters.get(section) or {}).get(key)
+        if not isinstance(raw, list) or not raw:
+            return None
+        return {normalize_status(str(v)) if section == "states" else str(v).lower() for v in raw}
+
+    any_states, none_states = _set("states", "any_of"), _set("states", "none_of")
+    any_labels, none_labels = _set("labels", "any_of"), _set("labels", "none_of")
+    if any_states is not None and status not in any_states:
+        return False
+    if none_states is not None and status in none_states:
+        return False
+    if any_labels is not None and not (labels & any_labels):
+        return False
+    if none_labels is not None and labels & none_labels:
+        return False
+    return True
 
 
 def stage_for(ticket: Ticket, default: str = "code") -> str:
@@ -233,6 +264,16 @@ async def dispatch_ticket(
             workspace_path=None,
             result=None,
             error=f"workflow load: {exc}",
+        )
+
+    if not matches_filters(workflow, ticket, stage):
+        logger.info(
+            "dispatch: ticket=%s status=%s filtered out by %s poll_filters",
+            ticket.id, ticket.status, stage,
+        )
+        return DispatchOutcome(
+            ticket_id=ticket.id, stage=stage, engine=workflow.engine,
+            workspace_path=None, result=None, skipped=True,
         )
 
     # Workspace lease + repo prep. The Kaneo project's description can
@@ -334,6 +375,9 @@ async def dispatch_ticket(
             engine=workflow.engine,
             cwd=workspace_path,
             prompt=rendered_prompt,
+            # SYMPHONY_MCP_CONFIG: path or JSON handed to `claude --mcp-config`
+            # so spawned agents get the kaneo/bot MCP servers. Unset = none.
+            mcp_config=os.environ.get("SYMPHONY_MCP_CONFIG", "").strip() or None,
             model=workflow.model,
             allowed_tools=workflow.allowed_tools,
             extra_env=extra_env or None,

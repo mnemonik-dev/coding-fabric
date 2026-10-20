@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from workflow_loader import WorkflowError, load_workflow, workflow_path
+from workflow_loader import WorkflowError, cleanup_states, load_workflow, workflow_path
 
 
 def _write_workflow(repo: Path, stage: str, content: str) -> Path:
@@ -140,3 +140,13 @@ second
     wf2 = load_workflow(tmp_path, "code")
     assert wf2.engine == "codex"
     assert wf2.prompt == "second"
+
+
+def test_cleanup_states_union(tmp_path: Path) -> None:
+    _write_workflow(tmp_path, "code", "---\nengine: claude\ncleanup_on:\n  states: [done]\n---\nb")
+    _write_workflow(tmp_path, "qa", "---\nengine: claude\ncleanup_on:\n  states: [Cancelled, won_t_do]\n---\nb")
+    assert cleanup_states(tmp_path) == {"done", "cancelled", "won-t-do"}
+
+
+def test_cleanup_states_default(tmp_path: Path) -> None:
+    assert cleanup_states(tmp_path) == {"done", "cancelled"}

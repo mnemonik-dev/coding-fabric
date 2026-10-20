@@ -83,6 +83,29 @@ def load_workflow(repo_root: Path, stage: str) -> WorkflowDefinition:
     return parsed
 
 
+def cleanup_states(repo_root: Path) -> frozenset[str]:
+    """Union of ``cleanup_on.states`` across all workflow files.
+
+    Falls back to ``done``/``cancelled`` when no workflow declares any.
+    """
+    states: set[str] = set()
+    wf_dir = repo_root / ".symphony" / "workflows"
+    for path in sorted(wf_dir.glob("*.md")) if wf_dir.is_dir() else []:
+        try:
+            wf = load_workflow(repo_root, path.stem)
+        except WorkflowError:
+            logger.exception("cleanup_states: skipping unreadable %s", path)
+            continue
+        raw = wf.cleanup_on.get("states") or []
+        if isinstance(raw, list):
+            states.update(normalize_status(str(s)) for s in raw)
+    return frozenset(states or {"done", "cancelled"})
+
+
+def normalize_status(status: str) -> str:
+    return status.strip().lower().replace("_", "-")
+
+
 def _parse_workflow_file(path: Path, stage: str) -> WorkflowDefinition:
     raw = path.read_text(encoding="utf-8")
     # Split front matter (delimited by --- lines) from body
