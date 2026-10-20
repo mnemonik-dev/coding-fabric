@@ -18,7 +18,9 @@ telegram_ai_agent_repo: "https://github.com/mnemonik-dev/telegram-ai-agent.git"
 #
 # 8cded0a (PR #1) makes the bot's MCP create_topic idempotent by name
 # (looks the name up in topic_config.json before calling Telegram).
-telegram_ai_agent_pin: "8cded0a"
+# 7a93e08 adds runtime user roles + invites (/invite /grant /revoke /users,
+# USERS_FILE) and the per-topic shared-chat mode (/chat direct|mention).
+telegram_ai_agent_pin: "7a93e08"
 
 # Installation paths
 telegram_ai_agent_home: "/opt/telegram-ai-agent"
