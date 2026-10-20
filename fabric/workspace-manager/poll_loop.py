@@ -16,8 +16,9 @@ import os
 from pathlib import Path
 
 from auto_merge import MergePolicy, policy_from_env_or_default, schedule_or_tick
-from dispatch import dispatch_ticket
+from dispatch import dispatch_ticket, stage_for
 from kaneo_client import KaneoClient, Ticket
+from run_ledger import RunLedger, ledger_key
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,13 @@ class PollLoopConfig:
             s.strip().lower() for s in active_csv.split(",") if s.strip()
         )
         self.merge_policy: MergePolicy = policy_from_env_or_default()
+        self.ledger_file: Path = Path(
+            os.environ.get(
+                "SYMPHONY_LEDGER_FILE",
+                str(Path.home() / ".fabric" / "workspace-manager" / "run-ledger.json"),
+            )
+        )
+        self.max_attempts: int = int(os.environ.get("SYMPHONY_MAX_ATTEMPTS", "2"))
 
 
 async def _list_active_tickets(kaneo: KaneoClient, cfg: PollLoopConfig) -> list[Ticket]:
@@ -94,6 +102,7 @@ class PollLoop:
         self._in_flight: dict[str, asyncio.Task[None]] = {}
         self._sem = asyncio.Semaphore(cfg.max_concurrent)
         self._stop_event = asyncio.Event()
+        self._ledger = RunLedger(cfg.ledger_file, cfg.max_attempts)
 
     async def start(self) -> None:
         if self._task is not None:
@@ -130,6 +139,8 @@ class PollLoop:
                 for ticket in tickets:
                     if ticket.id in self._in_flight:
                         continue
+                    if not self._should_dispatch(ticket):
+                        continue
                     self._in_flight[ticket.id] = asyncio.create_task(
                         self._dispatch_with_semaphore(ticket)
                     )
@@ -144,6 +155,16 @@ class PollLoop:
                 )
             except asyncio.TimeoutError:
                 continue
+
+    @staticmethod
+    def _key_for(ticket: Ticket) -> str:
+        return ledger_key(ticket.status, stage_for(ticket))
+
+    def _should_dispatch(self, ticket: Ticket) -> bool:
+        # ready-to-merge is a timer-driven tick (auto_merge), not an agent run.
+        if ticket.status.lower() == "ready-to-merge":
+            return True
+        return self._ledger.should_run(ticket.id, self._key_for(ticket))
 
     async def _dispatch_with_semaphore(self, ticket: Ticket) -> None:
         async with self._sem:
@@ -161,11 +182,26 @@ class PollLoop:
                         outcome,
                     )
                 else:
-                    await dispatch_ticket(
+                    outcome = await dispatch_ticket(
                         ticket,
                         kaneo=self._kaneo,
                         repo_root=self._cfg.repo_root,
                         workspace_root=self._cfg.workspace_root,
                     )
+                    ok = (
+                        outcome.error is None
+                        and outcome.result is not None
+                        and outcome.result.exit_code == 0
+                    )
+                    if self._ledger.record(ticket.id, self._key_for(ticket), ok):
+                        try:
+                            await self._kaneo.create_comment(
+                                ticket.id,
+                                f"symphony: giving up after {self._cfg.max_attempts} "
+                                f"failed attempts at {self._key_for(ticket)}. "
+                                "Move the ticket to another status to retry.",
+                            )
+                        except Exception:
+                            logger.exception("poll_loop: give-up comment failed")
             finally:
                 self._in_flight.pop(ticket.id, None)

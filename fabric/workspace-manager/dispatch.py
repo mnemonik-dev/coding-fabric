@@ -60,6 +60,10 @@ _TOPIC_DIRECTIVE_RE = re.compile(
 )
 
 
+# Ticket status → workflow stage when no explicit `stage:` label is set.
+_STAGE_BY_STATUS = {"review": "review", "qa": "qa"}
+
+
 def parse_repo_from_description(description: str | None) -> str | None:
     """Pull a `repo: org/name` (or full URL) line out of a Kaneo project description."""
     if not description:
@@ -179,15 +183,15 @@ class DispatchOutcome:
 
 
 def stage_for(ticket: Ticket, default: str = "code") -> str:
-    """Pick a stage name from ticket labels.
+    """Pick a stage name for a ticket.
 
-    Looks for any label of the form ``stage:<name>``. Returns ``default``
-    when none present.
+    An explicit ``stage:<name>`` label wins. Otherwise the ticket status
+    decides (``review`` → review, ``qa`` → qa); anything else is ``default``.
     """
     for label in ticket.labels:
         if label.startswith("stage:"):
             return label.removeprefix("stage:")
-    return default
+    return _STAGE_BY_STATUS.get(ticket.status.lower().replace("_", "-"), default)
 
 
 def task_id_for(ticket: Ticket) -> str:
