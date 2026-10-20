@@ -98,6 +98,16 @@ def test_stage_override_default() -> None:
     assert stage_for(_ticket(), default="other") == "other"
 
 
+def test_stage_from_status() -> None:
+    assert stage_for(_ticket(status="review")) == "review"
+    assert stage_for(_ticket(status="QA")) == "qa"
+    assert stage_for(_ticket(status="in-progress")) == "code"
+
+
+def test_stage_label_beats_status() -> None:
+    assert stage_for(_ticket(status="review", labels=("stage:code",))) == "code"
+
+
 # ----- task_id_for -----
 
 
