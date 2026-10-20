@@ -25,10 +25,10 @@ import asyncio
 import logging
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from agent_runner import AgentRunResult, run_agent
+from agent_runner import AgentRunResult, get_adapter, run_agent
 from kaneo_client import KaneoClient, Ticket
 from workflow_loader import WorkflowDefinition, load_workflow, normalize_status
 
@@ -184,6 +184,41 @@ class DispatchOutcome:
     skipped: bool = False
 
 
+_MODEL_RE = re.compile(r"^[A-Za-z0-9._:-]{1,80}$")
+
+
+def apply_overrides(workflow: WorkflowDefinition, ticket: Ticket) -> WorkflowDefinition:
+    """Let ticket labels pick the engine / model for this run.
+
+    ``engine:<name>`` overrides the workflow's engine (must be a known
+    adapter) and ``model:<id>`` its model. When only the engine changes, the
+    workflow's model is dropped — it belongs to the other engine. Kaneo
+    lowercases labels, so model ids must be lowercase-safe (aliases such as
+    ``opus`` / ``sonnet`` are).
+
+    Raises ValueError for an unknown engine or malformed model so the caller
+    can fail loudly instead of silently running something else.
+    """
+    engine, model = workflow.engine, workflow.model
+    engine_label = model_label = None
+    for label in ticket.labels:
+        if label.startswith("engine:"):
+            engine_label = label.removeprefix("engine:").strip()
+        elif label.startswith("model:"):
+            model_label = label.removeprefix("model:").strip()
+    if engine_label:
+        get_adapter(engine_label)  # ValueError listing known engines
+        if engine_label != engine:
+            engine, model = engine_label, None
+    if model_label:
+        if not _MODEL_RE.match(model_label):
+            raise ValueError(f"invalid model label: {model_label!r}")
+        model = model_label
+    if (engine, model) == (workflow.engine, workflow.model):
+        return workflow
+    return replace(workflow, engine=engine, model=model)
+
+
 def matches_filters(workflow: WorkflowDefinition, ticket: Ticket, stage: str) -> bool:
     """Apply the workflow's ``poll_filters`` (states / labels) to a ticket.
 
@@ -274,6 +309,15 @@ async def dispatch_ticket(
         return DispatchOutcome(
             ticket_id=ticket.id, stage=stage, engine=workflow.engine,
             workspace_path=None, result=None, skipped=True,
+        )
+
+    try:
+        workflow = apply_overrides(workflow, ticket)
+    except ValueError as exc:
+        await _safe_comment(kaneo, ticket.id, f"symphony: bad engine/model label: {exc}")
+        return DispatchOutcome(
+            ticket_id=ticket.id, stage=stage, engine=workflow.engine,
+            workspace_path=None, result=None, error=f"label override: {exc}",
         )
 
     # Workspace lease + repo prep. The Kaneo project's description can
