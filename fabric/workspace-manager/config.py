@@ -5,7 +5,6 @@ The service must bind to BIND_IP, never 0.0.0.0.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from pydantic import field_validator

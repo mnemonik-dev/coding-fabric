@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import multiprocessing
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -32,7 +32,7 @@ def _make_info(task_id: str = "TEST-001", topic: str = "docs") -> WorktreeInfo:
         topic=topic,
         path=f"/tmp/worktrees/{task_id}/mnemonic-docs",
         env_path=f"/tmp/worktrees/{task_id}/mnemonic-docs/.env",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
 
@@ -136,9 +136,10 @@ def _worker_add(state_path_str: str, task_id: str, result_queue):
     ROOT2 = Path(__file__).parent.parent
     if str(ROOT2) not in sys.path:
         sys.path.insert(0, str(ROOT2))
-    from state import StateStore, AlreadyExistsError
+    from datetime import datetime
+
     from models import WorktreeInfo
-    from datetime import datetime, timezone
+    from state import AlreadyExistsError, StateStore
 
     store = StateStore(Path(state_path_str))
     info = WorktreeInfo(
@@ -148,7 +149,7 @@ def _worker_add(state_path_str: str, task_id: str, result_queue):
         topic="docs",
         path="/tmp/x",
         env_path="/tmp/x/.env",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     try:
         store.add(info)

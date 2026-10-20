@@ -110,10 +110,48 @@ class _CodexAdapter:
         return argv
 
 
+class _KimiAdapter:
+    """Kimi Code CLI (https://www.kimi.com/code/docs/en/kimi-code-cli/).
+
+    ``kimi -p <prompt>`` runs one task headless; tool calls run under the
+    auto permission policy (``--yolo``/``--auto`` are rejected together with
+    ``-p``). stdout carries the assistant text, progress goes to stderr.
+    Auth is an interactive ``/login`` once per VM (OAuth device code) — see
+    the telegram-ai-agent role. The CLI documents no per-run MCP flag, so
+    ``mcp_config`` is ignored; kimi reads MCP servers from its own config.
+    """
+
+    name = "kimi"
+
+    def is_available(self) -> bool:
+        from shutil import which
+
+        return which("kimi") is not None
+
+    def build_argv(
+        self,
+        *,
+        prompt: str,
+        mcp_config: str | None,
+        model: str | None,
+        allowed_tools: tuple[str, ...],
+    ) -> list[str]:
+        argv = ["kimi"]
+        if model:
+            argv += ["-m", model]
+        argv += ["-p", prompt]
+        return argv
+
+
 _ADAPTERS: dict[str, EngineAdapter] = {
     "claude": _ClaudeAdapter(),
     "codex": _CodexAdapter(),
+    "kimi": _KimiAdapter(),
 }
+
+
+def known_engines() -> list[str]:
+    return sorted(_ADAPTERS)
 
 
 def get_adapter(engine: str) -> EngineAdapter:
@@ -173,7 +211,7 @@ async def run_agent(
             proc.communicate(),
             timeout=timeout_seconds,
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         proc.kill()
         await proc.wait()
         raise

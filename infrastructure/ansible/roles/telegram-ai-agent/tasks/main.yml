@@ -111,6 +111,49 @@
           - claude_version_final.rc == 0
         fail_msg: "claude CLI install failed; bot will hang on every message"
 
+- name: Install Kimi Code CLI (optional engine)
+  tags: [telegram-ai-agent, kimi-cli]
+  when: telegram_ai_agent_install_kimi | bool
+  block:
+    - name: Check if kimi is already installed for the service user
+      become: true
+      become_user: "{{ telegram_ai_agent_owner }}"
+      ansible.builtin.shell: |
+        export PATH="$HOME/.local/bin:$HOME/.kimi-code/bin:$PATH"
+        command -v kimi
+      register: kimi_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install Kimi Code CLI via the official script
+      become: true
+      become_user: "{{ telegram_ai_agent_owner }}"
+      ansible.builtin.shell: |
+        set -o pipefail
+        curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash
+      args:
+        executable: /bin/bash
+      when: kimi_check.rc != 0
+      register: kimi_install
+      failed_when: false
+      changed_when: kimi_install.rc == 0
+
+    - name: Put kimi on the system PATH (Symphony and the bot spawn it)
+      become: true
+      ansible.builtin.shell: |
+        export PATH="/home/{{ telegram_ai_agent_owner }}/.local/bin:/home/{{ telegram_ai_agent_owner }}/.kimi-code/bin:$PATH"
+        bin="$(command -v kimi)" && ln -sf "$bin" /usr/local/bin/kimi
+      register: kimi_link
+      changed_when: false
+      failed_when: false
+
+    - name: Note Kimi status
+      ansible.builtin.debug:
+        msg: >-
+          kimi {{ 'is available' if kimi_link.rc == 0 else 'could NOT be installed (non-fatal)' }}.
+          First use needs a one-time login: ssh in as {{ telegram_ai_agent_owner }},
+          run `kimi`, then `/login`.
+
 - name: Install uv package manager
   tags: [telegram-ai-agent, uv]
   block:

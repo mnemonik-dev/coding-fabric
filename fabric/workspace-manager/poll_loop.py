@@ -162,7 +162,7 @@ class PollLoop:
                     self._stop_event.wait(),
                     timeout=cfg.poll_interval_seconds,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
 
     async def _cleanup_finished(self, tickets: list[Ticket]) -> None:

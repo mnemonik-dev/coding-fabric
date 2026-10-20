@@ -6,8 +6,7 @@ logic + parsing helpers stand on their own.
 
 from __future__ import annotations
 
-import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -37,7 +36,7 @@ def _ticket(*, status: str = "ready-to-merge", labels: tuple[str, ...] = (), des
 def test_parse_deadline_label() -> None:
     deadline = _parse_auto_merge_deadline(["auto-merge:2026-05-25T12:00:00Z"])
     assert deadline is not None
-    assert deadline == datetime(2026, 5, 25, 12, 0, 0, tzinfo=timezone.utc)
+    assert deadline == datetime(2026, 5, 25, 12, 0, 0, tzinfo=UTC)
 
 
 def test_parse_deadline_label_bad_format() -> None:
@@ -55,7 +54,7 @@ async def test_read_deadline_from_comments_picks_latest() -> None:
     ]
     got = await _read_deadline_from_comments(kaneo, "TASK-1")
     assert got is not None
-    assert got == datetime(2026, 5, 25, 10, 0, 0, tzinfo=timezone.utc)
+    assert got == datetime(2026, 5, 25, 10, 0, 0, tzinfo=UTC)
 
 
 @pytest.mark.asyncio
@@ -99,7 +98,7 @@ async def test_first_tick_schedules() -> None:
 
 @pytest.mark.asyncio
 async def test_waiting_when_deadline_in_future() -> None:
-    future = (datetime.now(timezone.utc) + timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    future = (datetime.now(UTC) + timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%SZ")
     kaneo = AsyncMock()
     kaneo.list_comments.return_value = [
         {"body": f"symphony: ready to auto-merge. Window closes at {future}. Reply ..."},
@@ -112,7 +111,7 @@ async def test_waiting_when_deadline_in_future() -> None:
 
 @pytest.mark.asyncio
 async def test_no_pr_link_skips_merge() -> None:
-    past = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    past = (datetime.now(UTC) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
     kaneo = AsyncMock()
     kaneo.list_comments.return_value = [
         {"body": f"symphony: ready to auto-merge. Window closes at {past}. Reply ..."},

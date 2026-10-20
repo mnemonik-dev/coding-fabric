@@ -38,10 +38,10 @@ import asyncio
 import logging
 import os
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Iterable
 
 from kaneo_client import KaneoClient, Ticket
 
@@ -78,7 +78,7 @@ def policy_from_env_or_default() -> MergePolicy:
 
 
 def _now_utc() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _parse_auto_merge_deadline(labels: Iterable[str]) -> datetime | None:
@@ -100,7 +100,7 @@ def _parse_auto_merge_deadline(labels: Iterable[str]) -> datetime | None:
     return None
 
 
-async def _read_deadline_from_comments(kaneo: "KaneoClient", task_id: str) -> datetime | None:
+async def _read_deadline_from_comments(kaneo: KaneoClient, task_id: str) -> datetime | None:
     """Scan ticket comments for a previously-posted deadline. Stateless."""
     try:
         comments = await kaneo.list_comments(task_id)
@@ -212,8 +212,7 @@ async def schedule_or_tick(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout_bytes, stderr_bytes = await proc.communicate()
-    stdout = stdout_bytes.decode("utf-8", errors="replace")
+    _stdout_bytes, stderr_bytes = await proc.communicate()
     stderr = stderr_bytes.decode("utf-8", errors="replace")
     if proc.returncode != 0:
         await kaneo.create_comment(

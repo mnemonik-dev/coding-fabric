@@ -357,6 +357,7 @@
         # bot token power the Telegram-mirror notifications. Empty
         # defaults are accepted: Symphony falls back to legacy mode.
         github_pats: "{{ sops.github_pats | default({}) }}"
+        kaneo_mcp_url: "{{ sops.kaneo_mcp_url | default('') }}"
         kaneo_mcp_bearer: "{{ sops.kaneo_mcp_bearer | default('') }}"
         telegram_forum_chat_id: "{{ sops.telegram_forum_chat_id | default('') }}"
         telegram_bot_token: "{{ sops.telegram_bot_token | default('') }}"

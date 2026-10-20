@@ -25,12 +25,11 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 # These imports require fabric.logs.sanitizer to be installed in the test env.
+import logging_setup  # noqa: E402  workspace-manager pythonpath puts modules at top level
 from fabric.logs.sanitizer.handler import (  # noqa: E402
     SanitizedFileHandler,
     SanitizedStreamHandler,
 )
-
-import logging_setup  # noqa: E402  workspace-manager pythonpath puts modules at top level
 
 
 @pytest.fixture(autouse=True)

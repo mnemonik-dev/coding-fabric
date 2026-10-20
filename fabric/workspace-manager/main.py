@@ -18,24 +18,25 @@ import logging
 import shutil
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi import Depends, FastAPI, HTTPException
+from pydantic import BaseModel
 
+from agent_runner import known_engines
 from config import Settings, get_settings
 from logging_setup import configure_logging
 from models import (
     CreateWorktreeRequest,
     CreateWorktreeResponse,
-    DeleteWorktreeResponse,
     ErrorResponse,
     HealthResponse,
     WorktreeInfo,
     WorktreeListResponse,
 )
+from routing import get_routing
 from state import AlreadyExistsError, CapacityExceededError, NotFoundError, StateStore
 from vault import VaultUnreachableError, check_reachable, materialise_env, remove_env
 from worktree import WorktreeError, create_worktree, destroy_worktree, worktree_path
@@ -82,8 +83,8 @@ async def lifespan(app: FastAPI):
     # poll_loop.py + dispatch.py + agent_runner.py.
     symphony_loop = None
     try:
-        from poll_loop import PollLoop, PollLoopConfig
         from kaneo_client import KaneoClient, KaneoError
+        from poll_loop import PollLoop, PollLoopConfig
 
         cfg = PollLoopConfig()
         if cfg.enabled:
@@ -164,7 +165,7 @@ async def post_worktree(
 
     target = worktree_path(body.task_id, settings.worktrees_root, body.repo)
     env_path = target / ".env"
-    created_at = datetime.now(timezone.utc)
+    created_at = datetime.now(UTC)
 
     info = WorktreeInfo(
         task_id=body.task_id,
@@ -202,7 +203,7 @@ async def post_worktree(
             target,
             settings.bw_session_credential,
         )
-    except VaultUnreachableError as exc:
+    except VaultUnreachableError:
         # Roll back state entry on vault failure
         try:
             await asyncio.to_thread(store.remove, body.task_id)
@@ -225,7 +226,7 @@ async def post_worktree(
             settings.worktrees_root,
             settings.sccache_dir,
         )
-    except WorktreeError as exc:
+    except WorktreeError:
         # Roll back: remove .env, remove orphan worktree directory, remove state.
         remove_env(actual_env)
         # Remove the worktree directory itself (created by materialise_env via
@@ -342,6 +343,37 @@ async def list_worktrees(
         capacity_used=len(all_items),
         capacity_total=settings.capacity_total,
     )
+
+
+# ---------------------------------------------------------------------------
+# Runtime routing (stage -> engine/model). Same trust model as the rest of
+# this API: bound to the tailnet IP only.
+# ---------------------------------------------------------------------------
+
+
+class RoutingEntry(BaseModel):
+    engine: str | None = None
+    model: str | None = None
+
+
+@app.get("/routing", tags=["routing"])
+async def get_routing_table() -> dict:
+    return {"stages": get_routing().all(), "engines": known_engines()}
+
+
+@app.put("/routing/{stage}", tags=["routing"])
+async def put_routing(stage: str, entry: RoutingEntry) -> dict:
+    try:
+        get_routing().set(stage, engine=entry.engine, model=entry.model)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"stages": get_routing().all()}
+
+
+@app.delete("/routing/{stage}", tags=["routing"])
+async def delete_routing(stage: str) -> dict:
+    get_routing().clear(stage)
+    return {"stages": get_routing().all()}
 
 
 @app.get(
